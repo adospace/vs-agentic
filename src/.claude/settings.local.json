@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Source/github/CoreSyncServer -maxdepth 2 -type f -name *.csproj)",
+      "Bash(git --version)",
+      "Bash(find /c/Source/github/CoreSyncCloud/src -maxdepth 2 -type f \\\\\\(-name *.csproj -o -name *.cs \\\\\\))",
+      "Bash(find /c/Source/github/CoreSyncCloud/src/CoreSyncCloud.Server/Services -type f -name *.cs)",
+      "Bash(find /c/Source/github/CoreSyncServer/src -maxdepth 2 -type f -name *.csproj)",
+      "Bash(find /c/Source/github/CoreSyncServer/src/Data -maxdepth 1 -type f -name *.cs)"
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="README.md" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="VsAgentic.Console/VsAgentic.Console.csproj" />
+    <Project Path="VsAgentic.Desktop/VsAgentic.Desktop.csproj" />
+    <Project Path="VsAgentic.Services/VsAgentic.Services.csproj" />
+    <Project Path="VsAgentic.UI/VsAgentic.UI.csproj" />
+    <Project Path="VsAgentic.VSExtension/VsAgentic.VSExtension.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,55 @@
+<UserControl x:Class="VsAgentic.VSExtension.ToolWindows.SessionListControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vs="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0">
+
+    <UserControl.Resources>
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}" />
+        </Style>
+        <Style TargetType="ListBox">
+            <Setter Property="Background" Value="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}" />
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+        <Style TargetType="Button" BasedOn="{StaticResource {x:Static vs:VsResourceKeys.ButtonStyleKey}}">
+            <Setter Property="Margin" Value="2" />
+            <Setter Property="Padding" Value="8,4" />
+        </Style>
+    </UserControl.Resources>
+
+    <Grid Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Toolbar -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4">
+            <Button Content="New Session" Command="{Binding NewSessionCommand}" />
+            <Button Content="Remove" Command="{Binding RemoveSessionCommand}"
+                    CommandParameter="{Binding SelectedSession}" />
+        </StackPanel>
+
+        <!-- Session List -->
+        <ListBox Grid.Row="1"
+                 ItemsSource="{Binding Sessions}"
+                 SelectedItem="{Binding SelectedSession}"
+                 MouseDoubleClick="ListBox_MouseDoubleClick"
+                 Margin="4,0,4,4">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <Border Padding="6,4" Cursor="Hand">
+                        <StackPanel>
+                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13" />
+                            <TextBlock FontSize="11" Opacity="0.7">
+                                <Run Text="Last activity: " />
+                                <Run Text="{Binding LastActivity, StringFormat='{}{0:HH:mm dd-MMM}'}" />
+                            </TextBlock>
+                        </StackPanel>
+                    </Border>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+    </Grid>
+</UserControl>

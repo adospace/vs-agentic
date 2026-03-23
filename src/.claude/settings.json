@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(iconv -f UTF-16LE -t UTF-8 \"$LOCALAPPDATA/Microsoft/VisualStudio/18.0_a6020103Exp/Extensions/gti2y0uu.wcc/CoreSource.VSExtension.pkgdef\")",
+      "Read(//c/Source/tests/CoreSource/$LOCALAPPDATA/Microsoft/VisualStudio/18.0_a6020103Exp/**)",
+      "Read(//c/Source/tests/CoreSource/$LOCALAPPDATA/Microsoft/VisualStudio/18.0_a6020103Exp/Extensions/**)",
+      "Bash(python3 -c \"import zipfile; z=zipfile.ZipFile\\(''c:/Source/tests/CoreSource/src/CoreSource.VSExtension/bin/Debug/net472/CoreSource.VSExtension.vsix''\\); [print\\(n\\) for n in sorted\\(z.namelist\\(\\)\\) if ''AsyncInterfaces'' in n or ''Bcl'' in n]\")",
+      "Bash(python3 -c \"import zipfile; z=zipfile.ZipFile\\(''c:/Source/tests/CoreSource/src/CoreSource.VSExtension/bin/Debug/net472/CoreSource.VSExtension.vsix''\\); [print\\(n\\) for n in sorted\\(z.namelist\\(\\)\\) if ''AsyncInterface'' in n]\")",
+      "Bash(python3 -c \":*)",
+      "Bash(python3 -c \"import zipfile; z=zipfile.ZipFile\\(''c:/Source/tests/CoreSource/src/CoreSource.VSExtension/bin/Debug/net472/CoreSource.VSExtension.vsix''\\); [print\\(n\\) for n in z.namelist\\(\\) if ''pkgdef'' in n.lower\\(\\)]\")",
+      "Bash(powershell -c \"[System.Reflection.AssemblyName]::GetAssemblyName\\(''c:\\\\Source\\\\tests\\\\CoreSource\\\\src\\\\CoreSource.VSExtension\\\\bin\\\\Debug\\\\net472\\\\Microsoft.Bcl.AsyncInterfaces.dll''\\).Version.ToString\\(\\)\")",
+      "Bash(grep -r \"bindingRedirect\\\\|BindingRedirect\\\\|RuntimeConfiguration\" '/c/Program Files/Microsoft Visual Studio/18/Insiders/Common7/IDE/CommonExtensions/' --include=*.pkgdef -l)",
+      "Bash(grep -r bindingRedirect '/c/Program Files/Microsoft Visual Studio/18/Insiders/Common7/IDE/' --include=*.pkgdef -l)",
+      "Bash(powershell -c \"[System.Reflection.AssemblyName]::GetAssemblyName\\(''c:\\\\Source\\\\tests\\\\CoreSource\\\\src\\\\CoreSource.VSExtension\\\\bin\\\\Debug\\\\net472\\\\System.Diagnostics.DiagnosticSource.dll''\\).Version.ToString\\(\\)\")",
+      "Bash(git -C \"c:/Source/tests/CoreSource/src/CoreSource.VSExtension\" rev-parse --show-toplevel)",
+      "Bash(xargs cat:*)",
+      "Bash(for proj:*)",
+      "Bash(do echo:*)",
+      "Bash(cp -r src/CoreSource.UI src/VsAgentic.UI)",
+      "Bash(cp -r src/CoreSource.VSExtension src/VsAgentic.VSExtension)"
+    ]
+  }
+}

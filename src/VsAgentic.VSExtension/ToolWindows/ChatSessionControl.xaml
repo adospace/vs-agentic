@@ -1,0 +1,249 @@
+<UserControl x:Class="VsAgentic.VSExtension.ToolWindows.ChatSessionControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vs="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
+             xmlns:ui="clr-namespace:VsAgentic.UI;assembly=VsAgentic.UI"
+             xmlns:vm="clr-namespace:VsAgentic.UI.ViewModels;assembly=VsAgentic.UI"
+             xmlns:conv="clr-namespace:VsAgentic.UI.Converters;assembly=VsAgentic.UI"
+             xmlns:controls="clr-namespace:VsAgentic.UI.Controls;assembly=VsAgentic.UI" >
+
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <conv:StatusToColorConverter x:Key="StatusToColor"/>
+        <conv:StatusToSymbolConverter x:Key="StatusToSymbol"/>
+        <conv:NotNullToVisibilityConverter x:Key="NotNullToVis"/>
+
+        <!-- Minimal expander toggle: plain arrow, no circle background -->
+        <Style x:Key="MinimalExpanderToggle" TargetType="ToggleButton">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border Background="Transparent" Padding="2">
+                            <Grid>
+                                <Path x:Name="Arrow" Data="M 0,0 L 4,4 L 8,0"
+                                      Stroke="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
+                                      StrokeThickness="1.5" VerticalAlignment="Center" HorizontalAlignment="Center"
+                                      RenderTransformOrigin="0.5,0.5">
+                                    <Path.RenderTransform>
+                                        <RotateTransform Angle="-90"/>
+                                    </Path.RenderTransform>
+                                </Path>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Arrow" Property="RenderTransform">
+                                    <Setter.Value>
+                                        <RotateTransform Angle="0"/>
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Expander style using minimal toggle -->
+        <Style x:Key="MinimalExpander" TargetType="Expander">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Expander">
+                        <DockPanel>
+                            <StackPanel DockPanel.Dock="Top" Orientation="Horizontal">
+                                <ToggleButton x:Name="ExpanderToggle"
+                                              IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                              Style="{StaticResource MinimalExpanderToggle}"
+                                              VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                <ContentPresenter ContentSource="Header" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <ContentPresenter x:Name="ExpanderContent" DockPanel.Dock="Bottom"
+                                              Visibility="Collapsed"/>
+                        </DockPanel>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsExpanded" Value="True">
+                                <Setter TargetName="ExpanderContent" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- User Message Template - themed for VS -->
+        <DataTemplate x:Key="UserTemplate" DataType="{x:Type vm:ChatItemViewModel}">
+            <Border Background="{DynamicResource {x:Static vs:VsBrushes.CommandBarGradientBeginKey}}"
+                    BorderBrush="{DynamicResource {x:Static vs:VsBrushes.CommandBarBorderKey}}"
+                    BorderThickness="1" CornerRadius="4" Padding="8,6" Margin="12,2,12,2">
+                <StackPanel>
+                    <TextBlock Text="You" FontWeight="SemiBold"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTabSelectedTextKey}}"
+                               FontSize="11" Margin="0,0,0,2"/>
+                    <TextBlock Text="{Binding Content}"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"
+                               TextWrapping="Wrap" FontSize="13"/>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <!-- Assistant Message Template - uses shared MarkdownWebView -->
+        <DataTemplate x:Key="AssistantTemplate" DataType="{x:Type vm:ChatItemViewModel}">
+            <StackPanel Margin="12,2,12,2">
+                <TextBlock Text="Assistant" FontWeight="SemiBold"
+                           Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTabSelectedTextKey}}"
+                           FontSize="11" Margin="8,6,8,2"/>
+                <controls:MarkdownWebView
+                    Markdown="{Binding Content}"
+                    Visibility="{Binding IsStreaming, Converter={StaticResource BoolToVis}}"
+                    MaxRenderHeight="400"
+                    Margin="8,0"/>
+                <controls:MarkdownWebView
+                    Markdown="{Binding Content}"
+                    Visibility="{Binding IsCompleted, Converter={StaticResource BoolToVis}}"
+                    Margin="8,0"/>
+            </StackPanel>
+        </DataTemplate>
+
+        <!-- Thinking Template -->
+        <DataTemplate x:Key="ThinkingTemplate" DataType="{x:Type vm:ChatItemViewModel}">
+            <Border Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}"
+                    Margin="12,2,12,2">
+                <Expander IsExpanded="{Binding IsExpanded}"
+                          Style="{StaticResource MinimalExpander}"
+                          Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
+                          FontSize="12">
+                    <Expander.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="{Binding Status, Converter={StaticResource StatusToSymbol}}"
+                                       Foreground="{Binding Status, Converter={StaticResource StatusToColor}}"
+                                       FontSize="10" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBlock Text="{Binding ExpanderTitle}"
+                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
+                                       FontSize="12" FontStyle="Italic" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Expander.Header>
+                    <Border Background="{DynamicResource {x:Static vs:VsBrushes.CommandBarGradientBeginKey}}"
+                            CornerRadius="4" Padding="10,8" Margin="18,4,0,4">
+                        <TextBlock Text="{Binding Content}"
+                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
+                                   FontFamily="Cascadia Code,Consolas,Courier New"
+                                   TextWrapping="Wrap" FontSize="11"
+                                   MaxHeight="200"
+                                   TextTrimming="CharacterEllipsis"/>
+                    </Border>
+                </Expander>
+            </Border>
+        </DataTemplate>
+
+        <!-- Tool Step Template -->
+        <DataTemplate x:Key="ToolStepTemplate" DataType="{x:Type vm:ChatItemViewModel}">
+            <Border Margin="12,2,12,2" Padding="8,6">
+            <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{Binding Status, Converter={StaticResource StatusToSymbol}}"
+                                   Foreground="{Binding Status, Converter={StaticResource StatusToColor}}"
+                                   FontSize="10" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <TextBlock Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
+                                   FontSize="12" VerticalAlignment="Center">
+                            <Run Text="["/><Run Text="{Binding ToolName, Mode=OneWay}"/><Run Text="]"/>
+                        </TextBlock>
+                        <TextBlock Text="{Binding Title}"
+                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTabSelectedTextKey}}"
+                                   FontSize="12" Margin="6,0,0,0" VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+                    <Expander IsExpanded="{Binding IsExpanded}"
+                              Header="{Binding ExpanderTitle}"
+                              Style="{StaticResource MinimalExpander}"
+                              Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
+                              FontSize="11" Margin="18,4,0,0"
+                              Visibility="{Binding IsStreaming, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{Binding Content}"
+                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
+                                   FontFamily="Cascadia Code,Consolas,Courier New"
+                                   TextWrapping="Wrap" FontSize="11" Margin="0,4,0,0"/>
+                    </Expander>
+                    <controls:MarkdownWebView
+                        Markdown="{Binding Body}"
+                        MaxRenderHeight="120"
+                        Margin="18,4,0,0"
+                        Visibility="{Binding Body, Converter={StaticResource NotNullToVis}}"/>
+            </StackPanel>
+            </Border>
+        </DataTemplate>
+
+        <ui:ChatItemTemplateSelector x:Key="ChatItemSelector"
+            UserTemplate="{StaticResource UserTemplate}"
+            AssistantTemplate="{StaticResource AssistantTemplate}"
+            ToolStepTemplate="{StaticResource ToolStepTemplate}"
+            ThinkingTemplate="{StaticResource ThinkingTemplate}"/>
+    </UserControl.Resources>
+
+    <DockPanel Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}">
+        <!-- Header -->
+        <Border DockPanel.Dock="Top"
+                Background="{DynamicResource {x:Static vs:VsBrushes.CommandBarGradientBeginKey}}"
+                Padding="16,8"
+                BorderBrush="{DynamicResource {x:Static vs:VsBrushes.CommandBarBorderKey}}"
+                BorderThickness="0,0,0,1">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Button Content="Clear" Command="{Binding ClearCommand}"
+                            Style="{StaticResource {x:Static vs:VsResourceKeys.ButtonStyleKey}}"
+                            Padding="8,4"/>
+                </StackPanel>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="VsAgentic Chat"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"
+                               FontSize="14" FontWeight="SemiBold"/>
+                    <TextBlock Text="{Binding WorkingDirectory}"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
+                               FontSize="11" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- Input Area -->
+        <Border DockPanel.Dock="Bottom"
+                Background="{DynamicResource {x:Static vs:VsBrushes.CommandBarGradientBeginKey}}"
+                Padding="12,8"
+                BorderBrush="{DynamicResource {x:Static vs:VsBrushes.CommandBarBorderKey}}"
+                BorderThickness="0,1,0,0">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="Send"
+                        Command="{Binding SendCommand}"
+                        Style="{StaticResource {x:Static vs:VsResourceKeys.ButtonStyleKey}}"
+                        VerticalAlignment="Bottom" Margin="8,0,0,0"
+                        Padding="16,6"/>
+                <TextBox x:Name="InputTextBox"
+                         Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
+                         Style="{StaticResource {x:Static vs:VsResourceKeys.TextBoxStyleKey}}"
+                         Padding="8,6" FontSize="13"
+                         AcceptsReturn="True" TextWrapping="Wrap"
+                         MinHeight="36" MaxHeight="120"
+                         VerticalScrollBarVisibility="Auto"
+                         KeyDown="InputTextBox_KeyDown"/>
+            </DockPanel>
+        </Border>
+
+        <!-- Busy indicator -->
+        <Border DockPanel.Dock="Bottom"
+                Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}"
+                Padding="16,4"
+                Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
+            <TextBlock Text="Thinking..."
+                       Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
+                       FontSize="12" FontStyle="Italic"/>
+        </Border>
+
+        <!-- Chat Messages Area -->
+        <ScrollViewer x:Name="ChatScrollViewer"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled"
+                      Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}">
+            <ItemsControl ItemsSource="{Binding Items}"
+                          ItemTemplateSelector="{StaticResource ChatItemSelector}"
+                          Padding="0,8"/>
+        </ScrollViewer>
+    </DockPanel>
+</UserControl>

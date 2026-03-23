@@ -97,6 +97,7 @@ public partial class ChatSessionViewModel : ObservableObject
                     ToolName = msg.ToolName,
                     Title = msg.Title ?? "",
                     Body = msg.Body,
+                    BodyMode = ParseEnum<OutputBodyMode>(msg.BodyMode ?? "Markdown"),
                     ExpanderTitle = msg.ExpanderTitle ?? "",
                     Status = ParseEnum<OutputItemStatus>(msg.StatusText),
                     IsStreaming = false
@@ -273,6 +274,7 @@ public partial class ChatSessionViewModel : ObservableObject
                 else if (!string.IsNullOrEmpty(item.Body) && item.ToolName != "AI")
                 {
                     vm.Body = item.Body;
+                    vm.BodyMode = item.BodyMode;
                 }
 
                 _activeItems.TryRemove(item.Id, out _);
@@ -286,6 +288,7 @@ public partial class ChatSessionViewModel : ObservableObject
                     ToolName = vm.ToolName,
                     Title = vm.Title,
                     Body = vm.Body,
+                    BodyMode = vm.BodyMode.ToString(),
                     ExpanderTitle = vm.ExpanderTitle,
                     StatusText = vm.Status.ToString(),
                     CreatedUtc = DateTime.UtcNow

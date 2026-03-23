@@ -8,6 +8,7 @@ public class PersistedMessage
     public string? ToolName { get; set; }
     public string? Title { get; set; }
     public string? Body { get; set; }
+    public string? BodyMode { get; set; }
     public string? ExpanderTitle { get; set; }
     public string StatusText { get; set; } = "Success";
     public DateTime CreatedUtc { get; set; }

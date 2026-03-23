@@ -8,12 +8,19 @@ public enum OutputItemStatus
     Info
 }
 
+public enum OutputBodyMode
+{
+    Markdown,
+    Html
+}
+
 public record OutputItem
 {
     public required string Id { get; init; }
     public required string ToolName { get; init; }
     public required string Title { get; set; }
     public OutputItemStatus Status { get; set; } = OutputItemStatus.Pending;
+    public OutputBodyMode BodyMode { get; set; } = OutputBodyMode.Markdown;
     public string? Body { get; set; }
     public string? Delta { get; set; }
 }

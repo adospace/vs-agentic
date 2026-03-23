@@ -18,6 +18,9 @@ public partial class ChatItemViewModel : ObservableObject
     private string? _body;
 
     [ObservableProperty]
+    private OutputBodyMode _bodyMode = OutputBodyMode.Markdown;
+
+    [ObservableProperty]
     private OutputItemStatus _status = OutputItemStatus.Pending;
 
     [ObservableProperty]

@@ -35,15 +35,6 @@ public class EditToolService(
 
         try
         {
-            // Safety: must have read the file first
-            if (!sessionTracker.HasBeenRead(fullPath))
-            {
-                item.Status = OutputItemStatus.Error;
-                item.Body = "Must read file before editing";
-                outputListener.OnStepCompleted(item);
-                return new EditResult(0, [], "Must read file before editing. Use the read tool first.");
-            }
-
             // Safety: no-op detection
             if (oldString == newString)
             {
@@ -63,7 +54,10 @@ public class EditToolService(
 
             logger.LogDebug("Editing file '{FilePath}' (replaceAll={ReplaceAll})", fullPath, replaceAll);
 
-            var contents = await Task.Run(() => File.ReadAllText(fullPath));
+            // Detect encoding so we preserve BOM / charset on write-back
+            using var reader = new StreamReader(fullPath, detectEncodingFromByteOrderMarks: true);
+            var contents = await reader.ReadToEndAsync();
+            var encoding = reader.CurrentEncoding;
 
             // Count matches
             var count = CountOccurrences(contents, oldString);
@@ -93,7 +87,7 @@ public class EditToolService(
                 ? contents.Replace(oldString, newString)
                 : ReplaceFirst(contents, oldString, newString);
 
-            await Task.Run(() => File.WriteAllText(fullPath, result));
+            await Task.Run(() => File.WriteAllText(fullPath, result, encoding));
 
             // Calculate affected line numbers
             var affectedLines = GetAffectedLines(result, newString);

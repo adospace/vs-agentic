@@ -9,6 +9,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Web.WebView2.Core;
+using VsAgentic.Services.Abstractions;
 
 namespace VsAgentic.UI.Controls;
 
@@ -36,6 +37,19 @@ public partial class MarkdownWebView : UserControl
     {
         get => (string?)GetValue(MarkdownProperty);
         set => SetValue(MarkdownProperty, value);
+    }
+
+    public static readonly DependencyProperty BodyModeProperty =
+        DependencyProperty.Register(
+            nameof(BodyMode),
+            typeof(OutputBodyMode),
+            typeof(MarkdownWebView),
+            new PropertyMetadata(OutputBodyMode.Markdown));
+
+    public OutputBodyMode BodyMode
+    {
+        get => (OutputBodyMode)GetValue(BodyModeProperty);
+        set => SetValue(BodyModeProperty, value);
     }
 
     public static readonly DependencyProperty MaxRenderHeightProperty =
@@ -316,18 +330,19 @@ public partial class MarkdownWebView : UserControl
         }
     }
 
-    private async Task UpdateContentAsync(string? markdown)
+    private async Task UpdateContentAsync(string? content)
     {
         if (!_isWebViewReady) return;
 
         try
         {
-            var escaped = JsonSerializer.Serialize(markdown ?? "");
-            await WebView.ExecuteScriptAsync($"renderMarkdown({escaped})");
+            var escaped = JsonSerializer.Serialize(content ?? "");
+            var function = BodyMode == OutputBodyMode.Html ? "renderHtml" : "renderMarkdown";
+            await WebView.ExecuteScriptAsync($"{function}({escaped})");
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Markdown render failed: {ex.Message}");
+            System.Diagnostics.Debug.WriteLine($"Content render failed: {ex.Message}");
         }
     }
 }

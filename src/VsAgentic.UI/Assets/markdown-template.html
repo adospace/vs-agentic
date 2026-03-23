@@ -97,6 +97,11 @@ function renderMarkdown(text) {
     notifyHeight();
 }
 
+function renderHtml(html) {
+    document.body.innerHTML = html || '';
+    notifyHeight();
+}
+
 function notifyHeight() {
     var h = document.body.scrollHeight;
     window.chrome.webview.postMessage(JSON.stringify({type:'height', value:h}));

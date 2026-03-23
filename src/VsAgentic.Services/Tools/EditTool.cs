@@ -21,7 +21,7 @@ public static class EditTool
             new AIFunctionFactoryOptions
             {
                 Name = "edit",
-                Description = "Perform exact string replacements in a file. The file must have been read first using the read tool. Finds old_string in the file and replaces it with new_string. By default, old_string must appear exactly once (provide more surrounding context if ambiguous). Set replace_all=true to replace every occurrence. Prefer this over bash sed/awk for file modifications."
+                Description = "Perform exact string replacements in a file. Finds old_string in the file and replaces it with new_string. By default, old_string must appear exactly once (provide more surrounding context if ambiguous). Set replace_all=true to replace every occurrence. Prefer this over bash sed/awk for file modifications."
             });
     }
 

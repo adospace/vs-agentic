@@ -165,6 +165,7 @@
                     </Expander>
                     <controls:MarkdownWebView
                         Markdown="{Binding Body}"
+                        BodyMode="{Binding BodyMode}"
                         MaxRenderHeight="120"
                         Margin="18,4,0,0"
                         Visibility="{Binding Body, Converter={StaticResource NotNullToVis}}"/>

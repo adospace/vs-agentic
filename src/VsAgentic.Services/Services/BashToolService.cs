@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.Configuration;
 using Microsoft.Extensions.Logging;
@@ -68,6 +69,7 @@ public class BashToolService(
 
             item.Status = OutputItemStatus.Error;
             item.Title = title;
+            item.BodyMode = OutputBodyMode.Html;
             item.Body = FormatBody(command, "", $"Command timed out after {_options.BashTimeoutSeconds} seconds.");
             outputListener.OnStepCompleted(item);
 
@@ -92,6 +94,7 @@ public class BashToolService(
         var result = new BashResult(process.ExitCode, stdout, stderr);
 
         item.Status = result.ExitCode == 0 ? OutputItemStatus.Success : OutputItemStatus.Error;
+        item.BodyMode = OutputBodyMode.Html;
         item.Body = FormatBody(command, result.StandardOutput, result.StandardError);
         outputListener.OnStepCompleted(item);
 
@@ -100,18 +103,17 @@ public class BashToolService(
 
     private static string FormatBody(string command, string stdout, string stderr)
     {
-        var output = !string.IsNullOrEmpty(stderr)
-            ? stderr
-            : stdout;
+        var output = !string.IsNullOrEmpty(stderr) ? stderr : stdout;
+        var encodedCommand = WebUtility.HtmlEncode(command);
+        var encodedOutput = string.IsNullOrEmpty(output)
+            ? "<em>empty</em>"
+            : $"<pre>{WebUtility.HtmlEncode(output)}</pre>";
 
-        return $"| | |\n|---|---|\n| **IN** | `{command}` |\n| **OUT** | {EscapeForTable(output)} |";
-    }
-
-    private static string EscapeForTable(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-            return "*empty*";
-
-        return text.Replace("|", "\\|").Replace("\r\n", " ↵ ").Replace("\n", " ↵ ");
+        return $"""
+            <table>
+            <tr><td><strong>IN</strong></td><td><code>{encodedCommand}</code></td></tr>
+            <tr><td><strong>OUT</strong></td><td>{encodedOutput}</td></tr>
+            </table>
+            """;
     }
 }

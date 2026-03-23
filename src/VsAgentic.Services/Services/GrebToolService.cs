@@ -21,6 +21,9 @@ public class GrebToolService(
     {
         if (string.IsNullOrWhiteSpace(pattern)) throw new ArgumentException("Value cannot be null or whitespace.", nameof(pattern));
 
+        logger.LogTrace("[Greb] Args received — pattern: {Pattern}, glob: {Glob}, path: {Path}, caseInsensitive: {CI}, filesOnly: {FO}, contextBefore: {CB}, contextAfter: {CA}",
+            pattern, grebOptions.Glob, grebOptions.Path, grebOptions.CaseInsensitive, grebOptions.FilesOnly, grebOptions.ContextBefore, grebOptions.ContextAfter);
+
         var searchDir = grebOptions.Path ?? _options.WorkingDirectory;
 
         if (!Directory.Exists(searchDir))
@@ -69,7 +72,7 @@ public class GrebToolService(
                 if (IsBinaryFile(fullPath))
                     continue;
 
-                var lines = await Task.Run(() => File.ReadAllLines(fullPath));
+                var lines = await Task.Run(() => TextFormatHelper.ReadFileLinesShared(fullPath));
                 var fileHasMatch = false;
 
                 for (var i = 0; i < lines.Length; i++)
@@ -121,6 +124,8 @@ public class GrebToolService(
             outputListener.OnStepCompleted(item);
 
             logger.LogDebug("Greb found {MatchCount} matches in {FileCount} files", allMatches.Count, matchedFiles.Count);
+            logger.LogTrace("[Greb] Result — {MatchCount} matches in {FileCount} files, truncated: {Truncated}",
+                allMatches.Count, matchedFiles.Count, truncated);
 
             return result;
         }

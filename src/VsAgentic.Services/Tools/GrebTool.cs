@@ -13,11 +13,11 @@ public static class GrebTool
             async ([Description("The regular expression pattern to search for in file contents. Supports full regex syntax (e.g. 'log.*Error', 'function\\s+\\w+').")] string pattern,
                    [Description("Optional glob pattern to filter which files to search (e.g. '*.cs', '**/*.json', 'src/**/*.ts'). If not specified, searches all files recursively.")] string? glob,
                    [Description("Optional directory to search in. If not specified, searches from the project working directory.")] string? path,
-                   [Description("Case-insensitive search. Defaults to false.")] bool caseInsensitive,
-                   [Description("Number of lines to show before each match. Defaults to 0.")] int contextBefore,
-                   [Description("Number of lines to show after each match. Defaults to 0.")] int contextAfter,
-                   [Description("If true, only return file paths that contain matches instead of the matching lines. Defaults to false.")] bool filesOnly,
-                   CancellationToken cancellationToken) =>
+                   [Description("Case-insensitive search. Defaults to false.")] bool caseInsensitive = false,
+                   [Description("Number of lines to show before each match. Defaults to 0.")] int contextBefore = 0,
+                   [Description("Number of lines to show after each match. Defaults to 0.")] int contextAfter = 0,
+                   [Description("If true, only return file paths that contain matches instead of the matching lines. Defaults to false.")] bool filesOnly = false,
+                   CancellationToken cancellationToken = default) =>
             {
                 var options = new GrebOptions
                 {
@@ -30,7 +30,7 @@ public static class GrebTool
                 };
 
                 var result = await grebService.SearchAsync(pattern, options, cancellationToken);
-                return FormatResult(result, filesOnly);
+                return ToolLogger.LogResult("Greb", FormatResult(result, filesOnly));
             },
             new AIFunctionFactoryOptions
             {

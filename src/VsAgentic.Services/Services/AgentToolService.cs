@@ -25,6 +25,8 @@ public class AgentToolService(
         if (string.IsNullOrWhiteSpace(task)) throw new ArgumentException("Value cannot be null or whitespace.", nameof(task));
         if (string.IsNullOrWhiteSpace(systemPrompt)) throw new ArgumentException("Value cannot be null or whitespace.", nameof(systemPrompt));
 
+        logger.LogTrace("[Agent] Args received — task: {Task}, skill: {Skill}", task, skill);
+
         var composedPrompt = $"{_options.AgentSystemPrompt}\n\n# Your Role\n{systemPrompt}";
 
         var agentItem = new OutputItem

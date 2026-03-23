@@ -15,7 +15,7 @@ public static class ReadTool
                    CancellationToken cancellationToken) =>
             {
                 var result = await readService.ReadAsync(filePath, offset, limit, cancellationToken);
-                return FormatResult(result);
+                return ToolLogger.LogResult("Read", FormatResult(result));
             },
             new AIFunctionFactoryOptions
             {

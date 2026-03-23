@@ -14,7 +14,7 @@ public static class WriteTool
                    CancellationToken cancellationToken) =>
             {
                 var result = await writeService.WriteAsync(filePath, content, cancellationToken);
-                return FormatResult(result);
+                return ToolLogger.LogResult("Write", FormatResult(result));
             },
             new AIFunctionFactoryOptions
             {

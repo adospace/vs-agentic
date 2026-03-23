@@ -18,6 +18,9 @@ public class WriteToolService(
         if (string.IsNullOrWhiteSpace(filePath)) throw new ArgumentException("Value cannot be null or whitespace.", nameof(filePath));
         if (content is null) throw new ArgumentNullException(nameof(content));
 
+        logger.LogTrace("[Write] Args received — filePath: {FilePath}, content length: {ContentLength} chars", filePath, content.Length);
+        logger.LogTrace("[Write] Content first 500 chars:\n{ContentPreview}", content.Length > 500 ? content.Substring(0, 500) + "..." : content);
+
         var fullPath = Path.IsPathRooted(filePath)
             ? filePath
             : Path.Combine(_options.WorkingDirectory, filePath);
@@ -50,7 +53,7 @@ public class WriteToolService(
             string? existingLineEnding = null;
             if (fileExists)
             {
-                var existingBytes = await Task.Run(() => File.ReadAllBytes(fullPath));
+                var existingBytes = await Task.Run(() => TextFormatHelper.ReadFileBytesShared(fullPath));
                 encoding = TextFormatHelper.DetectEncoding(existingBytes);
                 var existingText = encoding.GetString(existingBytes);
                 existingLineEnding = TextFormatHelper.DetectLineEnding(existingText);
@@ -71,7 +74,7 @@ public class WriteToolService(
             var tempPath = fullPath + ".tmp";
             try
             {
-                await Task.Run(() => File.WriteAllText(tempPath, content, encoding));
+                await Task.Run(() => TextFormatHelper.WriteFileShared(tempPath, content, encoding));
                 if (File.Exists(fullPath)) File.Delete(fullPath);
                 File.Move(tempPath, fullPath);
             }
@@ -85,6 +88,8 @@ public class WriteToolService(
             var created = !fileExists;
 
             logger.LogDebug("{Action} file '{FilePath}' ({Length} chars)",
+                created ? "Created" : "Overwrote", fullPath, content.Length);
+            logger.LogTrace("[Write] Result — {Action} '{FilePath}', {Length} chars written",
                 created ? "Created" : "Overwrote", fullPath, content.Length);
 
             // Mark as read so subsequent edits are allowed

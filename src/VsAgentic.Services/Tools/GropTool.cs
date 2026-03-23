@@ -15,7 +15,7 @@ public static class GropTool
                    CancellationToken cancellationToken) =>
             {
                 var result = await gropService.FindAsync(pattern, path, cancellationToken);
-                return FormatResult(result);
+                return ToolLogger.LogResult("Grop", FormatResult(result));
             },
             new AIFunctionFactoryOptions
             {

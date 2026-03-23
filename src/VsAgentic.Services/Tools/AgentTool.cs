@@ -32,7 +32,8 @@ public static class AgentTool
                 if (!SkillPrompts.TryGetValue(effectiveSkill, out var systemPrompt))
                     return $"[Unknown skill '{effectiveSkill}'. Available skills: {string.Join(", ", SkillPrompts.Keys)}]";
 
-                return await agentService.RunAsync(task, systemPrompt, effectiveSkill, cancellationToken);
+                var result = await agentService.RunAsync(task, systemPrompt, effectiveSkill, cancellationToken);
+                return ToolLogger.LogResult("Agent", result);
             },
             new AIFunctionFactoryOptions
             {

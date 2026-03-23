@@ -15,6 +15,7 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.5" />
     <PackageReference Include="Polly.Core" Version="8.6.0" />
+    <PackageReference Include="Serilog" Version="4.3.1" />
     <PackageReference Include="ReverseMarkdown" Version="4.6.0" />
     <PackageReference Include="System.Text.Json" Version="10.0.3" />
     <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />

@@ -70,4 +70,55 @@ internal static class TextFormatHelper
             return System.Text.Encoding.BigEndianUnicode; // UTF-16 BE
         return new System.Text.UTF8Encoding(false);
     }
+
+    /// <summary>
+    /// Reads a file using FileShare.ReadWrite so it works even when VS or another process holds the file open.
+    /// </summary>
+    public static string ReadFileShared(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var sr = new StreamReader(fs, detectEncodingFromByteOrderMarks: true);
+        return sr.ReadToEnd();
+    }
+
+    /// <summary>
+    /// Reads a file as lines using FileShare.ReadWrite.
+    /// </summary>
+    public static string[] ReadFileLinesShared(string path)
+    {
+        var content = ReadFileShared(path);
+        return content.Split(new[] { "\r\n", "\r", "\n" }, System.StringSplitOptions.None);
+    }
+
+    /// <summary>
+    /// Reads a file's raw bytes using FileShare.ReadWrite.
+    /// </summary>
+    public static byte[] ReadFileBytesShared(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var ms = new System.IO.MemoryStream();
+        fs.CopyTo(ms);
+        return ms.ToArray();
+    }
+
+    /// <summary>
+    /// Reads a file detecting encoding, returns content + encoding. Uses FileShare.ReadWrite.
+    /// </summary>
+    public static (string Content, System.Text.Encoding Encoding) ReadFileWithEncoding(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var sr = new StreamReader(fs, detectEncodingFromByteOrderMarks: true);
+        var content = sr.ReadToEnd();
+        return (content, sr.CurrentEncoding);
+    }
+
+    /// <summary>
+    /// Writes a file using FileShare.ReadWrite so it works even when VS holds the file open.
+    /// </summary>
+    public static void WriteFileShared(string path, string content, System.Text.Encoding encoding)
+    {
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.ReadWrite);
+        using var sw = new StreamWriter(fs, encoding);
+        sw.Write(content);
+    }
 }

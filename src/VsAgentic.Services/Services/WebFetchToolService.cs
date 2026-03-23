@@ -25,6 +25,8 @@ public class WebFetchToolService(
 
     public async Task<WebFetchResult> FetchAsync(string url, CancellationToken cancellationToken = default)
     {
+        logger.LogTrace("[WebFetch] Args received — url: {Url}", url);
+
         if (string.IsNullOrWhiteSpace(url))
             return new WebFetchResult("", 0, false, "URL cannot be empty.");
 

@@ -15,7 +15,7 @@ public static class BashTool
                    CancellationToken cancellationToken) =>
             {
                 var result = await bashService.ExecuteAsync(command, title, cancellationToken);
-                return FormatResult(result);
+                return ToolLogger.LogResult("Bash", FormatResult(result));
             },
             new AIFunctionFactoryOptions
             {

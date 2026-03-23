@@ -17,6 +17,8 @@ public class ReadToolService(
     {
         if (string.IsNullOrWhiteSpace(filePath)) throw new ArgumentException("Value cannot be null or whitespace.", nameof(filePath));
 
+        logger.LogTrace("[Read] Args received — filePath: {FilePath}, offset: {Offset}, limit: {Limit}", filePath, offset, limit);
+
         var fullPath = Path.IsPathRooted(filePath)
             ? filePath
             : Path.Combine(_options.WorkingDirectory, filePath);
@@ -43,7 +45,7 @@ public class ReadToolService(
 
             logger.LogDebug("Reading file '{FilePath}' (offset={Offset}, limit={Limit})", fullPath, offset, limit);
 
-            var allLines = await Task.Run(() => File.ReadAllLines(fullPath));
+            var allLines = await Task.Run(() => TextFormatHelper.ReadFileLinesShared(fullPath));
             var totalLines = allLines.Length;
 
             var startLine = Math.Min(Math.Max(offset ?? 0, 0), totalLines);
@@ -97,6 +99,8 @@ public class ReadToolService(
             outputListener.OnStepCompleted(item);
 
             logger.LogDebug("Read {LineCount} lines from '{FilePath}' (total {TotalLines})", lineCount, fullPath, totalLines);
+            logger.LogTrace("[Read] Result — {ContentLength} chars, {LineCount} lines, truncated: {Truncated}", content.Length, lineCount, truncated);
+            logger.LogTrace("[Read] Content returned to AI:\n{Content}", content);
 
             return new ReadResult(content, totalLines, truncated, null);
         }

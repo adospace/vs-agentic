@@ -18,6 +18,8 @@ public class BashToolService(
     {
         if (string.IsNullOrWhiteSpace(command)) throw new ArgumentException("Value cannot be null or whitespace.", nameof(command));
 
+        logger.LogTrace("[Bash] Args received — command: {Command}, title: {Title}", command, title);
+
         if (!File.Exists(_options.GitBashPath))
             throw new InvalidOperationException($"Git Bash not found at: {_options.GitBashPath}");
 
@@ -88,6 +90,9 @@ public class BashToolService(
             stderr = stderr.Substring(0, safetyLimit) + "\n... [hard truncated — stderr exceeded 512 KB]";
 
         logger.LogDebug("Bash command exited with code {ExitCode}", process.ExitCode);
+        logger.LogTrace("[Bash] stdout ({StdoutLen} chars):\n{Stdout}", stdout.Length, stdout);
+        if (!string.IsNullOrEmpty(stderr))
+            logger.LogTrace("[Bash] stderr ({StderrLen} chars):\n{Stderr}", stderr.Length, stderr);
 
         var result = new BashResult(process.ExitCode, stdout, stderr);
 

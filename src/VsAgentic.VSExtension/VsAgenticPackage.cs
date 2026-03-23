@@ -1,3 +1,4 @@
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using VsAgentic.Services.Abstractions;
@@ -9,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
+using Serilog;
 using VsAgentic.VSExtension.ToolWindows;
 using Task = System.Threading.Tasks.Task;
 
@@ -93,7 +95,20 @@ public sealed class VsAgenticPackage : AsyncPackage
             ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
         var services = new ServiceCollection();
-        services.AddLogging();
+
+        var logPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "VsAgentic", "logs", "vsagentic-.log");
+
+        Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.Verbose()
+            .MinimumLevel.Override("Microsoft", Serilog.Events.LogEventLevel.Warning)
+            .MinimumLevel.Override("System", Serilog.Events.LogEventLevel.Warning)
+            .WriteTo.File(logPath, rollingInterval: Serilog.RollingInterval.Day,
+                outputTemplate: "{Timestamp:HH:mm:ss.fff} [{Level:u3}] [{SourceContext}] {Message:lj}{NewLine}{Exception}")
+            .CreateLogger();
+
+        services.AddLogging(builder => builder.AddSerilog(dispose: true));
 
         var outputListener = new OutputListener();
         services.AddSingleton(outputListener);

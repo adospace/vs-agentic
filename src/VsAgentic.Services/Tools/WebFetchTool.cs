@@ -14,7 +14,7 @@ public static class WebFetchTool
                    CancellationToken cancellationToken) =>
             {
                 var result = await webFetchService.FetchAsync(url, cancellationToken);
-                return FormatResult(result);
+                return ToolLogger.LogResult("WebFetch", FormatResult(result));
             },
             new AIFunctionFactoryOptions
             {

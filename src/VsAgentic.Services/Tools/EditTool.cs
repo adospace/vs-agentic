@@ -12,11 +12,11 @@ public static class EditTool
             async ([Description("The absolute or relative path to the file to edit.")] string filePath,
                    [Description("The exact text to find and replace. Must match the file content character-for-character, including whitespace and indentation. If this string appears multiple times, either provide more surrounding context to make it unique or set replaceAll to true.")] string oldString,
                    [Description("The text to replace old_string with. Must be different from old_string.")] string newString,
-                   [Description("If true, replaces ALL occurrences of old_string. Defaults to false, which requires old_string to be unique in the file.")] bool replaceAll,
-                   CancellationToken cancellationToken) =>
+                   [Description("If true, replaces ALL occurrences of old_string. Defaults to false, which requires old_string to be unique in the file.")] bool replaceAll = false,
+                   CancellationToken cancellationToken = default) =>
             {
                 var result = await editService.EditAsync(filePath, oldString, newString, replaceAll, cancellationToken);
-                return FormatResult(result);
+                return ToolLogger.LogResult("Edit", FormatResult(result));
             },
             new AIFunctionFactoryOptions
             {

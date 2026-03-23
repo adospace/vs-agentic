@@ -18,6 +18,8 @@ public class GropToolService(
     {
         if (string.IsNullOrWhiteSpace(pattern)) throw new ArgumentException("Value cannot be null or whitespace.", nameof(pattern));
 
+        logger.LogTrace("[Grop] Args received — pattern: {Pattern}, path: {Path}", pattern, path);
+
         var searchDir = path ?? _options.WorkingDirectory;
 
         if (!Directory.Exists(searchDir))
@@ -37,8 +39,14 @@ public class GropToolService(
         {
             logger.LogDebug("Grop searching for pattern '{Pattern}' in '{Directory}'", pattern, searchDir);
 
+            // If the pattern doesn't contain a path separator or recursive wildcard,
+            // auto-prepend **/ so it searches recursively (e.g. "*.cs" → "**/*.cs")
+            var effectivePattern = pattern;
+            if (!pattern.Contains('/') && !pattern.Contains('\\') && !pattern.Contains("**"))
+                effectivePattern = "**/" + pattern;
+
             var matcher = new Matcher(StringComparison.OrdinalIgnoreCase);
-            matcher.AddInclude(pattern);
+            matcher.AddInclude(effectivePattern);
 
             var result = matcher.Execute(
                 new Microsoft.Extensions.FileSystemGlobbing.Abstractions.DirectoryInfoWrapper(
@@ -61,6 +69,7 @@ public class GropToolService(
             outputListener.OnStepCompleted(item);
 
             logger.LogDebug("Grop found {Count} matches", matches.Count);
+            logger.LogTrace("[Grop] Result — {Count} matches, truncated: {Truncated}", matches.Count, truncated);
 
             return Task.FromResult(gropResult);
         }

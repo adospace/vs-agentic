@@ -11,7 +11,7 @@ public static class ReadTool
         return AIFunctionFactory.Create(
             async ([Description("The path to the file to read. Can be absolute or relative to the working directory.")] string filePath,
                    [Description("Zero-based line offset to start reading from. Defaults to 0 (beginning of file).")] int? offset,
-                   [Description("Maximum number of lines to read. Defaults to reading all remaining lines from the offset.")] int? limit,
+                   [Description("Maximum number of lines to read. Defaults to 200 lines. Use offset and limit to paginate through larger files.")] int? limit,
                    CancellationToken cancellationToken) =>
             {
                 var result = await readService.ReadAsync(filePath, offset, limit, cancellationToken);
@@ -20,7 +20,7 @@ public static class ReadTool
             new AIFunctionFactoryOptions
             {
                 Name = "read",
-                Description = "Read the contents of a file with line numbers. Supports offset and limit parameters to read specific sections of large files without loading everything. Use this to inspect source code, configuration files, and other text files. Prefer this over bash cat/head/tail."
+                Description = "Read the contents of a file with line numbers. Returns up to 200 lines by default. Use offset and limit to read specific sections of larger files — when you already know which part you need, only read that part. Prefer this over bash cat/head/tail."
             });
     }
 

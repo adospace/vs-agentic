@@ -47,24 +47,46 @@ public class ReadToolService(
             var totalLines = allLines.Length;
 
             var startLine = Math.Min(Math.Max(offset ?? 0, 0), totalLines);
-            var lineCount = limit ?? (totalLines - startLine);
+            // Apply default line limit when caller doesn't specify one
+            var maxLines = _options.MaxReadLines;
+            var lineCount = limit ?? Math.Min(totalLines - startLine, maxLines);
             lineCount = Math.Min(Math.Max(lineCount, 0), totalLines - startLine);
 
-            // Format with line numbers (1-based)
+            var truncated = (startLine + lineCount) < totalLines;
+
+            // Format with right-aligned line numbers and a clear separator.
+            // Using " | " instead of "\t" avoids ambiguity with tab-indented content.
+            var maxLineNumber = startLine + lineCount;
+            var lineNumWidth = maxLineNumber.ToString().Length;
             var numbered = new string[lineCount];
             for (var i = 0; i < lineCount; i++)
             {
-                numbered[i] = $"{startLine + i + 1}\t{allLines[startLine + i]}";
+                var lineNum = (startLine + i + 1).ToString().PadLeft(lineNumWidth);
+                numbered[i] = $"{lineNum} | {allLines[startLine + i]}";
             }
 
             var content = string.Join("\n", numbered);
 
-            // Truncate if content exceeds MaxOutputChars
-            var truncated = false;
+            // Safety net: truncate at char limit if individual lines are extremely long
             if (content.Length > _options.MaxOutputChars)
             {
-                content = content.Substring(0, _options.MaxOutputChars) + $"\n... [truncated at {_options.MaxOutputChars} chars]";
-                truncated = true;
+                // Re-truncate at a line boundary instead of mid-line
+                var charBudget = _options.MaxOutputChars;
+                var linesInBudget = 0;
+                var charCount = 0;
+                for (var i = 0; i < numbered.Length; i++)
+                {
+                    var lineLen = numbered[i].Length + (i > 0 ? 1 : 0); // +1 for \n separator
+                    if (charCount + lineLen > charBudget) break;
+                    charCount += lineLen;
+                    linesInBudget++;
+                }
+
+                if (linesInBudget < numbered.Length && linesInBudget > 0)
+                {
+                    content = string.Join("\n", numbered.Take(linesInBudget));
+                    truncated = true;
+                }
             }
 
             // Track that this file has been read (enables editing)

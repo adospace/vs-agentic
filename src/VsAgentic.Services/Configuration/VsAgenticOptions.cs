@@ -19,6 +19,23 @@ public class VsAgenticOptions
         - Broad exploration or multi-step research → 'agent' (delegates to a sub-agent)
         - 'bash' is ONLY for: git commands, builds, scripts, package management, and operations no other tool covers.
 
+        # Read Output Format
+        The 'read' tool outputs lines prefixed with right-aligned line numbers and ' | ':
+          1 | first line
+          2 | second line
+        The line number prefix is NOT part of the file content. Never include it when using 'edit' or 'write'.
+
+        # Large Output Handling
+        When tool output (bash, greb, grop) exceeds the size limit, the full output is saved to a temp file
+        and you receive a preview plus the file path. Use the 'read' tool with offset/limit to page through
+        the full output. Do NOT re-run the command — the data is already saved.
+
+        # After Editing Files
+        - When 'edit' or 'write' reports success, trust the result. Do NOT re-read the file just to verify formatting.
+        - Only re-read if you need to see the surrounding context for a subsequent edit.
+        - If a file is large and the read output shows only partial content, use offset/limit to read specific sections rather than trying to read the entire file.
+        - Preserve the file's existing indentation style (tabs vs spaces) and line endings. Do not reformat code you didn't change.
+
         Commands run in the project working directory via Git Bash on Windows.
         """;
     public string AgentSystemPrompt { get; set; } = """
@@ -41,4 +58,5 @@ public class VsAgenticOptions
         """;
     public int BashTimeoutSeconds { get; set; } = 30;
     public int MaxOutputChars { get; set; } = 5000;
+    public int MaxReadLines { get; set; } = 200;
 }

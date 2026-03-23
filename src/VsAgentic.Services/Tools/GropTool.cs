@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.Services;
 using Microsoft.Extensions.AI;
 
 namespace VsAgentic.Services.Tools;
@@ -35,6 +36,7 @@ public static class GropTool
         if (!string.IsNullOrEmpty(result.Error))
             parts.Add($"[note]: {result.Error}");
 
-        return string.Join("\n", parts);
+        var output = string.Join("\n", parts);
+        return OutputSpillHelper.SpillIfNeeded(output, "grop");
     }
 }

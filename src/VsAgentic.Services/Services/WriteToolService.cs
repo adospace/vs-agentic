@@ -45,12 +45,22 @@ public class WriteToolService(
                 return new WriteResult(false, "Must read existing file before overwriting. Use the read tool first.");
             }
 
-            // Checkpoint existing content before overwriting
+            // Detect encoding and line endings from existing file before overwriting
+            System.Text.Encoding encoding = new System.Text.UTF8Encoding(false);
+            string? existingLineEnding = null;
             if (fileExists)
             {
-                var existing = await Task.Run(() => File.ReadAllText(fullPath));
-                sessionTracker.PushCheckpoint(fullPath, existing);
+                var existingBytes = await Task.Run(() => File.ReadAllBytes(fullPath));
+                encoding = TextFormatHelper.DetectEncoding(existingBytes);
+                var existingText = encoding.GetString(existingBytes);
+                existingLineEnding = TextFormatHelper.DetectLineEnding(existingText);
+
+                sessionTracker.PushCheckpoint(fullPath, existingText);
             }
+
+            // Normalize line endings to match the existing file (or OS default for new files)
+            var targetLineEnding = existingLineEnding ?? Environment.NewLine;
+            content = TextFormatHelper.NormalizeLineEndings(content, targetLineEnding);
 
             // Ensure parent directories exist
             var directory = Path.GetDirectoryName(fullPath);
@@ -61,7 +71,7 @@ public class WriteToolService(
             var tempPath = fullPath + ".tmp";
             try
             {
-                await Task.Run(() => File.WriteAllText(tempPath, content));
+                await Task.Run(() => File.WriteAllText(tempPath, content, encoding));
                 if (File.Exists(fullPath)) File.Delete(fullPath);
                 File.Move(tempPath, fullPath);
             }

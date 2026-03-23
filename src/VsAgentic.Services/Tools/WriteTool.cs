@@ -10,7 +10,7 @@ public static class WriteTool
     {
         return AIFunctionFactory.Create(
             async ([Description("The absolute or relative path to the file to write. Parent directories are created automatically if they don't exist.")] string filePath,
-                   [Description("The full content to write to the file. This will replace the entire file contents if the file already exists.")] string content,
+                   [Description("The full content to write to the file. This will replace the entire file contents if the file already exists. IMPORTANT: Preserve the exact indentation style (tabs vs spaces) and formatting of the existing codebase. Do NOT include line numbers from the read tool output — only the actual file content.")] string content,
                    CancellationToken cancellationToken) =>
             {
                 var result = await writeService.WriteAsync(filePath, content, cancellationToken);

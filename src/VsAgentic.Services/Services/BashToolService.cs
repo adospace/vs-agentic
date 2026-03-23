@@ -79,15 +79,13 @@ public class BashToolService(
         var stdout = await stdoutTask;
         var stderr = await stderrTask;
 
-        // Truncate large output
-        if (stdout.Length > _options.MaxOutputChars)
-        {
-            stdout = stdout.Substring(0, _options.MaxOutputChars) + $"\n... [truncated at {_options.MaxOutputChars} chars]";
-        }
-        if (stderr.Length > _options.MaxOutputChars)
-        {
-            stderr = stderr.Substring(0, _options.MaxOutputChars) + $"\n... [truncated at {_options.MaxOutputChars} chars]";
-        }
+        // Hard safety limit to prevent OOM from runaway commands.
+        // The actual output management (spill to temp file) happens in BashTool.FormatResult.
+        const int safetyLimit = 512 * 1024; // 512 KB
+        if (stdout.Length > safetyLimit)
+            stdout = stdout.Substring(0, safetyLimit) + "\n... [hard truncated — output exceeded 512 KB]";
+        if (stderr.Length > safetyLimit)
+            stderr = stderr.Substring(0, safetyLimit) + "\n... [hard truncated — stderr exceeded 512 KB]";
 
         logger.LogDebug("Bash command exited with code {ExitCode}", process.ExitCode);
 

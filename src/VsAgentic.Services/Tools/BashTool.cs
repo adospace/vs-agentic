@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.Services;
 using Microsoft.Extensions.AI;
 
 namespace VsAgentic.Services.Tools;
@@ -36,6 +37,7 @@ public static class BashTool
         if (result.ExitCode != 0)
             parts.Add($"[exit code: {result.ExitCode}]");
 
-        return parts.Count > 0 ? string.Join("\n", parts) : "[no output]";
+        var output = parts.Count > 0 ? string.Join("\n", parts) : "[no output]";
+        return OutputSpillHelper.SpillIfNeeded(output, "bash");
     }
 }

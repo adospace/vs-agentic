@@ -59,15 +59,28 @@ public class EditToolService(
             var contents = await reader.ReadToEndAsync();
             var encoding = reader.CurrentEncoding;
 
-            // Count matches
+            // Handle line ending mismatches between AI input (\n) and file content (\r\n or mixed).
+            // Strategy: try exact match first. If that fails, normalize everything to \n,
+            // do the replacement, then re-normalize the result to the file's dominant line ending.
             var count = CountOccurrences(contents, oldString);
+            // Detect the file's dominant line ending before any normalization
+            var originalLineEnding = TextFormatHelper.DetectLineEnding(contents) ?? Environment.NewLine;
 
             if (count == 0)
             {
-                item.Status = OutputItemStatus.Error;
-                item.Body = "old_string not found";
-                outputListener.OnStepCompleted(item);
-                return new EditResult(0, [], $"old_string not found in {Path.GetFileName(fullPath)}. Make sure it matches exactly, including whitespace and indentation.");
+                // Try line-ending-insensitive matching: normalize everything to \n
+                contents = TextFormatHelper.NormalizeLineEndings(contents, "\n");
+                oldString = TextFormatHelper.NormalizeLineEndings(oldString, "\n");
+                newString = TextFormatHelper.NormalizeLineEndings(newString, "\n");
+                count = CountOccurrences(contents, oldString);
+
+                if (count == 0)
+                {
+                    item.Status = OutputItemStatus.Error;
+                    item.Body = "old_string not found";
+                    outputListener.OnStepCompleted(item);
+                    return new EditResult(0, [], $"old_string not found in {Path.GetFileName(fullPath)}. Make sure it matches exactly, including whitespace and indentation.");
+                }
             }
 
             if (count > 1 && !replaceAll)
@@ -87,10 +100,14 @@ public class EditToolService(
                 ? contents.Replace(oldString, newString)
                 : ReplaceFirst(contents, oldString, newString);
 
+            // Ensure the result uses the file's original dominant line ending
+            result = TextFormatHelper.NormalizeLineEndings(result, originalLineEnding);
+
             await Task.Run(() => File.WriteAllText(fullPath, result, encoding));
 
-            // Calculate affected line numbers
-            var affectedLines = GetAffectedLines(result, newString);
+            // Calculate affected line numbers (newString must match the result's line endings)
+            var normalizedNewString = TextFormatHelper.NormalizeLineEndings(newString, originalLineEnding);
+            var affectedLines = GetAffectedLines(result, normalizedNewString);
 
             item.Status = OutputItemStatus.Success;
             item.Body = FormatBody(fullPath, replacements, affectedLines);

@@ -97,7 +97,7 @@
         <ColumnDefinition Width="Auto"/>
          <ColumnDefinition Width="*"/>
  </Grid.ColumnDefinitions>
-     <Ellipse Grid.Column="0" Width="28" Height="28"
+     <Ellipse Grid.Column="0" Width="10" Height="10"
            Fill="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
         VerticalAlignment="Top" Margin="0,4,8,0"/>
    <StackPanel Grid.Column="1">
@@ -196,11 +196,6 @@
                 BorderBrush="{DynamicResource {x:Static vs:VsBrushes.CommandBarBorderKey}}"
                 BorderThickness="0,0,0,1">
             <DockPanel>
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button Content="Clear" Command="{Binding ClearCommand}"
-                            Style="{StaticResource {x:Static vs:VsResourceKeys.ButtonStyleKey}}"
-                            Padding="8,4"/>
-                </StackPanel>
                 <StackPanel VerticalAlignment="Center">
                     <TextBlock Text="VsAgentic Chat"
                                Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"

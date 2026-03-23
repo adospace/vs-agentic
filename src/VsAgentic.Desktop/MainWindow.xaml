@@ -144,32 +144,6 @@
             </Setter>
         </Style>
 
-        <Style x:Key="ClearButtonStyle" TargetType="Button">
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="#d4d4d4"/>
-            <Setter Property="BorderBrush" Value="#555"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="12,4"/>
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="4" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter Property="Background" Value="#3c3c3c"/>
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
     </Window.Resources>
 
     <DockPanel>
@@ -177,10 +151,6 @@
         <Border DockPanel.Dock="Top" Background="#333333" Padding="16,10"
                 BorderBrush="#3c3c3c" BorderThickness="0,0,0,1">
             <DockPanel>
-                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button Content="Clear" Command="{Binding ClearCommand}"
-                            Style="{StaticResource ClearButtonStyle}"/>
-                </StackPanel>
                 <StackPanel VerticalAlignment="Center">
                     <TextBlock Text="VsAgentic Desktop" Foreground="#d4d4d4"
                                FontSize="15" FontWeight="SemiBold"/>

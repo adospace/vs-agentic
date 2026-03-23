@@ -85,6 +85,23 @@ public class ChatService(
 
                         foreach (var content in update.Contents)
                         {
+                            // When a tool is invoked (or its result arrives), close the current
+                            // response block so that any text produced *after* the tool becomes
+                            // a brand-new assistant item in the UI.
+                            if (content is FunctionCallContent or FunctionResultContent)
+                            {
+                                if (responseItem is not null)
+                                {
+                                    responseItem.Status = OutputItemStatus.Success;
+                                    responseItem.Delta = null;
+                                    outputListener.OnStepCompleted(responseItem);
+                                    responseItem = null;
+                                    responseBuilder.Clear();
+                                }
+
+                                continue;
+                            }
+
                             if (content is TextReasoningContent reasoning)
                             {
                                 // If we were building a response, close it (interleaved thinking)

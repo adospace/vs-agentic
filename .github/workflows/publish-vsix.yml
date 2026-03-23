@@ -8,103 +8,103 @@ on:
 jobs:
   publish:
     runs-on: windows-latest
- permissions:
-      contents: read
-    
+    permissions:
+      contents: write
+
     steps:
-   - name: Checkout code
+      - name: Checkout code
         uses: actions/checkout@v4
-    
+
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-  
-  - name: Extract version from tag
+
+      - name: Extract version from tag
         id: version
-     shell: pwsh
-        run: |
-       $tag = "${{ github.ref_name }}"
-        $version = $tag -replace '^v', ''
-          if ($version -notmatch '^\d+\.\d+\.\d+') {
-            Write-Error "Invalid tag format. Use semantic versioning: v1.0.0"
-     exit 1
-       }
-        echo "version=$version" >> $env:GITHUB_OUTPUT
-  Write-Host "Version extracted: $version"
-    
-   - name: Update version in vsixmanifest
         shell: pwsh
         run: |
-     $manifestPath = "VsAgentic.VSExtension/source.extension.vsixmanifest"
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+') {
+            Write-Error "Invalid tag format. Use semantic versioning: v1.0.0"
+            exit 1
+          }
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Version extracted: $version"
+
+      - name: Update version in vsixmanifest
+        shell: pwsh
+        run: |
+          $manifestPath = "src/VsAgentic.VSExtension/source.extension.vsixmanifest"
           $version = "${{ steps.version.outputs.version }}"
-          
-      [xml]$manifest = Get-Content $manifestPath
+
+          [xml]$manifest = Get-Content $manifestPath
           $manifest.PackageManifest.Metadata.Identity.Version = $version
           $manifest.Save($manifestPath)
-    
+
           Write-Host "Updated manifest version to: $version"
           Get-Content $manifestPath | Select-String "Version="
-    
+
       - name: Restore NuGet packages
-      run: dotnet restore VsAgentic.slnx
-  
+        run: dotnet restore src/VsAgentic.slnx
+
       - name: Build VSIX package
-        run: dotnet build VsAgentic.slnx -c Release -v minimal
-      
+        run: dotnet build src/VsAgentic.slnx -c Release -v minimal
+
       - name: Locate VSIX artifact
         id: vsix
         shell: pwsh
-run: |
-          $vsixPath = Get-ChildItem -Path "VsAgentic.VSExtension/bin/Release" -Filter "*.vsix" -Recurse | Select-Object -First 1
-      if (-not $vsixPath) {
-          Write-Error "VSIX file not found in build output"
+        run: |
+          $vsixPath = Get-ChildItem -Path "src/VsAgentic.VSExtension/bin/Release" -Filter "*.vsix" -Recurse | Select-Object -First 1
+          if (-not $vsixPath) {
+            Write-Error "VSIX file not found in build output"
             exit 1
-  }
-      echo "path=$($vsixPath.FullName)" >> $env:GITHUB_OUTPUT
-     Write-Host "Found VSIX: $($vsixPath.Name)"
- 
+          }
+          echo "path=$($vsixPath.FullName)" >> $env:GITHUB_OUTPUT
+          Write-Host "Found VSIX: $($vsixPath.Name)"
+
       - name: Publish to VS Marketplace
         shell: pwsh
-  run: |
+        run: |
           dotnet tool install -g Microsoft.VisualStudio.VisualStudioPublisher
           VsixPublisher publish `
-  -payload "${{ steps.vsix.outputs.path }}" `
-   -personalAccessToken "${{ secrets.MARKETPLACE_PAT }}"
-  
- - name: Create GitHub Release
+            -payload "${{ steps.vsix.outputs.path }}" `
+            -personalAccessToken "${{ secrets.MARKETPLACE_PAT }}"
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: ${{ steps.vsix.outputs.path }}
-    body: |
-        ## VsAgentic v${{ steps.version.outputs.version }}
- 
-         Published to VS Marketplace
- 
-        - Extension ID: VsAgentic.VSExtension.c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f
-   - Publisher: VsAgentic
-         - VS Targets: Visual Studio 2026 (v18.0+)
-            
-       [Install from VS Marketplace](https://marketplace.visualstudio.com/items?itemName=VsAgentic.VsAgentic)
+          body: |
+            ## VsAgentic v${{ steps.version.outputs.version }}
+
+            Published to VS Marketplace
+
+            - Extension ID: VsAgentic.VSExtension.c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f
+            - Publisher: VsAgentic
+            - VS Targets: Visual Studio 2026 (v18.0+)
+
+            [Install from VS Marketplace](https://marketplace.visualstudio.com/items?itemName=VsAgentic.VsAgentic)
           draft: false
-   prerelease: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        
-    - name: Publish summary
+
+      - name: Publish summary
         shell: pwsh
-      run: |
-       Write-Host "========================================" -ForegroundColor Green
-Write-Host "VSIX Published Successfully!" -ForegroundColor Green
-  Write-Host "========================================" -ForegroundColor Green
+        run: |
+          Write-Host "========================================" -ForegroundColor Green
+          Write-Host "VSIX Published Successfully!" -ForegroundColor Green
+          Write-Host "========================================" -ForegroundColor Green
           Write-Host ""
-    Write-Host "Extension Details:" -ForegroundColor Cyan
-   Write-Host "  Name:      VsAgentic"
-   Write-Host "  Version:   ${{ steps.version.outputs.version }}"
-          Write-Host "  Tag:     ${{ github.ref_name }}"
+          Write-Host "Extension Details:" -ForegroundColor Cyan
+          Write-Host "  Name:      VsAgentic"
+          Write-Host "  Version:   ${{ steps.version.outputs.version }}"
+          Write-Host "  Tag:       ${{ github.ref_name }}"
           Write-Host "  VSIX File: ${{ steps.vsix.outputs.path }}"
-   Write-Host ""
-  Write-Host "Next Steps:" -ForegroundColor Cyan
-Write-Host "  1. Check VS Marketplace: https://marketplace.visualstudio.com/items?itemName=VsAgentic.VsAgentic"
+          Write-Host ""
+          Write-Host "Next Steps:" -ForegroundColor Cyan
+          Write-Host "  1. Check VS Marketplace: https://marketplace.visualstudio.com/items?itemName=VsAgentic.VsAgentic"
           Write-Host "  2. Review GitHub Release: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
           Write-Host ""

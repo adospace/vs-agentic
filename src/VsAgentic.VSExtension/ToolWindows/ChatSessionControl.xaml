@@ -72,36 +72,44 @@
 
         <!-- User Message Template - themed for VS -->
         <DataTemplate x:Key="UserTemplate" DataType="{x:Type vm:ChatItemViewModel}">
-            <Border Background="{DynamicResource {x:Static vs:VsBrushes.CommandBarGradientBeginKey}}"
-                    BorderBrush="{DynamicResource {x:Static vs:VsBrushes.CommandBarBorderKey}}"
-                    BorderThickness="1" CornerRadius="4" Padding="8,6" Margin="12,2,12,2">
-                <StackPanel>
-                    <TextBlock Text="You" FontWeight="SemiBold"
-                               Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTabSelectedTextKey}}"
-                               FontSize="11" Margin="0,0,0,2"/>
-                    <TextBlock Text="{Binding Content}"
-                               Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"
-                               TextWrapping="Wrap" FontSize="13"/>
-                </StackPanel>
+   <Border Background="{DynamicResource {x:Static vs:VsBrushes.CommandBarGradientBeginKey}}"
+         BorderBrush="{DynamicResource {x:Static vs:VsBrushes.CommandBarBorderKey}}"
+ BorderThickness="1" CornerRadius="4" Padding="8,6" Margin="12,2,12,2">
+      <StackPanel>
+         <TextBlock Text="You" FontWeight="SemiBold"
+    Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTabSelectedTextKey}}"
+        FontSize="11" Margin="0,0,0,2"/>
+          <controls:MarkdownWebView
+ Markdown="{Binding Content}"
+           Visibility="{Binding IsStreaming, Converter={StaticResource BoolToVis}}"
+           MaxRenderHeight="400"/>
+   <controls:MarkdownWebView
+               Markdown="{Binding Content}"
+            Visibility="{Binding IsCompleted, Converter={StaticResource BoolToVis}}"/>
+     </StackPanel>
             </Border>
-        </DataTemplate>
+  </DataTemplate>
 
         <!-- Assistant Message Template - uses shared MarkdownWebView -->
         <DataTemplate x:Key="AssistantTemplate" DataType="{x:Type vm:ChatItemViewModel}">
-            <StackPanel Margin="12,2,12,2">
-                <TextBlock Text="Assistant" FontWeight="SemiBold"
-                           Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTabSelectedTextKey}}"
-                           FontSize="11" Margin="8,6,8,2"/>
-                <controls:MarkdownWebView
-                    Markdown="{Binding Content}"
-                    Visibility="{Binding IsStreaming, Converter={StaticResource BoolToVis}}"
-                    MaxRenderHeight="400"
-                    Margin="8,0"/>
-                <controls:MarkdownWebView
-                    Markdown="{Binding Content}"
-                    Visibility="{Binding IsCompleted, Converter={StaticResource BoolToVis}}"
-                    Margin="8,0"/>
-            </StackPanel>
+     <Grid Margin="12,2,12,2">
+ <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="Auto"/>
+         <ColumnDefinition Width="*"/>
+ </Grid.ColumnDefinitions>
+     <Ellipse Grid.Column="0" Width="28" Height="28"
+           Fill="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
+        VerticalAlignment="Top" Margin="0,4,8,0"/>
+   <StackPanel Grid.Column="1">
+                 <controls:MarkdownWebView
+       Markdown="{Binding Content}"
+          Visibility="{Binding IsStreaming, Converter={StaticResource BoolToVis}}"
+            MaxRenderHeight="400"/>
+         <controls:MarkdownWebView
+             Markdown="{Binding Content}"
+ Visibility="{Binding IsCompleted, Converter={StaticResource BoolToVis}}"/>
+                </StackPanel>
+            </Grid>
         </DataTemplate>
 
         <!-- Thinking Template -->

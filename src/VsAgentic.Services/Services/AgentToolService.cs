@@ -27,15 +27,15 @@ public class AgentToolService(
 
         var composedPrompt = $"{_options.AgentSystemPrompt}\n\n# Your Role\n{systemPrompt}";
 
-        var item = new OutputItem
+        var agentItem = new OutputItem
         {
             Id = Guid.NewGuid().ToString("N"),
             ToolName = "Agent",
             Title = $"Agent {skill}",
-            Body = systemPrompt,
+            Body = task,
             Status = OutputItemStatus.Pending
         };
-        outputListener.OnStepStarted(item);
+        outputListener.OnStepStarted(agentItem);
 
         var history = new List<ChatMessage>
         {
@@ -54,33 +54,70 @@ public class AgentToolService(
         try
         {
             var updates = new List<ChatResponseUpdate>();
-            var responseBuilder = new StringBuilder();
+            var fullResponseBuilder = new StringBuilder();
 
             await resiliencePipeline.ExecuteAsync(async ct =>
             {
+                OutputItem? responseItem = null;
+                var responseBuilder = new StringBuilder();
+
                 await foreach (var update in chatClient.GetStreamingResponseAsync(history, chatOptions, ct))
                 {
                     updates.Add(update);
 
-                    var text = update.Text;
-                    if (!string.IsNullOrEmpty(text))
+                    foreach (var content in update.Contents)
                     {
-                        responseBuilder.Append(text);
-                        item.Delta = text;
-                        item.Body = responseBuilder.ToString();
-                        item.Title = "Agent responding...";
-                        outputListener.OnStepUpdated(item);
+                        if (content is FunctionCallContent or FunctionResultContent)
+                        {
+                            if (responseItem is not null)
+                            {
+                                responseItem.Status = OutputItemStatus.Success;
+                                responseItem.Delta = null;
+                                outputListener.OnStepCompleted(responseItem);
+                                responseItem = null;
+                                responseBuilder.Clear();
+                            }
+
+                            continue;
+                        }
+
+                        if (content is TextContent textContent && !string.IsNullOrEmpty(textContent.Text))
+                        {
+                            if (responseItem is null)
+                            {
+                                responseItem = new OutputItem
+                                {
+                                    Id = Guid.NewGuid().ToString("N"),
+                                    ToolName = "AI",
+                                    Title = "Agent responding...",
+                                    Status = OutputItemStatus.Pending
+                                };
+                                outputListener.OnStepStarted(responseItem);
+                            }
+
+                            responseBuilder.Append(textContent.Text);
+                            fullResponseBuilder.Append(textContent.Text);
+                            responseItem.Delta = textContent.Text;
+                            responseItem.Body = responseBuilder.ToString();
+                            outputListener.OnStepUpdated(responseItem);
+                        }
                     }
+                }
+
+                if (responseItem is not null)
+                {
+                    responseItem.Status = OutputItemStatus.Success;
+                    responseItem.Delta = null;
+                    outputListener.OnStepCompleted(responseItem);
                 }
             }, cancellationToken);
 
-            var result = responseBuilder.Length > 0 ? responseBuilder.ToString() : "[no response]";
+            var result = fullResponseBuilder.Length > 0 ? fullResponseBuilder.ToString() : "[no response]";
 
-            item.Status = OutputItemStatus.Success;
-            item.Title = "Agent complete";
-            item.Body = result.Length > 500 ? result[..500] + "..." : result;
-            item.Delta = null;
-            outputListener.OnStepCompleted(item);
+            agentItem.Status = OutputItemStatus.Success;
+            agentItem.Title = $"Agent {skill} complete";
+            agentItem.Delta = null;
+            outputListener.OnStepCompleted(agentItem);
 
             logger.LogDebug("Agent completed task. Response length: {Length}", result.Length);
 
@@ -88,10 +125,10 @@ public class AgentToolService(
         }
         catch (Exception ex)
         {
-            item.Status = OutputItemStatus.Error;
-            item.Title = "Agent failed";
-            item.Body = ex.Message;
-            outputListener.OnStepCompleted(item);
+            agentItem.Status = OutputItemStatus.Error;
+            agentItem.Title = "Agent failed";
+            agentItem.Body = ex.Message;
+            outputListener.OnStepCompleted(agentItem);
 
             logger.LogError(ex, "Agent task failed");
             return $"[Agent error: {ex.Message}]";

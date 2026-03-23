@@ -33,6 +33,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IEditToolService, EditToolService>();
         services.AddSingleton<IWriteToolService, WriteToolService>();
         services.AddSingleton<IAgentToolService, AgentToolService>();
+        services.AddSingleton<IWebFetchToolService, WebFetchToolService>();
 
         // Base tools (keyed) — available to the Agent sub-session
         services.AddKeyedSingleton<AITool>("base", (sp, _) =>
@@ -47,6 +48,8 @@ public static class ServiceCollectionExtensions
             (AITool)EditTool.Create(sp.GetRequiredService<IEditToolService>()));
         services.AddKeyedSingleton<AITool>("base", (sp, _) =>
             (AITool)WriteTool.Create(sp.GetRequiredService<IWriteToolService>()));
+        services.AddKeyedSingleton<AITool>("base", (sp, _) =>
+            (AITool)WebFetchTool.Create(sp.GetRequiredService<IWebFetchToolService>()));
 
         // All tools (unkeyed) — available to the main ChatService
         services.AddSingleton<AITool>(sp =>
@@ -63,6 +66,8 @@ public static class ServiceCollectionExtensions
             WriteTool.Create(sp.GetRequiredService<IWriteToolService>()));
         services.AddSingleton<AITool>(sp =>
             AgentTool.Create(sp.GetRequiredService<IAgentToolService>()));
+        services.AddSingleton<AITool>(sp =>
+            WebFetchTool.Create(sp.GetRequiredService<IWebFetchToolService>()));
 
         services.AddChatClient(sp =>
         {

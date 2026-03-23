@@ -16,6 +16,7 @@ public class VsAgenticOptions
         - Read file contents → 'read' (NEVER bash cat/head/tail)
         - Edit files → 'edit' (NEVER bash sed/awk). Always read the file first.
         - Create/overwrite files → 'write'. Read existing files first.
+        - Fetch web pages → 'web_fetch' (converts HTML to Markdown, NEVER use bash curl/wget)
         - Broad exploration or multi-step research → 'agent' (delegates to a sub-agent)
         - 'bash' is ONLY for: git commands, builds, scripts, package management, and operations no other tool covers.
 
@@ -52,6 +53,7 @@ public class VsAgenticOptions
         | Read a file | **read** | bash cat, bash head, bash tail |
         | Edit a file | **edit** (read first) | bash sed, bash awk |
         | Create/overwrite a file | **write** | bash echo, bash cat |
+        | Fetch a web page | **web_fetch** | bash curl, bash wget |
         | Git, builds, scripts | **bash** | — |
 
         If unsure which tool to use, pick grop/greb/read — NOT bash.

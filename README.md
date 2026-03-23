@@ -11,7 +11,7 @@
 ### 🤖 Powered by Anthropic Claude
 VsAgentic connects directly to the Anthropic API and uses the latest Claude models (Haiku, Sonnet, Opus) to understand your questions and act on your codebase — not just answer them.
 
-### 🧰 7 Integrated Agentic Tools
+### 🧰 8 Integrated Agentic Tools
 Claude doesn't just suggest code — it **uses tools** to do the work for you:
 
 | Tool | Description |
@@ -22,6 +22,7 @@ Claude doesn't just suggest code — it **uses tools** to do the work for you:
 | `read` | Read file contents with line numbers, with offset/limit for large files |
 | `edit` | Perform exact string replacements in files — surgical, reviewable edits |
 | `write` | Create new files or overwrite existing ones |
+| `web_fetch` | Fetch a web page and return its content as clean Markdown (HTML converted via ReverseMarkdown) |
 | `agent` | Spawn a sub-agent (Haiku) to handle a focused sub-task in parallel |
 
 ### 🧠 Smart Model Routing

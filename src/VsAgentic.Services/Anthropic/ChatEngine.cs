@@ -35,6 +35,23 @@ public sealed class ChatEngine
     }
 
     /// <summary>
+    /// Maximum number of tool-call loop iterations before forcing a stop.
+    /// Prevents runaway cost from unbounded tool chains.
+    /// </summary>
+    private const int MaxToolIterations = 25;
+
+    /// <summary>
+    /// Thinking budget for the first iteration (planning phase).
+    /// </summary>
+    private const int InitialThinkingBudget = 10000;
+
+    /// <summary>
+    /// Reduced thinking budget for subsequent tool-loop iterations
+    /// (processing results, deciding next step — less reasoning needed).
+    /// </summary>
+    private const int FollowUpThinkingBudget = 4000;
+
+    /// <summary>
     /// Runs a full conversation turn: streams the response, invokes tools if requested,
     /// loops until the model produces end_turn. Appends all messages to history.
     /// </summary>
@@ -45,6 +62,7 @@ public sealed class ChatEngine
         IReadOnlyList<ToolDefinition> tools,
         bool enableThinking,
         Callbacks? callbacks,
+        SessionTokenUsage sessionUsage,
         CancellationToken cancellationToken)
     {
         var toolMap = tools.ToDictionary(t => t.Name, StringComparer.OrdinalIgnoreCase);
@@ -55,40 +73,91 @@ public sealed class ChatEngine
             InputSchema = t.InputSchema
         }).ToList();
 
+        // Set cache_control on the last tool so the API caches system prompt + all tools.
+        // This dramatically reduces input token costs on subsequent calls in the tool loop.
+        if (toolSpecs.Count > 0)
+        {
+            var last = toolSpecs[^1];
+            toolSpecs[^1] = new ToolSpec
+            {
+                Name = last.Name,
+                Description = last.Description,
+                InputSchema = last.InputSchema,
+                CacheControl = new CacheControl { Type = "ephemeral" }
+            };
+        }
+
+        // Build system prompt blocks with cache_control for prompt caching
+        var systemBlocks = MessagesRequest.BuildSystemBlocks(systemPrompt);
+
         // Tool loop: keep sending until model doesn't request more tools
+        var iteration = 0;
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (iteration >= MaxToolIterations)
+            {
+                _logger.LogWarning("Tool loop reached max iterations ({Max}), forcing stop", MaxToolIterations);
+                break;
+            }
+
+            var thinkingBudget = iteration == 0 ? InitialThinkingBudget : FollowUpThinkingBudget;
 
             var request = new MessagesRequest
             {
                 Model = modelId,
                 MaxTokens = enableThinking ? 16000 : 8192,
-                System = systemPrompt,
+                System = systemBlocks,
                 Messages = history,
                 Tools = toolSpecs.Count > 0 ? toolSpecs : null,
                 Stream = true,
-                Thinking = enableThinking ? new ThinkingConfig { Type = "enabled", BudgetTokens = 10000 } : null
+                Thinking = enableThinking ? new ThinkingConfig { Type = "enabled", BudgetTokens = thinkingBudget } : null
             };
 
             var assistantContent = new List<ContentBlock>();
-            string? stopReason = null;
 
             var stream = await _client.StreamAsync(request, cancellationToken);
+            string? stopReason;
+            UsageInfo turnUsage;
             using (stream)
             {
-                stopReason = await ProcessStreamAsync(stream, assistantContent, callbacks, cancellationToken);
+                (stopReason, turnUsage) = await ProcessStreamAsync(stream, assistantContent, callbacks, cancellationToken);
             }
 
-            // Append the assistant message to history
+            // Track cumulative usage
+            sessionUsage.Add(turnUsage);
+
+            _logger.LogInformation(
+                "[Tokens] iter={Iteration} model={Model} in={Input} out={Output} cache_create={CacheCreate} cache_read={CacheRead} | cumulative: in={TotalIn} out={TotalOut} calls={Calls}",
+                iteration, modelId,
+                turnUsage.InputTokens, turnUsage.OutputTokens,
+                turnUsage.CacheCreationInputTokens, turnUsage.CacheReadInputTokens,
+                sessionUsage.TotalInputTokens, sessionUsage.TotalOutputTokens, sessionUsage.ApiCalls);
+
+            // Append the assistant message to history.
+            // Redact thinking content to save tokens — the API requires thinking blocks
+            // in history for signature verification, but the text itself is not needed.
+            var historyContent = assistantContent.Select<ContentBlock, ContentBlock>(b => b switch
+            {
+                ThinkingBlock tb => new ThinkingBlock
+                {
+                    Thinking = "[redacted]",
+                    Signature = tb.Signature
+                },
+                _ => b
+            }).ToList();
+
             history.Add(new Message
             {
                 Role = "assistant",
-                Content = (object)assistantContent.ToList()
+                Content = (object)historyContent
             });
 
-            _logger.LogDebug("Assistant turn complete: {BlockCount} blocks, stop_reason={StopReason}",
-                assistantContent.Count, stopReason);
+            _logger.LogDebug("Assistant turn complete: {BlockCount} blocks, stop_reason={StopReason}, iteration={Iteration}",
+                assistantContent.Count, stopReason, iteration);
+
+            iteration++;
 
             // If no tool use requested, we're done
             if (stopReason != "tool_use") break;
@@ -139,18 +208,19 @@ public sealed class ChatEngine
 
     /// <summary>
     /// Processes the SSE stream, assembling content blocks.
-    /// Returns the stop_reason from the message_delta event.
+    /// Returns the stop_reason and token usage from the stream events.
     ///
     /// CRITICAL: input_json_delta chunks are concatenated via StringBuilder.Append()
     /// with NO trimming, no re-parsing, no normalization. This preserves whitespace exactly.
     /// </summary>
-    private async Task<string?> ProcessStreamAsync(
+    private async Task<(string? StopReason, UsageInfo Usage)> ProcessStreamAsync(
         Stream stream,
         List<ContentBlock> contentBlocks,
         Callbacks? callbacks,
         CancellationToken cancellationToken)
     {
         string? stopReason = null;
+        var usage = new UsageInfo();
 
         // State for the current content block being assembled
         int currentIndex = -1;
@@ -288,6 +358,22 @@ public sealed class ChatEngine
                     break;
                 }
 
+                case "message_start":
+                {
+                    // message_start contains initial usage (input tokens, cache info)
+                    if (evt.Data.TryGetProperty("message", out var msg) &&
+                        msg.TryGetProperty("usage", out var startUsage))
+                    {
+                        if (startUsage.TryGetProperty("input_tokens", out var it))
+                            usage.InputTokens = it.GetInt32();
+                        if (startUsage.TryGetProperty("cache_creation_input_tokens", out var cc))
+                            usage.CacheCreationInputTokens = cc.GetInt32();
+                        if (startUsage.TryGetProperty("cache_read_input_tokens", out var cr))
+                            usage.CacheReadInputTokens = cr.GetInt32();
+                    }
+                    break;
+                }
+
                 case "message_delta":
                 {
                     if (evt.Data.TryGetProperty("delta", out var msgDelta) &&
@@ -295,11 +381,17 @@ public sealed class ChatEngine
                     {
                         stopReason = sr.GetString();
                     }
+                    // message_delta contains final usage (output tokens)
+                    if (evt.Data.TryGetProperty("usage", out var deltaUsage))
+                    {
+                        if (deltaUsage.TryGetProperty("output_tokens", out var ot))
+                            usage.OutputTokens = ot.GetInt32();
+                    }
                     break;
                 }
             }
         }
 
-        return stopReason;
+        return (stopReason, usage);
     }
 }

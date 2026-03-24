@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using VsAgentic.Services.Abstractions;
@@ -101,7 +101,7 @@ public sealed class VsAgenticPackage : AsyncPackage
             "VsAgentic", "logs", "vsagentic-.log");
 
         Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Verbose()
+            .MinimumLevel.Debug()
             .MinimumLevel.Override("Microsoft", Serilog.Events.LogEventLevel.Warning)
             .MinimumLevel.Override("System", Serilog.Events.LogEventLevel.Warning)
             .WriteTo.File(logPath, rollingInterval: Serilog.RollingInterval.Day,
@@ -159,7 +159,14 @@ public sealed class VsAgenticPackage : AsyncPackage
         await _instance.JoinableTaskFactory.SwitchToMainThreadAsync();
 
         await ShowSessionListWindowAsync();
-        _instance._sessionListViewModel?.NewSessionCommand.Execute(null);
+
+        // Only create a new empty session when there are no existing sessions,
+        // to avoid accumulating empty sessions on every reload/startup.
+        var vm = _instance._sessionListViewModel;
+        if (vm is not null && vm.Sessions.Count == 0)
+        {
+            vm.NewSessionCommand.Execute(null);
+        }
     }
 
     private static async Task OpenOrActivateSessionAsync(SessionInfo session)

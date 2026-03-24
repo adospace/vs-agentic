@@ -11,7 +11,7 @@ internal static class ToolLogger
 {
     public static string LogResult(string toolName, string result)
     {
-        Log.Verbose("[{ToolName}] → Returning to AI ({Length} chars):\n{Result}", toolName, result.Length, result);
+        Log.Debug("[{ToolName}] → Returning to AI ({Length} chars):\n{Result}", toolName, result.Length, result);
         return result;
     }
 }

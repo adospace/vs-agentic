@@ -13,9 +13,13 @@ public sealed class MessagesRequest
     [JsonPropertyName("max_tokens")]
     public required int MaxTokens { get; init; }
 
+    /// <summary>
+    /// System prompt as an array of content blocks (supports cache_control).
+    /// Use <see cref="BuildSystemBlocks"/> to convert a plain string.
+    /// </summary>
     [JsonPropertyName("system")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? System { get; init; }
+    public List<SystemBlock>? System { get; init; }
 
     [JsonPropertyName("messages")]
     public required List<Message> Messages { get; init; }
@@ -30,6 +34,45 @@ public sealed class MessagesRequest
     [JsonPropertyName("thinking")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ThinkingConfig? Thinking { get; init; }
+
+    /// <summary>
+    /// Creates a system block array with cache_control for prompt caching.
+    /// The system prompt is marked as a cache breakpoint. A second breakpoint on the
+    /// last tool definition (set in ChatEngine) ensures tools are also cached.
+    /// Both breakpoints together create an incremental cache: system → system+tools.
+    /// </summary>
+    public static List<SystemBlock>? BuildSystemBlocks(string? systemPrompt)
+    {
+        if (string.IsNullOrEmpty(systemPrompt)) return null;
+        return
+        [
+            new SystemBlock
+            {
+                Type = "text",
+                Text = systemPrompt!,
+                CacheControl = new CacheControl { Type = "ephemeral" }
+            }
+        ];
+    }
+}
+
+public sealed class SystemBlock
+{
+    [JsonPropertyName("type")]
+    public required string Type { get; init; }
+
+    [JsonPropertyName("text")]
+    public required string Text { get; init; }
+
+    [JsonPropertyName("cache_control")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CacheControl? CacheControl { get; init; }
+}
+
+public sealed class CacheControl
+{
+    [JsonPropertyName("type")]
+    public required string Type { get; init; }
 }
 
 public sealed class ThinkingConfig
@@ -51,6 +94,14 @@ public sealed class ToolSpec
 
     [JsonPropertyName("input_schema")]
     public required JsonElement InputSchema { get; init; }
+
+    /// <summary>
+    /// Set on the LAST tool in the list to create a cache breakpoint
+    /// covering system prompt + all tool definitions.
+    /// </summary>
+    [JsonPropertyName("cache_control")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public CacheControl? CacheControl { get; init; }
 }
 
 // ── Message types ──────────────────────────────────────────────────────────────
@@ -236,4 +287,40 @@ public sealed class UsageInfo
 
     [JsonPropertyName("output_tokens")]
     public int OutputTokens { get; set; }
+
+    [JsonPropertyName("cache_creation_input_tokens")]
+    public int CacheCreationInputTokens { get; set; }
+
+    [JsonPropertyName("cache_read_input_tokens")]
+    public int CacheReadInputTokens { get; set; }
+}
+
+/// <summary>
+/// Tracks cumulative token usage across a session for cost monitoring.
+/// </summary>
+public sealed class SessionTokenUsage
+{
+    public int TotalInputTokens { get; private set; }
+    public int TotalOutputTokens { get; private set; }
+    public int TotalCacheCreationTokens { get; private set; }
+    public int TotalCacheReadTokens { get; private set; }
+    public int ApiCalls { get; private set; }
+
+    public void Add(UsageInfo usage)
+    {
+        TotalInputTokens += usage.InputTokens;
+        TotalOutputTokens += usage.OutputTokens;
+        TotalCacheCreationTokens += usage.CacheCreationInputTokens;
+        TotalCacheReadTokens += usage.CacheReadInputTokens;
+        ApiCalls++;
+    }
+
+    public void Reset()
+    {
+        TotalInputTokens = 0;
+        TotalOutputTokens = 0;
+        TotalCacheCreationTokens = 0;
+        TotalCacheReadTokens = 0;
+        ApiCalls = 0;
+    }
 }

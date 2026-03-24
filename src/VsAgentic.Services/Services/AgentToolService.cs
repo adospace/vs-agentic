@@ -95,6 +95,7 @@ public class AgentToolService(
                     }
                 };
 
+                var agentUsage = new SessionTokenUsage();
                 await engine.RunAsync(
                     modelId,
                     systemPrompt,
@@ -102,6 +103,7 @@ public class AgentToolService(
                     toolList,
                     enableThinking,
                     callbacks,
+                    agentUsage,
                     ct);
 
                 if (responseItem is not null)

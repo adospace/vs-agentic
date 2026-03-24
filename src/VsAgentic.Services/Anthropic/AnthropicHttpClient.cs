@@ -30,6 +30,8 @@ public sealed class AnthropicHttpClient
         _httpClient = new HttpClient();
         _httpClient.DefaultRequestHeaders.Add("x-api-key", apiKey);
         _httpClient.DefaultRequestHeaders.Add("anthropic-version", ApiVersion);
+        // Required for prompt caching to activate
+        _httpClient.DefaultRequestHeaders.Add("anthropic-beta", "prompt-caching-2024-07-31");
     }
 
     /// <summary>

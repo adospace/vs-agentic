@@ -23,6 +23,7 @@ public class ChatService(
     private readonly VsAgenticOptions _options = options.Value;
     private readonly List<Message> _history = [];
     private readonly List<ToolDefinition> _tools = tools.ToList();
+    private readonly SessionTokenUsage _sessionUsage = new();
 
     public ModelMode ModelMode
     {
@@ -154,7 +155,7 @@ public class ChatService(
                         }
                     };
 
-                    await engine.RunAsync(modelId, _options.SystemPrompt, _history, _tools, enableThinking, callbacks, ct);
+                    await engine.RunAsync(modelId, _options.SystemPrompt, _history, _tools, enableThinking, callbacks, _sessionUsage, ct);
 
                     // Close any remaining blocks
                     if (thinkingItem is not null)
@@ -194,6 +195,7 @@ public class ChatService(
     public void ClearHistory()
     {
         _history.Clear();
+        _sessionUsage.Reset();
         modelRouter.ResetAutoLock();
         logger.LogInformation("Conversation history cleared");
     }

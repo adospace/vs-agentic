@@ -203,10 +203,7 @@ public class EditToolService(
 
     private static string FormatBody(string filePath, int replacements, IReadOnlyList<int> affectedLines)
     {
-        var linesInfo = affectedLines.Count > 0
-            ? $"lines {string.Join(", ", affectedLines)}"
-            : "applied";
-        return $"`{Path.GetFileName(filePath)}` — {replacements} replacement(s), {linesInfo}";
+        return $"`{Path.GetFileName(filePath)}` — {replacements} replacement(s)";
     }
 
     /// <summary>

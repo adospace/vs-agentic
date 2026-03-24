@@ -12,8 +12,9 @@ public class ModelRouter(
     private const string ClassifierPrompt = """
         Classify the complexity of this user request for an AI coding assistant.
         - "simple": quick questions, short explanations, small lookups, greetings
-        - "moderate": code review, explanations of existing code, reading files, searching
-        - "complex": ANY file editing or creation, debugging, multi-file refactors, architecture design, complex reasoning, feature implementation
+        - "moderate": most coding tasks — editing files, bug fixes, adding features, refactoring within a few files, debugging, code review, reading/searching code
+        - "complex": ONLY tasks requiring deep architectural reasoning across many files, large-scale redesigns, or tasks explicitly requesting thorough analysis of an entire system
+        Default to "moderate" when uncertain. Most coding requests are moderate.
         Respond with ONLY one word: simple, moderate, or complex.
         """;
 
@@ -38,6 +39,13 @@ public class ModelRouter(
             var fixedModel = FixedModels[Mode];
             logger.LogDebug("Model routing: fixed {Mode} → {Model}", Mode, fixedModel);
             return fixedModel;
+        }
+
+        // Already locked at highest tier — skip the classification call entirely
+        if (_lockedAutoModel is not null && GetTierIndex(_lockedAutoModel) >= ModelTier.Length - 1)
+        {
+            logger.LogDebug("Model routing: already at max tier {Model}, skipping classification", _lockedAutoModel);
+            return _lockedAutoModel;
         }
 
         // Auto mode — classify with Haiku, but only allow upward escalation

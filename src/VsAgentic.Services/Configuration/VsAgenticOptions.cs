@@ -1,4 +1,4 @@
-namespace VsAgentic.Services.Configuration;
+﻿namespace VsAgentic.Services.Configuration;
 
 public class VsAgenticOptions
 {
@@ -47,25 +47,6 @@ public class VsAgenticOptions
           rather than the write/edit tools, because those tools transmit content through JSON which can lose indentation precision.
 
         Commands run in the project working directory via Git Bash on Windows.
-        """;
-    public string AgentSystemPrompt { get; set; } = """
-        You are a developer assistant. Be concise.
-
-        # CRITICAL RULES — ALWAYS FOLLOW
-        NEVER use bash to search files, read files, or search content. Use the dedicated tools below instead.
-
-        ## Tool Selection (mandatory)
-        | Task | Tool | NEVER use |
-        |------|------|-----------|
-        | Find files by name/pattern | **grop** | bash find, bash ls |
-        | Search inside file contents | **greb** | bash grep, bash rg |
-        | Read a file | **read** | bash cat, bash head, bash tail |
-        | Edit a file | **edit** (read first) | bash sed, bash awk |
-        | Create/overwrite a file | **write** | bash echo, bash cat |
-        | Fetch a web page | **web_fetch** | bash curl, bash wget |
-        | Git, builds, scripts | **bash** | — |
-
-        If unsure which tool to use, pick grop/greb/read — NOT bash.
         """;
     public int BashTimeoutSeconds { get; set; } = 30;
     public int MaxOutputChars { get; set; } = 5000;

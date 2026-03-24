@@ -1,4 +1,4 @@
-using VsAgentic.Services.Abstractions;
+﻿using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.Anthropic;
 using VsAgentic.Services.Configuration;
 using Microsoft.Extensions.Logging;
@@ -28,12 +28,47 @@ public class ModelRouter(
 
     private string? _lockedAutoModel;
 
+    private static readonly string[] ModelTier = [ModelIds.Haiku, ModelIds.Sonnet, ModelIds.Opus];
+
     public async Task<string> ResolveModelAsync(string userMessage, int conversationDepth, CancellationToken cancellationToken = default)
     {
-        // TODO: restore auto-routing once tool content pipeline issues are verified fixed.
-        var model = ModelIds.Opus;
-        logger.LogDebug("Model routing: forced Opus (debugging mode) — turn {Depth}", conversationDepth);
-        return model;
+        // Fixed mode — always use the configured model
+        if (Mode != ModelMode.Auto)
+        {
+            var fixedModel = FixedModels[Mode];
+            logger.LogDebug("Model routing: fixed {Mode} → {Model}", Mode, fixedModel);
+            return fixedModel;
+        }
+
+        // Auto mode — classify with Haiku, but only allow upward escalation
+        var classified = await ClassifyWithHaikuAsync(userMessage, cancellationToken);
+
+        if (_lockedAutoModel is null)
+        {
+            // First turn: lock to whatever was classified
+            _lockedAutoModel = classified;
+            logger.LogDebug("Model routing: auto initial → {Model} (turn {Depth})", classified, conversationDepth);
+            return classified;
+        }
+
+        // Subsequent turns: only escalate upward, never downgrade
+        if (GetTierIndex(classified) > GetTierIndex(_lockedAutoModel))
+        {
+            logger.LogInformation("Model routing: escalating {Old} → {New} (turn {Depth})", _lockedAutoModel, classified, conversationDepth);
+            _lockedAutoModel = classified;
+        }
+        else
+        {
+            logger.LogDebug("Model routing: staying at {Model} (classified {Classified}, turn {Depth})", _lockedAutoModel, classified, conversationDepth);
+        }
+
+        return _lockedAutoModel;
+    }
+
+    private static int GetTierIndex(string modelId)
+    {
+        var index = Array.IndexOf(ModelTier, modelId);
+        return index >= 0 ? index : 1; // default to middle tier if unknown
     }
 
     public void ResetAutoLock()

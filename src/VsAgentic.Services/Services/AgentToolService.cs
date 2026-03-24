@@ -1,10 +1,8 @@
-using System.Text;
+﻿using System.Text;
 using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.Anthropic;
-using VsAgentic.Services.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using Polly;
 
 namespace VsAgentic.Services.Services;
@@ -12,21 +10,25 @@ namespace VsAgentic.Services.Services;
 public class AgentToolService(
     AnthropicHttpClient httpClient,
     [FromKeyedServices("base")] IEnumerable<ToolDefinition> baseTools,
-    IOptions<VsAgenticOptions> options,
     IOutputListener outputListener,
     ResiliencePipeline resiliencePipeline,
     ILogger<AgentToolService> logger) : IAgentToolService
 {
-    private readonly VsAgenticOptions _options = options.Value;
+    private static readonly Dictionary<AgentTaskLevel, (string ModelId, bool EnableThinking)> LevelConfig = new()
+    {
+        [AgentTaskLevel.Light]    = (ModelIds.Haiku,  EnableThinking: false),
+        [AgentTaskLevel.Standard] = (ModelIds.Sonnet,  EnableThinking: true),
+        [AgentTaskLevel.Heavy]    = (ModelIds.Opus,    EnableThinking: true),
+    };
 
-    public async Task<string> RunAsync(string task, string systemPrompt, string skill = "generic", CancellationToken cancellationToken = default)
+    public async Task<string> RunAsync(string task, string systemPrompt, string skill = "generic",
+        AgentTaskLevel level = AgentTaskLevel.Light, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(task)) throw new ArgumentException("Value cannot be null or whitespace.", nameof(task));
         if (string.IsNullOrWhiteSpace(systemPrompt)) throw new ArgumentException("Value cannot be null or whitespace.", nameof(systemPrompt));
 
-        logger.LogTrace("[Agent] Args received — task: {Task}, skill: {Skill}", task, skill);
-
-        var composedPrompt = $"{_options.AgentSystemPrompt}\n\n# Your Role\n{systemPrompt}";
+        var (modelId, enableThinking) = LevelConfig.TryGetValue(level, out var cfg) ? cfg : LevelConfig[AgentTaskLevel.Light];
+        logger.LogTrace("[Agent] Args received — task: {Task}, skill: {Skill}, level: {Level}, model: {Model}", task, skill, level, modelId);
 
         var agentItem = new OutputItem
         {
@@ -45,7 +47,7 @@ public class AgentToolService(
 
         var toolList = baseTools.ToList();
 
-        logger.LogDebug("Agent starting task with {ToolCount} tools: {Task}", toolList.Count, task);
+        logger.LogDebug("Agent starting task with {ToolCount} tools on {Model}: {Task}", toolList.Count, modelId, task);
 
         try
         {
@@ -94,11 +96,11 @@ public class AgentToolService(
                 };
 
                 await engine.RunAsync(
-                    ModelIds.Haiku,
-                    composedPrompt,
+                    modelId,
+                    systemPrompt,
                     history,
                     toolList,
-                    enableThinking: false,
+                    enableThinking,
                     callbacks,
                     ct);
 

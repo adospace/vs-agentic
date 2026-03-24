@@ -1,8 +1,7 @@
 using System.Text;
-using Anthropic.SDK.Constants;
 using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.Anthropic;
 using VsAgentic.Services.Configuration;
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -11,8 +10,8 @@ using Polly;
 namespace VsAgentic.Services.Services;
 
 public class AgentToolService(
-    IChatClient chatClient,
-    [FromKeyedServices("base")] IEnumerable<AITool> baseTools,
+    AnthropicHttpClient httpClient,
+    [FromKeyedServices("base")] IEnumerable<ToolDefinition> baseTools,
     IOptions<VsAgenticOptions> options,
     IOutputListener outputListener,
     ResiliencePipeline resiliencePipeline,
@@ -39,23 +38,17 @@ public class AgentToolService(
         };
         outputListener.OnStepStarted(agentItem);
 
-        var history = new List<ChatMessage>
+        var history = new List<Message>
         {
-            new(ChatRole.System, composedPrompt),
-            new(ChatRole.User, task)
+            new() { Role = "user", Content = task }
         };
 
-        var chatOptions = new ChatOptions
-        {
-            Tools = baseTools.ToList(),
-            ModelId = AnthropicModels.Claude45Haiku
-        };
+        var toolList = baseTools.ToList();
 
-        logger.LogDebug("Agent starting task with {ToolCount} tools: {Task}", baseTools.Count(), task);
+        logger.LogDebug("Agent starting task with {ToolCount} tools: {Task}", toolList.Count, task);
 
         try
         {
-            var updates = new List<ChatResponseUpdate>();
             var fullResponseBuilder = new StringBuilder();
 
             await resiliencePipeline.ExecuteAsync(async ct =>
@@ -63,48 +56,51 @@ public class AgentToolService(
                 OutputItem? responseItem = null;
                 var responseBuilder = new StringBuilder();
 
-                await foreach (var update in chatClient.GetStreamingResponseAsync(history, chatOptions, ct))
+                var engine = new ChatEngine(httpClient, logger);
+                var callbacks = new ChatEngine.Callbacks
                 {
-                    updates.Add(update);
-
-                    foreach (var content in update.Contents)
+                    OnTextDelta = text =>
                     {
-                        if (content is FunctionCallContent or FunctionResultContent)
+                        if (responseItem is null)
                         {
-                            if (responseItem is not null)
+                            responseItem = new OutputItem
                             {
-                                responseItem.Status = OutputItemStatus.Success;
-                                responseItem.Delta = null;
-                                outputListener.OnStepCompleted(responseItem);
-                                responseItem = null;
-                                responseBuilder.Clear();
-                            }
-
-                            continue;
+                                Id = Guid.NewGuid().ToString("N"),
+                                ToolName = "AI",
+                                Title = "Agent responding...",
+                                Status = OutputItemStatus.Pending
+                            };
+                            outputListener.OnStepStarted(responseItem);
                         }
 
-                        if (content is TextContent textContent && !string.IsNullOrEmpty(textContent.Text))
-                        {
-                            if (responseItem is null)
-                            {
-                                responseItem = new OutputItem
-                                {
-                                    Id = Guid.NewGuid().ToString("N"),
-                                    ToolName = "AI",
-                                    Title = "Agent responding...",
-                                    Status = OutputItemStatus.Pending
-                                };
-                                outputListener.OnStepStarted(responseItem);
-                            }
+                        responseBuilder.Append(text);
+                        fullResponseBuilder.Append(text);
+                        responseItem.Delta = text;
+                        responseItem.Body = responseBuilder.ToString();
+                        outputListener.OnStepUpdated(responseItem);
+                    },
 
-                            responseBuilder.Append(textContent.Text);
-                            fullResponseBuilder.Append(textContent.Text);
-                            responseItem.Delta = textContent.Text;
-                            responseItem.Body = responseBuilder.ToString();
-                            outputListener.OnStepUpdated(responseItem);
+                    OnToolCallStarted = (toolName, toolUseId) =>
+                    {
+                        if (responseItem is not null)
+                        {
+                            responseItem.Status = OutputItemStatus.Success;
+                            responseItem.Delta = null;
+                            outputListener.OnStepCompleted(responseItem);
+                            responseItem = null;
+                            responseBuilder.Clear();
                         }
                     }
-                }
+                };
+
+                await engine.RunAsync(
+                    ModelIds.Haiku,
+                    composedPrompt,
+                    history,
+                    toolList,
+                    enableThinking: false,
+                    callbacks,
+                    ct);
 
                 if (responseItem is not null)
                 {

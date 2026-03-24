@@ -56,15 +56,17 @@ public class ReadToolService(
 
             var truncated = (startLine + lineCount) < totalLines;
 
-            // Format with right-aligned line numbers and a clear separator.
-            // Using " | " instead of "\t" avoids ambiguity with tab-indented content.
+            // Format with right-aligned line numbers and a TAB separator.
+            // The tab creates a hard boundary between the line number and file content,
+            // making it unambiguous for the AI to extract exact whitespace.
+            // This matches the 'cat -n' format that Claude Code uses.
             var maxLineNumber = startLine + lineCount;
             var lineNumWidth = maxLineNumber.ToString().Length;
             var numbered = new string[lineCount];
             for (var i = 0; i < lineCount; i++)
             {
                 var lineNum = (startLine + i + 1).ToString().PadLeft(lineNumWidth);
-                numbered[i] = $"{lineNum} | {allLines[startLine + i]}";
+                numbered[i] = $"{lineNum}\t{allLines[startLine + i]}";
             }
 
             var content = string.Join("\n", numbered);

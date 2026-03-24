@@ -1,6 +1,7 @@
-using System.ComponentModel;
+using System.Text.Json;
 using VsAgentic.Services.Abstractions;
-using Microsoft.Extensions.AI;
+using VsAgentic.Services.Anthropic;
+using VsAgentic.Services.Services;
 
 namespace VsAgentic.Services.Tools;
 
@@ -20,25 +21,37 @@ public static class AgentTool
             """
     };
 
-    public static AIFunction Create(IAgentToolService agentService)
+    private static readonly JsonElement Schema = JsonDocument.Parse("""
     {
-        return AIFunctionFactory.Create(
-            async ([Description("The task for the agent to perform. Be specific about what you want done and what result you expect back.")] string task,
-                   [Description("The agent skill to use. 'explore' for codebase exploration and research. 'generic' for general-purpose tasks. Defaults to 'generic'.")] string skill,
-                   CancellationToken cancellationToken) =>
+        "type": "object",
+        "properties": {
+            "task": { "type": "string", "description": "The task for the agent to perform. Be specific about what you want done and what result you expect back." },
+            "skill": { "type": "string", "description": "The agent skill to use. 'explore' for codebase exploration and research. 'generic' for general-purpose tasks. Defaults to 'generic'." }
+        },
+        "required": ["task"]
+    }
+    """).RootElement.Clone();
+
+    public static ToolDefinition Create(IAgentToolService agentService)
+    {
+        return new ToolDefinition
+        {
+            Name = "agent",
+            Description = "Delegate a task to a sub-agent that runs its own conversation with a faster AI model (Haiku). The agent uses greb, grop, and bash tools. Choose a skill: 'explore' for codebase exploration, file discovery, and code research; 'generic' for general-purpose tasks. Each invocation starts fresh with no memory of previous calls.",
+            InputSchema = Schema,
+            InvokeAsync = async (input, ct) =>
             {
-                var effectiveSkill = string.IsNullOrWhiteSpace(skill) ? "generic" : skill;
+                var task = input.GetProperty("task").GetString()!;
+                var skill = input.TryGetProperty("skill", out var s) && s.ValueKind == JsonValueKind.String
+                    ? s.GetString() ?? "generic"
+                    : "generic";
 
-                if (!SkillPrompts.TryGetValue(effectiveSkill, out var systemPrompt))
-                    return $"[Unknown skill '{effectiveSkill}'. Available skills: {string.Join(", ", SkillPrompts.Keys)}]";
+                if (!SkillPrompts.TryGetValue(skill, out var systemPrompt))
+                    return $"[Unknown skill '{skill}'. Available skills: {string.Join(", ", SkillPrompts.Keys)}]";
 
-                var result = await agentService.RunAsync(task, systemPrompt, effectiveSkill, cancellationToken);
+                var result = await agentService.RunAsync(task, systemPrompt, skill, ct);
                 return ToolLogger.LogResult("Agent", result);
-            },
-            new AIFunctionFactoryOptions
-            {
-                Name = "agent",
-                Description = "Delegate a task to a sub-agent that runs its own conversation with a faster AI model (Haiku). The agent uses greb, grop, and bash tools. Choose a skill: 'explore' for codebase exploration, file discovery, and code research; 'generic' for general-purpose tasks. Each invocation starts fresh with no memory of previous calls."
-            });
+            }
+        };
     }
 }

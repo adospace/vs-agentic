@@ -78,39 +78,44 @@ public class EditToolService(
 
                 if (count == 0)
                 {
-                    // Fallback: whitespace-flexible matching.
-                    // The AI often gets leading indentation wrong when reconstructing from read output.
-                    // Try matching by trimming leading whitespace on each line, then apply the
-                    // replacement using the original file's indentation.
-                    var flexResult = TryFlexibleWhitespaceMatch(contents, oldString, newString, replaceAll);
+                    // Fallback: whitespace-tolerant matching.
+                    // LLMs consistently miscount leading spaces in tool call arguments.
+                    // Match by trimmed line content to LOCATE the region, then apply
+                    // the replacement preserving the FILE's actual indentation.
+                    var flexResult = TryWhitespaceTolerantMatch(contents, oldString, newString, replaceAll);
                     if (flexResult != null)
                     {
-                        logger.LogTrace("[Edit] Whitespace-flexible match succeeded");
+                        logger.LogTrace("[Edit] Whitespace-tolerant match succeeded");
 
-                        // Checkpoint before mutation
                         sessionTracker.PushCheckpoint(fullPath, contents);
 
                         var flexOutput = TextFormatHelper.NormalizeLineEndings(flexResult.Value.Result, originalLineEnding);
                         await Task.Run(() => TextFormatHelper.WriteFileShared(fullPath, flexOutput, encoding));
 
                         var flexAffected = GetAffectedLines(flexOutput,
-                            TextFormatHelper.NormalizeLineEndings(newString, originalLineEnding));
+                            TextFormatHelper.NormalizeLineEndings(flexResult.Value.NewContent, originalLineEnding));
 
                         item.Status = OutputItemStatus.Success;
                         item.Body = FormatBody(fullPath, flexResult.Value.Replacements, flexAffected);
                         outputListener.OnStepCompleted(item);
 
-                        logger.LogDebug("Edited '{FilePath}': {Replacements} replacement(s) (whitespace-flexible match)", fullPath, flexResult.Value.Replacements);
-                        logger.LogTrace("[Edit] Result — {Replacements} replacement(s), affected lines: {AffectedLines}",
-                            flexResult.Value.Replacements, string.Join(", ", flexAffected));
+                        logger.LogDebug("Edited '{FilePath}': {Replacements} replacement(s) (whitespace-tolerant)", fullPath, flexResult.Value.Replacements);
 
                         return new EditResult(flexResult.Value.Replacements, flexAffected, null);
                     }
 
+                    // Truly not found — show hint
+                    var hint = FindNearestMatchHint(contents, oldString);
+                    var errorMsg = $"old_string not found in {Path.GetFileName(fullPath)}. The text must match the file content exactly, including whitespace and indentation. Re-read the file to see the current content.";
+                    if (hint != null)
+                        errorMsg += $"\n\nNearest partial match around line {hint.Value.Line}:\n{hint.Value.Snippet}";
+
+                    logger.LogTrace("[Edit] No match found. Hint: {Hint}", hint?.Snippet ?? "(none)");
+
                     item.Status = OutputItemStatus.Error;
                     item.Body = "old_string not found";
                     outputListener.OnStepCompleted(item);
-                    return new EditResult(0, [], $"old_string not found in {Path.GetFileName(fullPath)}. Make sure it matches exactly, including whitespace and indentation.");
+                    return new EditResult(0, [], errorMsg);
                 }
             }
 
@@ -205,26 +210,37 @@ public class EditToolService(
     }
 
     /// <summary>
-    /// Tries to match oldString against contents by comparing lines with leading whitespace trimmed.
-    /// If a unique match is found, applies the replacement preserving the original file's indentation.
+    /// Whitespace-tolerant matching: matches by trimmed line content, then applies
+    /// the replacement using the FILE's actual indentation (not the AI's broken indentation).
+    ///
+    /// The AI's newString indentation relative to its oldString expresses INTENT
+    /// (e.g. "indent this 2 more spaces"). We compute that relative intent and apply
+    /// it on top of the file's real indentation.
     /// </summary>
-    private static (string Result, int Replacements)? TryFlexibleWhitespaceMatch(
+    private static (string Result, int Replacements, string NewContent)? TryWhitespaceTolerantMatch(
         string contents, string oldString, string newString, bool replaceAll)
     {
         var contentLines = contents.Split('\n');
         var oldLines = oldString.Split('\n');
+        var newLines = newString.Split('\n');
 
         if (oldLines.Length == 0) return null;
 
         // Trim each old line for comparison
         var oldTrimmed = oldLines.Select(l => l.TrimStart()).ToArray();
 
+        // Skip empty trailing lines in oldTrimmed for matching purposes
+        var matchLength = oldTrimmed.Length;
+        while (matchLength > 0 && string.IsNullOrWhiteSpace(oldTrimmed[matchLength - 1]))
+            matchLength--;
+        if (matchLength == 0) return null;
+
         // Find matches by scanning content lines
-        var matchPositions = new List<int>(); // line indices where matches start
-        for (var i = 0; i <= contentLines.Length - oldLines.Length; i++)
+        var matchPositions = new List<int>();
+        for (var i = 0; i <= contentLines.Length - matchLength; i++)
         {
             var match = true;
-            for (var j = 0; j < oldLines.Length; j++)
+            for (var j = 0; j < matchLength; j++)
             {
                 if (contentLines[i + j].TrimStart() != oldTrimmed[j])
                 {
@@ -239,11 +255,15 @@ public class EditToolService(
         if (matchPositions.Count == 0) return null;
         if (matchPositions.Count > 1 && !replaceAll) return null;
 
-        var newLines = newString.Split('\n');
+        // Build the replacement using the FILE's indentation as the base.
+        // For each new line, compute: fileBaseIndent + (aiNewIndent - aiOldBaseIndent)
+        // where aiOldBaseIndent is the indentation of the first non-empty AI oldString line.
+        var aiOldBaseIndent = GetLeadingWhitespace(oldLines.FirstOrDefault(l => l.TrimStart().Length > 0) ?? "");
+        var aiOldBaseLen = ExpandToSpaces(aiOldBaseIndent);
 
-        // Process matches in reverse order so line indices remain valid
         var resultLines = contentLines.ToList();
         var replacements = replaceAll ? matchPositions.Count : 1;
+        string? reindentedNewJoined = null;
 
         for (var m = matchPositions.Count - 1; m >= 0; m--)
         {
@@ -251,45 +271,43 @@ public class EditToolService(
 
             var matchStart = matchPositions[m];
 
-            // Detect the indentation of the first matched line in the original file
-            var originalIndent = GetLeadingWhitespace(contentLines[matchStart]);
-            var oldIndent = GetLeadingWhitespace(oldLines[0]);
+            // The file's actual indentation at the match start
+            var fileBaseIndent = GetLeadingWhitespace(contentLines[matchStart]);
+            var fileBaseLen = ExpandToSpaces(fileBaseIndent);
+            // Use the same indent char as the file (spaces or tabs)
+            var useTabs = fileBaseIndent.Contains('\t');
 
-            // Re-indent newString lines to match the file's indentation
             var reindentedNew = new List<string>();
             for (var j = 0; j < newLines.Length; j++)
             {
-                var newLine = newLines[j];
-                var newLineContent = newLine.TrimStart();
-                if (newLineContent.Length == 0)
+                var trimmed = newLines[j].TrimStart();
+                if (trimmed.Length == 0)
                 {
                     reindentedNew.Add("");
                     continue;
                 }
 
-                if (j == 0)
-                {
-                    // First line: use the original file's indentation
-                    reindentedNew.Add(originalIndent + newLineContent);
-                }
-                else
-                {
-                    // Subsequent lines: calculate relative indent from the AI's first line,
-                    // then apply the same relative offset from the file's indentation
-                    var aiLineIndent = GetLeadingWhitespace(newLines[j]);
-                    var relativeIndent = aiLineIndent.Length > oldIndent.Length
-                        ? aiLineIndent.Substring(oldIndent.Length)
-                        : "";
-                    reindentedNew.Add(originalIndent + relativeIndent + newLineContent);
-                }
+                // How much does the AI want this line indented relative to its base?
+                var aiNewIndentLen = ExpandToSpaces(GetLeadingWhitespace(newLines[j]));
+                var relativeIndent = aiNewIndentLen - aiOldBaseLen;
+
+                // Apply that relative indent to the file's base
+                var targetIndentLen = Math.Max(0, fileBaseLen + relativeIndent);
+                var targetIndent = useTabs
+                    ? new string('\t', targetIndentLen / 4) + new string(' ', targetIndentLen % 4)
+                    : new string(' ', targetIndentLen);
+
+                reindentedNew.Add(targetIndent + trimmed);
             }
 
-            // Replace the matched lines
+            reindentedNewJoined = string.Join("\n", reindentedNew);
+
+            // Replace the matched lines (use full oldLines.Length to include trailing empties)
             resultLines.RemoveRange(matchStart, oldLines.Length);
             resultLines.InsertRange(matchStart, reindentedNew);
         }
 
-        return (string.Join("\n", resultLines), replacements);
+        return (string.Join("\n", resultLines), replacements, reindentedNewJoined ?? newString);
     }
 
     private static string GetLeadingWhitespace(string line)
@@ -298,5 +316,52 @@ public class EditToolService(
         while (i < line.Length && (line[i] == ' ' || line[i] == '\t'))
             i++;
         return line.Substring(0, i);
+    }
+
+    /// <summary>
+    /// Expands tabs to spaces (4-space tab stops) for indent comparison.
+    /// </summary>
+    private static int ExpandToSpaces(string indent)
+    {
+        var count = 0;
+        foreach (var c in indent)
+        {
+            if (c == '\t') count += 4;
+            else count++;
+        }
+        return count;
+    }
+
+    /// <summary>
+    /// Finds the closest partial match for oldString in the file contents to help the AI
+    /// understand what went wrong. Matches by the first non-empty trimmed line of oldString.
+    /// </summary>
+    private static (int Line, string Snippet)? FindNearestMatchHint(string contents, string oldString)
+    {
+        var oldLines = oldString.Split('\n');
+        // Find the first non-empty line to use as search anchor
+        var anchorLine = oldLines.FirstOrDefault(l => l.Trim().Length > 0);
+        if (anchorLine == null) return null;
+        var anchor = anchorLine.Trim();
+
+        var contentLines = contents.Split('\n');
+        for (var i = 0; i < contentLines.Length; i++)
+        {
+            if (contentLines[i].Trim().Contains(anchor) ||
+                (anchor.Length > 20 && contentLines[i].Trim().Contains(anchor.Substring(0, 20))))
+            {
+                // Show a few lines of context around the match
+                var start = Math.Max(0, i - 1);
+                var end = Math.Min(contentLines.Length, i + 4);
+                var snippetLines = new List<string>();
+                for (var j = start; j < end; j++)
+                {
+                    snippetLines.Add($"{j + 1}\t{contentLines[j]}");
+                }
+                return (i + 1, string.Join("\n", snippetLines));
+            }
+        }
+
+        return null;
     }
 }

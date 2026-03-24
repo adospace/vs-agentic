@@ -1,49 +1,45 @@
-using Anthropic.SDK.Constants;
 using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.Anthropic;
 using VsAgentic.Services.Configuration;
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
 namespace VsAgentic.Services.Services;
 
 public class ModelRouter(
-    IChatClient chatClient,
+    AnthropicHttpClient httpClient,
     ILogger<ModelRouter> logger) : IModelRouter
 {
     private const string ClassifierPrompt = """
         Classify the complexity of this user request for an AI coding assistant.
         - "simple": quick questions, short explanations, small lookups, greetings
-        - "moderate": single-file edits, debugging, code review, explanations of existing code
-        - "complex": multi-file refactors, architecture design, complex reasoning, large feature implementation
+        - "moderate": code review, explanations of existing code, reading files, searching
+        - "complex": ANY file editing or creation, debugging, multi-file refactors, architecture design, complex reasoning, feature implementation
         Respond with ONLY one word: simple, moderate, or complex.
         """;
 
     private static readonly Dictionary<ModelMode, string> FixedModels = new()
     {
-        [ModelMode.Simple] = AnthropicModels.Claude45Haiku,
-        [ModelMode.Moderate] = AnthropicModels.Claude46Sonnet,
-        [ModelMode.Complex] = AnthropicModels.Claude46Opus,
+        [ModelMode.Simple] = ModelIds.Haiku,
+        [ModelMode.Moderate] = ModelIds.Sonnet,
+        [ModelMode.Complex] = ModelIds.Opus,
     };
 
     public ModelMode Mode { get; set; } = ModelMode.Auto;
 
+    private string? _lockedAutoModel;
+
     public async Task<string> ResolveModelAsync(string userMessage, int conversationDepth, CancellationToken cancellationToken = default)
     {
-        if (Mode != ModelMode.Auto)
-        {
-            var model = FixedModels[Mode];
-            logger.LogDebug("Model mode {Mode} → {Model}", Mode, model);
-            return model;
-        }
+        // TODO: restore auto-routing once tool content pipeline issues are verified fixed.
+        var model = ModelIds.Opus;
+        logger.LogDebug("Model routing: forced Opus (debugging mode) — turn {Depth}", conversationDepth);
+        return model;
+    }
 
-        // Auto mode: after several turns, lock to Sonnet to keep consistency
-        if (conversationDepth > 4)
-        {
-            logger.LogDebug("Auto mode: deep conversation ({Depth} turns) → Sonnet", conversationDepth);
-            return AnthropicModels.Claude46Sonnet;
-        }
-
-        return await ClassifyWithHaikuAsync(userMessage, cancellationToken);
+    public void ResetAutoLock()
+    {
+        _lockedAutoModel = null;
+        logger.LogDebug("Auto-mode model lock reset");
     }
 
     public async Task<string> GenerateTitleAsync(string userMessage, CancellationToken cancellationToken = default)
@@ -56,14 +52,20 @@ public class ModelRouter(
 
         try
         {
-            var response = await chatClient.GetResponseAsync(
+            var request = new MessagesRequest
+            {
+                Model = ModelIds.Haiku,
+                MaxTokens = 20,
+                Messages =
                 [
-                    new(ChatRole.User, $"{titlePrompt}\n\nUser message: {userMessage}")
+                    new Message { Role = "user", Content = $"{titlePrompt}\n\nUser message: {userMessage}" }
                 ],
-                new ChatOptions { ModelId = AnthropicModels.Claude45Haiku, MaxOutputTokens = 20 },
-                cancellationToken);
+                Stream = false
+            };
 
-            var title = response.Text?.Trim().Trim('"', '\'', '.');
+            var response = await httpClient.SendAsync(request, cancellationToken);
+            var title = AnthropicHttpClient.ExtractText(response)?.Trim().Trim('"', '\'', '.');
+
             if (!string.IsNullOrWhiteSpace(title))
             {
                 logger.LogDebug("Generated session title: \"{Title}\"", title);
@@ -75,7 +77,6 @@ public class ModelRouter(
             logger.LogWarning(ex, "Title generation failed");
         }
 
-        // Fallback: first 40 chars of the user message
         return userMessage.Length <= 40 ? userMessage : userMessage[..40] + "…";
     }
 
@@ -83,20 +84,25 @@ public class ModelRouter(
     {
         try
         {
-            var response = await chatClient.GetResponseAsync(
+            var request = new MessagesRequest
+            {
+                Model = ModelIds.Haiku,
+                MaxTokens = 10,
+                Messages =
                 [
-                    new(ChatRole.User, $"{ClassifierPrompt}\n\nUser request: {userMessage}")
+                    new Message { Role = "user", Content = $"{ClassifierPrompt}\n\nUser request: {userMessage}" }
                 ],
-                new ChatOptions { ModelId = AnthropicModels.Claude45Haiku, MaxOutputTokens = 10 },
-                cancellationToken);
+                Stream = false
+            };
 
-            var classification = response.Text?.Trim().ToLowerInvariant();
+            var response = await httpClient.SendAsync(request, cancellationToken);
+            var classification = AnthropicHttpClient.ExtractText(response)?.Trim().ToLowerInvariant();
 
             var model = classification switch
             {
-                "simple" => AnthropicModels.Claude45Haiku,
-                "complex" => AnthropicModels.Claude46Opus,
-                _ => AnthropicModels.Claude46Sonnet
+                "simple" => ModelIds.Haiku,
+                "complex" => ModelIds.Opus,
+                _ => ModelIds.Sonnet
             };
 
             logger.LogInformation("Auto model routing: \"{Classification}\" → {Model}", classification, model);
@@ -105,7 +111,7 @@ public class ModelRouter(
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Model classification failed, defaulting to Sonnet");
-            return AnthropicModels.Claude46Sonnet;
+            return ModelIds.Sonnet;
         }
     }
 }

@@ -17,4 +17,10 @@ public interface IModelRouter
     /// Uses Haiku for fast, cheap title generation.
     /// </summary>
     Task<string> GenerateTitleAsync(string userMessage, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Resets the auto-mode model lock so the next message triggers a fresh classification.
+    /// Call this when conversation history is cleared.
+    /// </summary>
+    void ResetAutoLock();
 }

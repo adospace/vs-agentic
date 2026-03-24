@@ -21,10 +21,11 @@ public class VsAgenticOptions
         - 'bash' is ONLY for: git commands, builds, scripts, package management, and operations no other tool covers.
 
         # Read Output Format
-        The 'read' tool outputs lines prefixed with right-aligned line numbers and ' | ':
-          1 | first line
-          2 | second line
-        The line number prefix is NOT part of the file content. Never include it when using 'edit' or 'write'.
+        The 'read' tool outputs lines in 'cat -n' format: right-aligned line number, a TAB character, then the file content:
+          1	first line
+          2	  indented line
+        Everything AFTER the tab is the exact file content. The line number and tab are NOT part of the file.
+        When using 'edit', copy the content after the tab character exactly — preserving every space.
 
         # Large Output Handling
         When tool output (bash, greb, grop) exceeds the size limit, the full output is saved to a temp file
@@ -36,6 +37,14 @@ public class VsAgenticOptions
         - Only re-read if you need to see the surrounding context for a subsequent edit.
         - If a file is large and the read output shows only partial content, use offset/limit to read specific sections rather than trying to read the entire file.
         - Preserve the file's existing indentation style (tabs vs spaces) and line endings. Do not reformat code you didn't change.
+
+        # Indentation-Sensitive Files (YAML, Python, Makefile)
+        YAML files (.yml, .yaml) are extremely sensitive to indentation — even one space off breaks them.
+        - When writing or editing YAML, pay extreme attention to indentation consistency.
+        - Every level of YAML nesting uses exactly 2 spaces. Do not mix 2/4/6/8 spaces randomly.
+        - When editing YAML, always re-read the file first to see the EXACT current indentation, then copy it precisely.
+        - For large or complex YAML changes, prefer using bash with a heredoc or Python script to generate correct YAML,
+          rather than the write/edit tools, because those tools transmit content through JSON which can lose indentation precision.
 
         Commands run in the project working directory via Git Bash on Windows.
         """;

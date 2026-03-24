@@ -1,11 +1,9 @@
-using System.Net;
 using System.Net.Http;
-using Anthropic.SDK;
 using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.Anthropic;
 using VsAgentic.Services.Configuration;
 using VsAgentic.Services.Services;
 using VsAgentic.Services.Tools;
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Polly;
@@ -35,53 +33,53 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAgentToolService, AgentToolService>();
         services.AddSingleton<IWebFetchToolService, WebFetchToolService>();
 
-        // Base tools (keyed) — available to the Agent sub-session
-        services.AddKeyedSingleton<AITool>("base", (sp, _) =>
-            (AITool)BashTool.Create(sp.GetRequiredService<IBashToolService>()));
-        services.AddKeyedSingleton<AITool>("base", (sp, _) =>
-            (AITool)GropTool.Create(sp.GetRequiredService<IGropToolService>()));
-        services.AddKeyedSingleton<AITool>("base", (sp, _) =>
-            (AITool)GrebTool.Create(sp.GetRequiredService<IGrebToolService>()));
-        services.AddKeyedSingleton<AITool>("base", (sp, _) =>
-            (AITool)ReadTool.Create(sp.GetRequiredService<IReadToolService>()));
-        services.AddKeyedSingleton<AITool>("base", (sp, _) =>
-            (AITool)EditTool.Create(sp.GetRequiredService<IEditToolService>()));
-        services.AddKeyedSingleton<AITool>("base", (sp, _) =>
-            (AITool)WriteTool.Create(sp.GetRequiredService<IWriteToolService>()));
-        services.AddKeyedSingleton<AITool>("base", (sp, _) =>
-            (AITool)WebFetchTool.Create(sp.GetRequiredService<IWebFetchToolService>()));
-
-        // All tools (unkeyed) — available to the main ChatService
-        services.AddSingleton<AITool>(sp =>
-            BashTool.Create(sp.GetRequiredService<IBashToolService>()));
-        services.AddSingleton<AITool>(sp =>
-            GropTool.Create(sp.GetRequiredService<IGropToolService>()));
-        services.AddSingleton<AITool>(sp =>
-            GrebTool.Create(sp.GetRequiredService<IGrebToolService>()));
-        services.AddSingleton<AITool>(sp =>
-            ReadTool.Create(sp.GetRequiredService<IReadToolService>()));
-        services.AddSingleton<AITool>(sp =>
-            EditTool.Create(sp.GetRequiredService<IEditToolService>()));
-        services.AddSingleton<AITool>(sp =>
-            WriteTool.Create(sp.GetRequiredService<IWriteToolService>()));
-        services.AddSingleton<AITool>(sp =>
-            AgentTool.Create(sp.GetRequiredService<IAgentToolService>()));
-        services.AddSingleton<AITool>(sp =>
-            WebFetchTool.Create(sp.GetRequiredService<IWebFetchToolService>()));
-
-        services.AddChatClient(sp =>
+        // ── Anthropic HTTP client ──────────────────────────────────────────────
+        services.AddSingleton(sp =>
         {
             var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
             if (string.IsNullOrEmpty(apiKey))
                 throw new InvalidOperationException(
                     "ANTHROPIC_API_KEY environment variable is required. Set it before running the application.");
 
-            // AnthropicClient reads ANTHROPIC_API_KEY from env var automatically
-            // .Messages implements IChatClient directly
-            return new AnthropicClient().Messages;
-        })
-        .UseFunctionInvocation();
+            var logger = sp.GetRequiredService<ILogger<AnthropicHttpClient>>();
+            return new AnthropicHttpClient(apiKey, logger);
+        });
 
+        // ── Base tools (keyed) — available to the Agent sub-session ────────────
+        services.AddKeyedSingleton<ToolDefinition>("base", (sp, _) =>
+            BashTool.Create(sp.GetRequiredService<IBashToolService>()));
+        services.AddKeyedSingleton<ToolDefinition>("base", (sp, _) =>
+            GropTool.Create(sp.GetRequiredService<IGropToolService>()));
+        services.AddKeyedSingleton<ToolDefinition>("base", (sp, _) =>
+            GrebTool.Create(sp.GetRequiredService<IGrebToolService>()));
+        services.AddKeyedSingleton<ToolDefinition>("base", (sp, _) =>
+            ReadTool.Create(sp.GetRequiredService<IReadToolService>()));
+        services.AddKeyedSingleton<ToolDefinition>("base", (sp, _) =>
+            EditTool.Create(sp.GetRequiredService<IEditToolService>()));
+        services.AddKeyedSingleton<ToolDefinition>("base", (sp, _) =>
+            WriteTool.Create(sp.GetRequiredService<IWriteToolService>()));
+        services.AddKeyedSingleton<ToolDefinition>("base", (sp, _) =>
+            WebFetchTool.Create(sp.GetRequiredService<IWebFetchToolService>()));
+
+        // ── All tools (unkeyed) — available to the main ChatService ────────────
+        services.AddSingleton(sp =>
+            BashTool.Create(sp.GetRequiredService<IBashToolService>()));
+        services.AddSingleton(sp =>
+            GropTool.Create(sp.GetRequiredService<IGropToolService>()));
+        services.AddSingleton(sp =>
+            GrebTool.Create(sp.GetRequiredService<IGrebToolService>()));
+        services.AddSingleton(sp =>
+            ReadTool.Create(sp.GetRequiredService<IReadToolService>()));
+        services.AddSingleton(sp =>
+            EditTool.Create(sp.GetRequiredService<IEditToolService>()));
+        services.AddSingleton(sp =>
+            WriteTool.Create(sp.GetRequiredService<IWriteToolService>()));
+        services.AddSingleton(sp =>
+            AgentTool.Create(sp.GetRequiredService<IAgentToolService>()));
+        services.AddSingleton(sp =>
+            WebFetchTool.Create(sp.GetRequiredService<IWebFetchToolService>()));
+
+        // ── Resilience pipeline (Polly retry for rate limits) ──────────────────
         services.AddSingleton(sp =>
         {
             var logger = sp.GetRequiredService<ILogger<ResiliencePipeline>>();

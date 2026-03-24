@@ -67,25 +67,19 @@ jobs:
       - name: Publish to VS Marketplace
         shell: pwsh
         run: |
-          # Install VsixPublisher from VSSDK BuildTools
-          $toolsDir = "$env:RUNNER_TEMP\vssdk"
-          nuget install Microsoft.VSSDK.BuildTools -OutputDirectory $toolsDir -ExcludeVersion
-          $vsixPublisher = Join-Path $toolsDir "Microsoft.VSSDK.BuildTools\tools\vssdk\bin\VsixPublisher.exe"
+          # Use VsixPublisher.exe from the Visual Studio installation on the runner
+          $vsInstallPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+            -latest -property installationPath
+          $vsixPublisher = Join-Path $vsInstallPath "VSSDK\VisualStudioIntegration\Tools\Bin\VsixPublisher.exe"
 
           if (-not (Test-Path $vsixPublisher)) {
             Write-Error "VsixPublisher.exe not found at: $vsixPublisher"
+            Write-Host "VS install path: $vsInstallPath"
+            # List what's available for debugging
+            Get-ChildItem -Path $vsInstallPath -Filter "VsixPublisher.exe" -Recurse -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_.FullName }
             exit 1
           }
-
-          # VsixPublisher dependencies are in a lib\ subfolder — copy them next to the exe
-          $vssdkBin = Split-Path $vsixPublisher
-          $libDir = Join-Path $vssdkBin "lib"
-          if (Test-Path $libDir) {
-            Write-Host "Copying dependencies from $libDir to $vssdkBin"
-            Copy-Item "$libDir\*" -Destination $vssdkBin -Force -Recurse
-          } else {
-            Write-Warning "lib subfolder not found at $libDir"
-          }
+          Write-Host "Using VsixPublisher from: $vsixPublisher"
 
           # Create a publish manifest in the repo root so overview path resolves
           $publishManifest = Join-Path "${{ github.workspace }}" "publish-manifest.json"

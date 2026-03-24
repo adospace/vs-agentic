@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
@@ -125,8 +125,8 @@ public sealed class ChatEngine
                 (stopReason, turnUsage) = await ProcessStreamAsync(stream, assistantContent, callbacks, cancellationToken);
             }
 
-            // Track cumulative usage
-            sessionUsage.Add(turnUsage);
+            // Track cumulative usage (pass modelId so cost can be calculated later)
+            sessionUsage.Add(turnUsage, modelId);
 
             _logger.LogInformation(
                 "[Tokens] iter={Iteration} model={Model} in={Input} out={Output} cache_create={CacheCreate} cache_read={CacheRead} | cumulative: in={TotalIn} out={TotalOut} calls={Calls}",

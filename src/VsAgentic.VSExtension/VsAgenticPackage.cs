@@ -237,6 +237,9 @@ public sealed class VsAgenticPackage : AsyncPackage
 
                     chatWindow.ChatControl.Initialize(viewModel);
 
+                    // Link the view model to its session entry so cost updates flow back to the list
+                    viewModel.SessionInfo = session;
+
                     // Sync generated title back to session list and window caption
                     viewModel.PropertyChanged += (_, e) =>
                     {

@@ -1,4 +1,4 @@
-using System.Runtime.CompilerServices;
+﻿using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -191,6 +191,12 @@ public class ChatService(
 
     public Task<string> GenerateTitleAsync(string userMessage, CancellationToken cancellationToken = default)
         => modelRouter.GenerateTitleAsync(userMessage, cancellationToken);
+
+    public decimal? GetSessionCost() => _sessionUsage.CalculateCost();
+
+    public SessionTokenUsageSnapshot GetTokenUsageSnapshot() => _sessionUsage.ToSnapshot();
+
+    public void RestoreTokenUsage(SessionTokenUsageSnapshot snapshot) => _sessionUsage.Restore(snapshot);
 
     public void ClearHistory()
     {

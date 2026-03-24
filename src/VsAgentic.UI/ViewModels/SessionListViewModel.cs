@@ -1,7 +1,8 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.Anthropic;
 using VsAgentic.Services.Models;
 
 namespace VsAgentic.UI.ViewModels;
@@ -23,6 +24,23 @@ public partial class SessionInfo : ObservableObject
 
     [ObservableProperty]
     private bool _isActive;
+
+    /// <summary>
+    /// Cumulative USD cost for this session. Null until the first message is sent.
+    /// </summary>
+    [ObservableProperty]
+    private decimal? _sessionCost;
+
+    /// <summary>
+    /// Formatted cost string shown in the session list (e.g. "$0.0042").
+    /// Empty string when cost is not yet available.
+    /// </summary>
+    public string SessionCostDisplay => SessionCost.HasValue
+        ? $"${SessionCost.Value:F4}"
+        : string.Empty;
+
+    partial void OnSessionCostChanged(decimal? value)
+        => OnPropertyChanged(nameof(SessionCostDisplay));
 }
 
 public partial class SessionListViewModel : ObservableObject
@@ -59,13 +77,27 @@ public partial class SessionListViewModel : ObservableObject
 
         foreach (var entry in entries.OrderByDescending(e => e.LastActivityUtc))
         {
-            Sessions.Add(new SessionInfo
+            var info = new SessionInfo
             {
                 PersistedId = entry.Id,
                 Name = entry.Title,
                 LastActivity = entry.LastActivityUtc.ToLocalTime(),
                 IsActive = false
-            });
+            };
+
+            // Restore cost from persisted token usage so it shows immediately on load
+            if (entry.LastModelId is not null)
+            {
+                var cost = ModelPricing.CalculateCost(
+                    entry.LastModelId,
+                    entry.TotalInputTokens,
+                    entry.TotalOutputTokens,
+                    entry.TotalCacheCreationTokens,
+                    entry.TotalCacheReadTokens);
+                info.SessionCost = cost;
+            }
+
+            Sessions.Add(info);
         }
     }
 

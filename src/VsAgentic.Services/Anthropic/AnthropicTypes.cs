@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace VsAgentic.Services.Anthropic;
@@ -306,13 +306,33 @@ public sealed class SessionTokenUsage
     public int TotalCacheReadTokens { get; private set; }
     public int ApiCalls { get; private set; }
 
-    public void Add(UsageInfo usage)
+    /// <summary>The most recent model ID used in this session.</summary>
+    public string? LastModelId { get; private set; }
+
+    public void Add(UsageInfo usage, string? modelId = null)
     {
         TotalInputTokens += usage.InputTokens;
         TotalOutputTokens += usage.OutputTokens;
         TotalCacheCreationTokens += usage.CacheCreationInputTokens;
         TotalCacheReadTokens += usage.CacheReadInputTokens;
         ApiCalls++;
+        if (modelId is not null)
+            LastModelId = modelId;
+    }
+
+    /// <summary>
+    /// Calculates the cumulative USD cost for this session using <see cref="LastModelId"/>.
+    /// Returns null when no model has been recorded yet.
+    /// </summary>
+    public decimal? CalculateCost()
+    {
+        if (LastModelId is null) return null;
+        return ModelPricing.CalculateCost(
+            LastModelId,
+            TotalInputTokens,
+            TotalOutputTokens,
+            TotalCacheCreationTokens,
+            TotalCacheReadTokens);
     }
 
     public void Reset()
@@ -322,5 +342,36 @@ public sealed class SessionTokenUsage
         TotalCacheCreationTokens = 0;
         TotalCacheReadTokens = 0;
         ApiCalls = 0;
+        LastModelId = null;
     }
+
+    public SessionTokenUsageSnapshot ToSnapshot() => new()
+    {
+        TotalInputTokens         = TotalInputTokens,
+        TotalOutputTokens        = TotalOutputTokens,
+        TotalCacheCreationTokens = TotalCacheCreationTokens,
+        TotalCacheReadTokens     = TotalCacheReadTokens,
+        LastModelId              = LastModelId
+    };
+
+    public void Restore(SessionTokenUsageSnapshot snapshot)
+    {
+        TotalInputTokens         = snapshot.TotalInputTokens;
+        TotalOutputTokens        = snapshot.TotalOutputTokens;
+        TotalCacheCreationTokens = snapshot.TotalCacheCreationTokens;
+        TotalCacheReadTokens     = snapshot.TotalCacheReadTokens;
+        LastModelId              = snapshot.LastModelId;
+    }
+}
+
+/// <summary>
+/// Plain data bag used to persist and restore token usage across IDE restarts.
+/// </summary>
+public sealed class SessionTokenUsageSnapshot
+{
+    public int TotalInputTokens { get; init; }
+    public int TotalOutputTokens { get; init; }
+    public int TotalCacheCreationTokens { get; init; }
+    public int TotalCacheReadTokens { get; init; }
+    public string? LastModelId { get; init; }
 }

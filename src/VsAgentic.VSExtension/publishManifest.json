@@ -1,11 +1,11 @@
-{
+﻿{
   "$schema": "http://json.schemastore.org/vsix-publish",
   "categories": [ "Other" ],
   "identity": {
     "internalName": "VsAgentic"
 },
   "priceCategory": "free",
-  "publisher": "VsAgentic",
+  "publisher": "adospace",
   "private": false,
   "qna": true,
   "repo": "https://github.com/vs-agentic/vs-agentic"

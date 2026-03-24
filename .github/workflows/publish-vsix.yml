@@ -77,8 +77,41 @@ jobs:
             exit 1
           }
 
-          # Create a publish manifest (required by VsixPublisher)
-          $publishManifest = "$env:RUNNER_TEMP\publish-manifest.json"
+          # Fix assembly binding mismatch for System.Runtime.CompilerServices.Unsafe
+          # VsixPublisher's telemetry requests v6.0.1.0 but the runner has a different version.
+          # Find the actual version shipped alongside VsixPublisher and redirect to it.
+          $configPath = "$vsixPublisher.config"
+          $vssdkBin = Split-Path $vsixPublisher
+          $unsafeAsm = Get-ChildItem -Path $vssdkBin -Filter "System.Runtime.CompilerServices.Unsafe.dll" -Recurse | Select-Object -First 1
+          if (-not $unsafeAsm) {
+            # Search broader in the VSSDK tools folder
+            $unsafeAsm = Get-ChildItem -Path (Split-Path $vssdkBin) -Filter "System.Runtime.CompilerServices.Unsafe.dll" -Recurse | Select-Object -First 1
+          }
+          if ($unsafeAsm) {
+            $actualVersion = [System.Reflection.AssemblyName]::GetAssemblyName($unsafeAsm.FullName).Version.ToString()
+            Write-Host "Found System.Runtime.CompilerServices.Unsafe v$actualVersion at $($unsafeAsm.FullName)"
+          } else {
+            # Fallback: use the version from the runner's .NET Framework GAC
+            $actualVersion = "6.0.0.0"
+            Write-Host "Unsafe assembly not found in VSSDK, using fallback v$actualVersion"
+          }
+          @"
+          <?xml version="1.0" encoding="utf-8"?>
+          <configuration>
+            <runtime>
+              <assemblyBinding xmlns="urn:schemas-microsoft-com:asm.v1">
+                <dependentAssembly>
+                  <assemblyIdentity name="System.Runtime.CompilerServices.Unsafe"
+                                    publicKeyToken="b03f5f7f11d50a3a" culture="neutral" />
+                  <bindingRedirect oldVersion="0.0.0.0-7.0.0.0" newVersion="$actualVersion" />
+                </dependentAssembly>
+              </assemblyBinding>
+            </runtime>
+          </configuration>
+          "@ | Set-Content $configPath
+
+          # Create a publish manifest in the repo root so overview path resolves
+          $publishManifest = Join-Path "${{ github.workspace }}" "publish-manifest.json"
           @"
           {
             "`$schema": "http://json.schemastore.org/vsix-publish",

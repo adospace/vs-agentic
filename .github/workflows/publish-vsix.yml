@@ -1,4 +1,4 @@
-name: Publish VSIX to VS Marketplace
+﻿name: Publish VSIX to VS Marketplace
 
 on:
   push:
@@ -67,9 +67,34 @@ jobs:
       - name: Publish to VS Marketplace
         shell: pwsh
         run: |
-          dotnet tool install -g Microsoft.VisualStudio.VisualStudioPublisher
-          VsixPublisher publish `
+          # Install VsixPublisher from VSSDK BuildTools
+          $toolsDir = "$env:RUNNER_TEMP\vssdk"
+          nuget install Microsoft.VSSDK.BuildTools -OutputDirectory $toolsDir -ExcludeVersion
+          $vsixPublisher = Join-Path $toolsDir "Microsoft.VSSDK.BuildTools\tools\vssdk\bin\VsixPublisher.exe"
+
+          if (-not (Test-Path $vsixPublisher)) {
+            Write-Error "VsixPublisher.exe not found at: $vsixPublisher"
+            exit 1
+          }
+
+          # Create a publish manifest (required by VsixPublisher)
+          $publishManifest = "$env:RUNNER_TEMP\publish-manifest.json"
+          @"
+          {
+            "`$schema": "http://json.schemastore.org/vsix-publish",
+            "categories": ["programming languages"],
+            "identity": {
+              "internalName": "VsAgentic"
+            },
+            "overview": "README.md",
+            "publisher": "VsAgentic",
+            "repo": "${{ github.server_url }}/${{ github.repository }}"
+          }
+          "@ | Set-Content $publishManifest
+
+          & $vsixPublisher publish `
             -payload "${{ steps.vsix.outputs.path }}" `
+            -publishManifest $publishManifest `
             -personalAccessToken "${{ secrets.MARKETPLACE_PAT }}"
 
       - name: Create GitHub Release

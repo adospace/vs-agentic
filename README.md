@@ -1,4 +1,4 @@
-# VsAgentic
+﻿# VsAgentic
 
 **An agentic AI coding assistant for Visual Studio 2026** — chat with Claude to explore, understand, and modify your codebase using integrated tools for file search, code navigation, and inline editing.
 
@@ -65,10 +65,9 @@ Automatic retry with exponential back-off on Anthropic API rate limits (429) and
 ## 🚀 Installation
 
 ### Option 1 — Visual Studio Marketplace *(recommended)*
-1. Open Visual Studio 2026
-2. Go to **Extensions → Manage Extensions**
-3. Search for **VsAgentic**
-4. Click **Download** and restart Visual Studio
+1. Visit the [VsAgentic page](https://marketplace.visualstudio.com/items?itemName=adospace.VsAgentic) on the Visual Studio Marketplace
+2. Click **Install** and follow the prompts
+3. Or, open Visual Studio 2026, go to **Extensions → Manage Extensions**, search for **VsAgentic**, click **Download** and restart Visual Studio
 
 ### Option 2 — Manual VSIX install
 1. Download the latest `.vsix` file from the [Releases](../../releases) page

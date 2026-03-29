@@ -41,11 +41,11 @@
                 <DataTemplate>
                     <Border Padding="6,4" Cursor="Hand">
                         <StackPanel>
-                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="13" />
+                            <TextBlock Text="{Binding Name, Mode=OneWay}" FontWeight="SemiBold" FontSize="13" />
                             <TextBlock FontSize="11" Opacity="0.7">
                                 <Run Text="Last activity: " />
-                                <Run Text="{Binding LastActivity, StringFormat='{}{0:HH:mm dd-MMM}'}" />
-                                <Run Text="{Binding SessionCostDisplay, StringFormat='{}  ·  Cost: {0}'}"
+                                <Run Text="{Binding LastActivity, Mode=OneWay, StringFormat='{}{0:HH:mm dd-MMM}'}" />
+                                <Run Text="{Binding SessionCostDisplay, Mode=OneWay, StringFormat='{}  ·  Cost: {0}'}"
                                      Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"
                                      xml:space="preserve" />
                             </TextBlock>

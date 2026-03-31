@@ -15,6 +15,24 @@
 ### 🤖 Powered by Anthropic Claude
 VsAgentic connects directly to the Anthropic API and uses the latest Claude models (Haiku, Sonnet, Opus) to understand your questions and act on your codebase — not just answer them.
 
+### 🔑 Two Ways to Connect
+| Mode | Description |
+|------|-------------|
+| **API Key** *(default)* | Direct Anthropic API calls — billed per token, requires an `ANTHROPIC_API_KEY` |
+| **Claude CLI** | Uses your Claude subscription (Pro/Max) via the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — no API key needed |
+
+Switch between modes in **Tools → Options → VsAgentic → General**.
+
+### ⚙️ Configurable Settings
+All settings are available in the Visual Studio **Tools → Options → VsAgentic** dialog and are persisted across sessions:
+
+- **Backend Mode** — API Key or Claude CLI
+- **Anthropic API Key** — set directly in VS (overrides the environment variable)
+- **Claude CLI Path** — path to the `claude` executable
+- **Default Model** — choose which Claude model to use
+- **Git Bash Path** / **Bash Timeout** — tool configuration
+- **System Prompt** — fully customizable
+
 ### 🧰 8 Integrated Agentic Tools
 Claude doesn't just suggest code — it **uses tools** to do the work for you:
 
@@ -62,7 +80,9 @@ Automatic retry with exponential back-off on Anthropic API rate limits (429) and
 - **Visual Studio 2026** version **17.14 or later** (Community, Professional, or Enterprise)
 - **Windows x64** (amd64)
 - **[Git for Windows](https://git-scm.com/download/win)** — required for the `bash` tool (expects `C:\Program Files\Git\bin\bash.exe`)
-- An **Anthropic API key** — get one at [console.anthropic.com](https://console.anthropic.com)
+- **One of the following** to connect to Claude:
+  - An **Anthropic API key** — get one at [console.anthropic.com](https://console.anthropic.com), **or**
+  - The **Claude Code CLI** installed (`npm install -g @anthropic-ai/claude-code`) with an active Claude subscription
 
 ---
 
@@ -82,24 +102,31 @@ Automatic retry with exponential back-off on Anthropic API rate limits (429) and
 
 ## ⚙️ Setup
 
-### 1. Set your Anthropic API Key
+### Option A — API Key mode *(default)*
 
-VsAgentic reads your API key from the `ANTHROPIC_API_KEY` **environment variable**.
+Set your Anthropic API key using **one** of these methods:
 
-**Option A — System environment variable (recommended, persists across reboots):**
-```powershell
-# Run in an elevated PowerShell prompt
-[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-...", "Machine")
-```
-Then **restart Visual Studio** to pick up the new variable.
+1. **In Visual Studio** *(easiest)* — go to **Tools → Options → VsAgentic → General** and paste your key into the **Anthropic API Key** field.
 
-**Option B — User environment variable:**
-1. Open **Start → Search → "Edit environment variables for your account"**
-2. Click **New** under "User variables"
-3. Set Variable name: `ANTHROPIC_API_KEY` and Variable value: `sk-ant-...`
-4. Click **OK** and restart Visual Studio
+2. **Environment variable** — set `ANTHROPIC_API_KEY` as a system or user environment variable:
+   ```powershell
+   # Run in an elevated PowerShell prompt
+   [System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-...", "Machine")
+   ```
+   Then **restart Visual Studio** to pick up the new variable.
 
-### 2. Open VsAgentic
+### Option B — Claude CLI mode *(uses your Claude subscription)*
+
+1. Install the Claude Code CLI:
+   ```
+   npm install -g @anthropic-ai/claude-code
+   ```
+2. Make sure `claude` is on your PATH, or note the full path (e.g. `C:\Users\<you>\AppData\Roaming\npm\claude.cmd`)
+3. In Visual Studio, go to **Tools → Options → VsAgentic → General**:
+   - Set **Backend Mode** to `ClaudeCli`
+   - If `claude` is not on your PATH, set **Claude CLI Path** to the full path
+
+### Open VsAgentic
 
 Go to **View → Other Windows → VsAgentic** to open a new chat session.
 
@@ -150,7 +177,7 @@ VsAgentic.sln
 ## 🔒 Privacy & Security
 
 - Your code is sent to the **Anthropic API** to fulfill requests. Review [Anthropic's privacy policy](https://www.anthropic.com/privacy) before use on sensitive or proprietary codebases.
-- Your API key is stored only as an environment variable — it is **never** written to disk by the extension.
+- Your API key is stored either as an environment variable or in the Visual Studio settings registry (if configured via Tools → Options).
 - Session history (messages) is stored **locally** in `%AppData%\VsAgentic\` and never leaves your machine.
 
 ---

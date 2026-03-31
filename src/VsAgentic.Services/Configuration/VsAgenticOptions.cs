@@ -5,6 +5,16 @@ public class VsAgenticOptions
     public string WorkingDirectory { get; set; } = Environment.CurrentDirectory;
     public string GitBashPath { get; set; } = @"C:\Program Files\Git\bin\bash.exe";
     public string ModelId { get; set; } = "claude-sonnet-4-20250514";
+
+    /// <summary>
+    /// Backend mode: ApiKey for direct API calls, ClaudeCli for Claude subscription via CLI.
+    /// </summary>
+    public BackendMode BackendMode { get; set; } = BackendMode.ApiKey;
+
+    /// <summary>
+    /// Path to the Claude CLI executable. Defaults to "claude" (assumes it's on PATH).
+    /// </summary>
+    public string ClaudeCliPath { get; set; } = "claude";
     public string SystemPrompt { get; set; } = """
         You are a senior software engineering assistant. You help developers understand, navigate, debug, and modify codebases.
         Be concise and direct. Lead with the answer, not the reasoning.

@@ -1,11 +1,13 @@
 using System.Net.Http;
 using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.Anthropic;
+using VsAgentic.Services.ClaudeCli;
 using VsAgentic.Services.Configuration;
 using VsAgentic.Services.Services;
 using VsAgentic.Services.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Polly;
 using Polly.Retry;
 
@@ -33,16 +35,19 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAgentToolService, AgentToolService>();
         services.AddSingleton<IWebFetchToolService, WebFetchToolService>();
 
-        // ── Anthropic HTTP client ──────────────────────────────────────────────
+        // ── Anthropic HTTP client (only required for ApiKey mode) ─────────────
         services.AddSingleton(sp =>
         {
+            var opts = sp.GetRequiredService<IOptions<VsAgenticOptions>>().Value;
             var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
-            if (string.IsNullOrEmpty(apiKey))
+
+            if (string.IsNullOrEmpty(apiKey) && opts.BackendMode == BackendMode.ApiKey)
                 throw new InvalidOperationException(
-                    "ANTHROPIC_API_KEY environment variable is required. Set it before running the application.");
+                    "ANTHROPIC_API_KEY environment variable is required for ApiKey mode. " +
+                    "Set it before running, or switch to ClaudeCli mode.");
 
             var logger = sp.GetRequiredService<ILogger<AnthropicHttpClient>>();
-            return new AnthropicHttpClient(apiKey, logger);
+            return new AnthropicHttpClient(apiKey ?? "unused-cli-mode", logger);
         });
 
         // ── Base tools (keyed) — available to the Agent sub-session ────────────
@@ -112,7 +117,29 @@ public static class ServiceCollectionExtensions
         });
 
         services.AddSingleton<IModelRouter, ModelRouter>();
-        services.AddSingleton<IChatService, ChatService>();
+
+        // ── Chat service — switches on BackendMode ────────────────────────────
+        services.AddSingleton<IChatService>(sp =>
+        {
+            var opts = sp.GetRequiredService<IOptions<VsAgenticOptions>>().Value;
+            if (opts.BackendMode == BackendMode.ClaudeCli)
+            {
+                return new ClaudeCliChatService(
+                    sp.GetRequiredService<IOptions<VsAgenticOptions>>(),
+                    sp.GetRequiredService<IOutputListener>(),
+                    sp.GetRequiredService<ILogger<ClaudeCliChatService>>());
+            }
+
+            // Default: direct API
+            return new ChatService(
+                sp.GetRequiredService<AnthropicHttpClient>(),
+                sp.GetRequiredService<IModelRouter>(),
+                sp.GetRequiredService<IOptions<VsAgenticOptions>>(),
+                sp.GetServices<ToolDefinition>(),
+                sp.GetRequiredService<IOutputListener>(),
+                sp.GetRequiredService<ResiliencePipeline>(),
+                sp.GetRequiredService<ILogger<ChatService>>());
+        });
 
         return services;
     }

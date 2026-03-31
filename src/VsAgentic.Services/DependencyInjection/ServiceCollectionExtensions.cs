@@ -39,12 +39,17 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sp =>
         {
             var opts = sp.GetRequiredService<IOptions<VsAgenticOptions>>().Value;
-            var apiKey = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
+
+            // Prefer the explicit ApiKey option; fall back to env var
+            var apiKey = !string.IsNullOrEmpty(opts.ApiKey)
+                ? opts.ApiKey
+                : Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
 
             if (string.IsNullOrEmpty(apiKey) && opts.BackendMode == BackendMode.ApiKey)
                 throw new InvalidOperationException(
-                    "ANTHROPIC_API_KEY environment variable is required for ApiKey mode. " +
-                    "Set it before running, or switch to ClaudeCli mode.");
+                    "An Anthropic API key is required for ApiKey mode. " +
+                    "Set it in Tools → Options → VsAgentic, or via the ANTHROPIC_API_KEY environment variable, " +
+                    "or switch to ClaudeCli mode.");
 
             var logger = sp.GetRequiredService<ILogger<AnthropicHttpClient>>();
             return new AnthropicHttpClient(apiKey ?? "unused-cli-mode", logger);

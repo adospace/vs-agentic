@@ -2,20 +2,7 @@
 
 public class VsAgenticOptions
 {
-    public string WorkingDirectory { get; set; } = Environment.CurrentDirectory;
-    public string GitBashPath { get; set; } = @"C:\Program Files\Git\bin\bash.exe";
-    public string ModelId { get; set; } = "claude-sonnet-4-20250514";
-
-    /// <summary>
-    /// Backend mode: ApiKey for direct API calls, ClaudeCli for Claude subscription via CLI.
-    /// </summary>
-    public BackendMode BackendMode { get; set; } = BackendMode.ApiKey;
-
-    /// <summary>
-    /// Path to the Claude CLI executable. Defaults to "claude" (assumes it's on PATH).
-    /// </summary>
-    public string ClaudeCliPath { get; set; } = "claude";
-    public string SystemPrompt { get; set; } = """
+    public const string DefaultSystemPrompt = """
         You are a senior software engineering assistant. You help developers understand, navigate, debug, and modify codebases.
         Be concise and direct. Lead with the answer, not the reasoning.
 
@@ -58,6 +45,27 @@ public class VsAgenticOptions
 
         Commands run in the project working directory via Git Bash on Windows.
         """;
+
+    public string WorkingDirectory { get; set; } = Environment.CurrentDirectory;
+    public string GitBashPath { get; set; } = @"C:\Program Files\Git\bin\bash.exe";
+    public string ModelId { get; set; } = "claude-sonnet-4-20250514";
+
+    /// <summary>
+    /// Backend mode: ApiKey for direct API calls, ClaudeCli for Claude subscription via CLI.
+    /// </summary>
+    public BackendMode BackendMode { get; set; } = BackendMode.ApiKey;
+
+    /// <summary>
+    /// Path to the Claude CLI executable. Defaults to "claude" (assumes it's on PATH).
+    /// </summary>
+    public string ClaudeCliPath { get; set; } = "claude";
+
+    /// <summary>
+    /// Anthropic API key. If set, overrides the ANTHROPIC_API_KEY environment variable.
+    /// </summary>
+    public string ApiKey { get; set; } = "";
+
+    public string SystemPrompt { get; set; } = DefaultSystemPrompt;
     public int BashTimeoutSeconds { get; set; } = 30;
     public int MaxOutputChars { get; set; } = 5000;
     public int MaxReadLines { get; set; } = 200;

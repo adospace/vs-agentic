@@ -11,6 +11,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
 using Serilog;
+using VsAgentic.Services.Configuration;
+using VsAgentic.VSExtension.Options;
 using VsAgentic.VSExtension.ToolWindows;
 using Task = System.Threading.Tasks.Task;
 
@@ -18,6 +20,7 @@ namespace VsAgentic.VSExtension;
 
 [PackageRegistration(UseManagedResourcesOnly = true, AllowsBackgroundLoading = true)]
 [ProvideBindingPath]
+[ProvideOptionPage(typeof(VsAgenticOptionsPage), "VsAgentic", "General", 0, 0, true)]
 [ProvideToolWindow(typeof(SessionListToolWindow), Style = VsDockStyle.Tabbed, Window = EnvDTE.Constants.vsWindowKindSolutionExplorer, Transient = true)]
 [ProvideToolWindow(typeof(ChatSessionToolWindow), Style = VsDockStyle.MDI, MultiInstances = true, Transient = true)]
 [Guid("c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f")]
@@ -110,12 +113,28 @@ public sealed class VsAgenticPackage : AsyncPackage
 
         services.AddLogging(builder => builder.AddSerilog(dispose: true));
 
+        // Read persisted settings from Tools → Options → VsAgentic
+        var optionsPage = (VsAgenticOptionsPage?)GetDialogPage(typeof(VsAgenticOptionsPage));
+
         var outputListener = new OutputListener();
         services.AddSingleton(outputListener);
         services.AddSingleton<IOutputListener>(outputListener);
         services.AddVsAgenticServices(options =>
         {
             options.WorkingDirectory = workingDir;
+
+            if (optionsPage is not null)
+            {
+                options.BackendMode = optionsPage.BackendMode;
+                options.ApiKey = optionsPage.ApiKey;
+                options.ClaudeCliPath = optionsPage.ClaudeCliPath;
+                options.ModelId = optionsPage.ModelId;
+                options.GitBashPath = optionsPage.GitBashPath;
+                options.BashTimeoutSeconds = optionsPage.BashTimeoutSeconds;
+                options.MaxOutputChars = optionsPage.MaxOutputChars;
+                options.MaxReadLines = optionsPage.MaxReadLines;
+                options.SystemPrompt = optionsPage.SystemPrompt;
+            }
         });
 
         var provider = services.BuildServiceProvider();

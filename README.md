@@ -6,7 +6,7 @@
 
 ![VsAgentic](https://github.com/user-attachments/assets/8d088aa2-cdf8-421b-9834-7f8851bdacdd)
 
-<img width="1908" height="1025" alt="Screenshot 2026-03-29 175803" src="https://github.com/user-attachments/assets/cde8d1a6-c1bd-40f1-99a3-ed11b9f5c839" />
+<img alt="VsAgentic - AI coding assistant for Visual Studio 2026" src="https://github.com/user-attachments/assets/cde8d1a6-c1bd-40f1-99a3-ed11b9f5c839" />
 
 ---
 

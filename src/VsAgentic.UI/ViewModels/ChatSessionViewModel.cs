@@ -15,6 +15,7 @@ public partial class ChatSessionViewModel : ObservableObject
 {
     private readonly IChatService? _chatService;
     private readonly ConcurrentDictionary<string, ChatItemViewModel> _activeItems = new();
+    private int _userMsgCounter;
 
     public ObservableCollection<ChatItemViewModel> Items { get; } = new();
 
@@ -38,6 +39,15 @@ public partial class ChatSessionViewModel : ObservableObject
     public SessionInfo? SessionInfo { get; set; }
 
     public event Action? ScrollRequested;
+
+    // Events for single-WebView rendering
+    public event Action<string, ChatItemType, ChatMessageData>? MessageAdded;
+    public event Action<string, string>? MessageContentUpdated;
+    public event Action<string, OutputItemStatus, string>? MessageStatusUpdated;
+    public event Action<string, string, OutputBodyMode>? MessageBodySet;
+    public event Action<string>? MessageCompleted;
+    public event Action? AllCleared;
+    public event Action<IEnumerable<ChatMessageData>>? MessagesRestored;
 
     /// <summary>
     /// Standalone constructor for use without a chat service (e.g. before service is wired up).
@@ -95,11 +105,14 @@ public partial class ChatSessionViewModel : ObservableObject
         try
         {
             var messages = await store.GetMessagesAsync(folder, sessionId.Value);
+            var restoreData = new List<ChatMessageData>();
+            var msgIndex = 0;
             foreach (var msg in messages)
             {
+                var type = ParseEnum<ChatItemType>(msg.ItemType);
                 Items.Add(new ChatItemViewModel
                 {
-                    Type = ParseEnum<ChatItemType>(msg.ItemType),
+                    Type = type,
                     Content = msg.Content,
                     ToolName = msg.ToolName,
                     Title = msg.Title ?? "",
@@ -109,7 +122,22 @@ public partial class ChatSessionViewModel : ObservableObject
                     Status = ParseEnum<OutputItemStatus>(msg.StatusText),
                     IsStreaming = false
                 });
+                restoreData.Add(new ChatMessageData
+                {
+                    Id = $"restore-{msgIndex++}",
+                    Type = type.ToString(),
+                    Content = msg.Content,
+                    ToolName = msg.ToolName,
+                    Title = msg.Title ?? "",
+                    Body = msg.Body,
+                    BodyMode = msg.BodyMode ?? "Markdown",
+                    ExpanderTitle = msg.ExpanderTitle ?? "",
+                    Status = msg.StatusText ?? "Pending",
+                    IsStreaming = false
+                });
             }
+            if (restoreData.Count > 0)
+                MessagesRestored?.Invoke(restoreData);
 
             var historyJson = await store.GetConversationHistoryAsync(folder, sessionId.Value);
             if (historyJson is not null && _chatService is not null)
@@ -131,9 +159,17 @@ public partial class ChatSessionViewModel : ObservableObject
         var message = InputText.Trim();
         InputText = "";
 
+        var userMsgId = $"user-{++_userMsgCounter}";
         Items.Add(new ChatItemViewModel
         {
             Type = ChatItemType.User,
+            Content = message,
+            Title = "You"
+        });
+        MessageAdded?.Invoke(userMsgId, ChatItemType.User, new ChatMessageData
+        {
+            Id = userMsgId,
+            Type = "User",
             Content = message,
             Title = "You"
         });
@@ -149,11 +185,19 @@ public partial class ChatSessionViewModel : ObservableObject
 
         if (_chatService is null)
         {
+            var errId = $"user-err-{_userMsgCounter}";
+            var errContent = "_AI service not connected yet. This will be wired up in a future update._";
             Items.Add(new ChatItemViewModel
             {
                 Type = ChatItemType.Assistant,
-                Content = "_AI service not connected yet. This will be wired up in a future update._",
+                Content = errContent,
                 IsStreaming = false
+            });
+            MessageAdded?.Invoke(errId, ChatItemType.Assistant, new ChatMessageData
+            {
+                Id = errId,
+                Type = "Assistant",
+                Content = errContent
             });
             RequestScroll();
             return;
@@ -201,11 +245,19 @@ public partial class ChatSessionViewModel : ObservableObject
         }
         catch (Exception ex)
         {
+            var catchErrId = $"err-{++_userMsgCounter}";
+            var catchErrContent = $"**Error:** {ex.Message}";
             Items.Add(new ChatItemViewModel
             {
                 Type = ChatItemType.Assistant,
-                Content = $"**Error:** {ex.Message}",
+                Content = catchErrContent,
                 IsStreaming = false
+            });
+            MessageAdded?.Invoke(catchErrId, ChatItemType.Assistant, new ChatMessageData
+            {
+                Id = catchErrId,
+                Type = "Assistant",
+                Content = catchErrContent
             });
         }
         finally
@@ -221,6 +273,7 @@ public partial class ChatSessionViewModel : ObservableObject
         _chatService?.ClearHistory();
         Items.Clear();
         _activeItems.Clear();
+        AllCleared?.Invoke();
     }
 
     private void OnStepStarted(OutputItem item)
@@ -235,17 +288,30 @@ public partial class ChatSessionViewModel : ObservableObject
                      : isThinking ? ChatItemType.Thinking
                      : ChatItemType.ToolStep;
 
+            var streaming = isAi || isAgent || isThinking;
+            var expanderTitle = isThinking ? "Thinking..." : item.Title;
             var vm = new ChatItemViewModel
             {
                 Type = type,
                 ToolName = item.ToolName,
                 Title = item.Title,
                 Status = item.Status,
-                IsStreaming = isAi || isAgent || isThinking,
-                ExpanderTitle = isThinking ? "Thinking..." : item.Title
+                IsStreaming = streaming,
+                ExpanderTitle = expanderTitle
             };
             _activeItems[item.Id] = vm;
             Items.Add(vm);
+            MessageAdded?.Invoke(item.Id, type, new ChatMessageData
+            {
+                Id = item.Id,
+                Type = type.ToString(),
+                Content = "",
+                ToolName = item.ToolName,
+                Title = item.Title,
+                Status = item.Status.ToString(),
+                ExpanderTitle = expanderTitle,
+                IsStreaming = streaming
+            });
             RequestScroll();
         });
     }
@@ -264,7 +330,10 @@ public partial class ChatSessionViewModel : ObservableObject
                 if (item.ToolName == "Thinking")
                 {
                     vm.ExpanderTitle = item.Title;
+                    MessageStatusUpdated?.Invoke(item.Id, vm.Status, item.Title);
                 }
+
+                MessageContentUpdated?.Invoke(item.Id, vm.Content);
 
                 var index = Items.IndexOf(vm);
                 if (index >= 0 && index < Items.Count - 1)
@@ -284,6 +353,9 @@ public partial class ChatSessionViewModel : ObservableObject
                 vm.Status = item.Status;
                 vm.IsStreaming = false;
 
+                MessageStatusUpdated?.Invoke(item.Id, item.Status,
+                    item.ToolName == "Thinking" ? item.Title : vm.ExpanderTitle);
+
                 if (item.ToolName == "Thinking")
                 {
                     vm.ExpanderTitle = item.Title;
@@ -292,7 +364,10 @@ public partial class ChatSessionViewModel : ObservableObject
                 {
                     vm.Body = item.Body;
                     vm.BodyMode = item.BodyMode;
+                    MessageBodySet?.Invoke(item.Id, item.Body!, item.BodyMode);
                 }
+
+                MessageCompleted?.Invoke(item.Id);
 
                 _activeItems.TryRemove(item.Id, out _);
                 RequestScroll();

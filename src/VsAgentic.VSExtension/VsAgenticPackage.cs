@@ -1,10 +1,12 @@
 ﻿using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.Windows;
 using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.DependencyInjection;
 using VsAgentic.Services.Services;
 using VsAgentic.UI;
+using VsAgentic.UI.Controls;
 using VsAgentic.UI.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -78,6 +80,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 await CloseSessionWindowAsync(session);
             });
         };
+
+        // Listen for file-open requests from rendered markdown
+        ChatWebView.FileOpenRequested += OnFileOpenRequested;
 
         // Listen for solution open/close/switch events
         if (GetService(typeof(SVsSolution)) is IVsSolution solutionService)
@@ -402,16 +407,73 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     int IVsSolutionEvents.OnBeforeUnloadProject(IVsHierarchy pRealHierarchy, IVsHierarchy pStubHierarchy) => Microsoft.VisualStudio.VSConstants.S_OK;
     int IVsSolutionEvents.OnQueryCloseSolution(object pUnkReserved, ref int pfCancel) => Microsoft.VisualStudio.VSConstants.S_OK;
 
+    private void OnFileOpenRequested(string rawPath)
+    {
+        _ = JoinableTaskFactory.RunAsync(async () =>
+        {
+            await JoinableTaskFactory.SwitchToMainThreadAsync();
+
+            // Parse optional :line suffix (e.g. "file.cs:42" or "file.cs:42-51")
+            int line = 0;
+            var lineMatch = Regex.Match(rawPath, @":(\d+)(?:-\d+)?$");
+            var filePath = lineMatch.Success ? rawPath.Substring(0, lineMatch.Index) : rawPath;
+
+            // Normalize forward slashes
+            filePath = filePath.Replace('/', '\\');
+
+            // Resolve relative paths against the solution directory
+            if (!Path.IsPathRooted(filePath) && _solutionDirectory is not null)
+            {
+                filePath = Path.GetFullPath(Path.Combine(_solutionDirectory, filePath));
+            }
+
+            if (!File.Exists(filePath))
+            {
+                System.Diagnostics.Debug.WriteLine($"VsAgentic: File not found: {filePath}");
+                return;
+            }
+
+            if (lineMatch.Success)
+                line = int.Parse(lineMatch.Groups[1].Value);
+
+            try
+            {
+                VsShellUtilities.OpenDocument(this, filePath, Guid.Empty,
+                    out _, out _, out IVsWindowFrame? frame);
+                frame?.Show();
+
+                if (line > 0 && frame is not null)
+                {
+                    // Navigate to the specific line
+                    if (VsShellUtilities.GetTextView(frame) is var textView && textView is not null)
+                    {
+                        textView.SetCaretPos(line - 1, 0);
+                        textView.CenterLines(line - 1, 1);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"VsAgentic: Failed to open file: {ex.Message}");
+            }
+        });
+    }
+
     protected override void Dispose(bool disposing)
     {
-        if (disposing && _solutionEventsCookie != 0)
+        ThreadHelper.ThrowIfNotOnUIThread();
+        if (disposing)
         {
-            ThreadHelper.ThrowIfNotOnUIThread();
-            if (GetService(typeof(SVsSolution)) is IVsSolution solutionService)
+            ChatWebView.FileOpenRequested -= OnFileOpenRequested;
+
+            if (_solutionEventsCookie != 0)
             {
-                solutionService.UnadviseSolutionEvents(_solutionEventsCookie);
+                if (GetService(typeof(SVsSolution)) is IVsSolution solutionService)
+                {
+                    solutionService.UnadviseSolutionEvents(_solutionEventsCookie);
+                }
+                _solutionEventsCookie = 0;
             }
-            _solutionEventsCookie = 0;
         }
         base.Dispose(disposing);
     }

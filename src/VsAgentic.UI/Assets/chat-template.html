@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<style>
+:root {
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252526;
+    --bg-input: #3c3c3c;
+    --text-primary: #d4d4d4;
+    --text-heading: #e2e2e2;
+    --text-muted: #808080;
+    --border: #3c3c3c;
+    --accent: #569cd6;
+    --success: #4ec9b0;
+    --error: #f44747;
+    --info: #808080;
+    --user-bg: #252526;
+    --code-bg: #3c3c3c;
+    --pre-bg: #1e1e1e;
+}
+
+* { box-sizing: border-box; }
+html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: 'Segoe UI', sans-serif;
+    font-size: 13px;
+    line-height: 1.5;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    height: 100%;
+}
+
+#chat-container {
+    overflow-y: auto;
+    height: 100%;
+    padding: 8px 0;
+}
+
+/* Message containers */
+.msg { margin: 2px 12px; }
+
+.msg-user {
+    background: var(--user-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px;
+}
+.msg-user .msg-label {
+    font-weight: 600;
+    font-size: 11px;
+    margin-bottom: 2px;
+    color: var(--accent);
+}
+
+.msg-assistant {
+    padding: 0 8px;
+}
+.msg-assistant-inner {
+    display: flex;
+    gap: 6px;
+}
+.msg-assistant-bullet {
+    color: var(--text-muted);
+    font-size: 10px;
+    margin-top: 2px;
+    flex-shrink: 0;
+}
+
+.msg-toolstep {
+    padding: 8px;
+}
+.toolstep-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+}
+.toolstep-status { font-size: 10px; }
+.toolstep-name { color: var(--text-muted); }
+.toolstep-title { color: var(--text-heading); }
+
+.toolstep-expander {
+    margin: 4px 0 0 18px;
+    font-size: 11px;
+}
+.toolstep-expander-header {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    color: var(--text-muted);
+    user-select: none;
+}
+.toolstep-expander-arrow {
+    font-size: 8px;
+    transition: transform 0.15s;
+    display: inline-block;
+}
+.toolstep-expander-arrow.expanded {
+    transform: rotate(90deg);
+}
+.toolstep-expander-content {
+    display: none;
+    color: var(--text-muted);
+    font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+    font-size: 11px;
+    white-space: pre-wrap;
+    margin-top: 4px;
+}
+.toolstep-expander-content.visible { display: block; }
+
+.toolstep-body {
+    margin: 4px 0 0 18px;
+}
+.toolstep-body.capped {
+    max-height: 120px;
+    overflow: hidden;
+    position: relative;
+}
+.toolstep-body.capped::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 30px;
+    background: linear-gradient(transparent, var(--bg-primary));
+}
+.show-more-link {
+    display: inline-block;
+    margin: 4px 0 0 18px;
+    color: var(--accent);
+    font-size: 11px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.msg-thinking {
+    padding: 0 8px;
+}
+.thinking-header {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 12px;
+}
+.thinking-arrow {
+    font-size: 8px;
+    transition: transform 0.15s;
+    display: inline-block;
+    color: var(--text-muted);
+}
+.thinking-arrow.expanded { transform: rotate(90deg); }
+.thinking-status { font-size: 10px; }
+.thinking-title {
+    color: var(--text-muted);
+    font-style: italic;
+}
+.thinking-content {
+    display: none;
+    background: var(--user-bg);
+    border-radius: 4px;
+    padding: 10px 8px;
+    margin: 4px 0 4px 18px;
+    color: var(--text-muted);
+    font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+    font-size: 11px;
+    white-space: pre-wrap;
+    max-height: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.thinking-content.visible { display: block; }
+
+/* Streaming indicator */
+.streaming-cursor::after {
+    content: '\25ae';
+    animation: blink 1s step-end infinite;
+    color: var(--text-muted);
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* Markdown content styles */
+.md-content h1 { font-size: 1.6em; margin: 0.4em 0; color: var(--text-heading); border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
+.md-content h2 { font-size: 1.4em; margin: 0.4em 0; color: var(--text-heading); }
+.md-content h3 { font-size: 1.2em; margin: 0.3em 0; color: var(--text-heading); }
+.md-content h4, .md-content h5, .md-content h6 { font-size: 1.05em; margin: 0.3em 0; color: var(--text-heading); }
+.md-content p { margin: 0.4em 0; }
+.md-content a { color: var(--accent); text-decoration: none; }
+.md-content a:hover { text-decoration: underline; }
+.md-content a.file-link { cursor: pointer; text-decoration: underline dotted; }
+.md-content strong { color: var(--text-heading); }
+.md-content code {
+    background: var(--code-bg);
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+    font-size: 0.9em;
+}
+.md-content pre {
+    background: var(--pre-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 10px 12px;
+    margin: 0.5em 0;
+    overflow-x: auto;
+}
+.md-content pre code {
+    background: none;
+    padding: 0;
+    border-radius: 0;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+.md-content blockquote {
+    border-left: 3px solid var(--accent);
+    margin: 0.5em 0;
+    padding: 0.2em 0 0.2em 12px;
+    color: #9e9e9e;
+}
+.md-content ul, .md-content ol { margin: 0.4em 0; padding-left: 1.6em; }
+.md-content li { margin: 0.15em 0; }
+.md-content table { border-collapse: collapse; margin: 0.5em 0; width: 100%; }
+.md-content th, .md-content td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+.md-content th { background: #2d2d2d; color: var(--text-heading); }
+.md-content tr:nth-child(even) { background: var(--bg-secondary); }
+.md-content hr { border: none; border-top: 1px solid var(--border); margin: 0.6em 0; }
+.md-content img { max-width: 100%; }
+.md-content > *:first-child { margin-top: 0; }
+.md-content > *:last-child { margin-bottom: 0; }
+</style>
+<script>{{SHOWDOWN_JS}}</script>
+<script>
+var converter = new showdown.Converter({
+    tables: true,
+    tasklists: true,
+    strikethrough: true,
+    ghCodeBlocks: true,
+    simplifiedAutoLink: true,
+    literalMidWordUnderscores: true,
+    openLinksInNewWindow: true
+});
+
+var _userScrolledUp = false;
+var _container;
+
+// Status symbols and colors
+var STATUS_SYMBOLS = { Pending: '\u25cb', Success: '\u25cf', Error: '\u25cf', Info: '\u25cb' };
+var STATUS_COLORS = { Pending: 'var(--info)', Success: 'var(--success)', Error: 'var(--error)', Info: 'var(--info)' };
+
+// File path regex (same as markdown-template.html)
+var filePathRe = /(?:[A-Za-z]:[\\\/]|\.{0,2}\/|(?=[\w@]))(?:[\w\-\.@]+[\\\/])+[\w\-\.]+\.[A-Za-z]{1,10}(?::(\d+)(?:-\d+)?)?/g;
+
+function linkifyFilePaths(container) {
+    var codes = container.querySelectorAll('code');
+    for (var i = 0; i < codes.length; i++) {
+        var code = codes[i];
+        if (code.closest('pre')) continue;
+        if (code.querySelector('a')) continue;
+        var text = code.textContent;
+        filePathRe.lastIndex = 0;
+        if (filePathRe.test(text) && text.match(filePathRe).length === 1 && text.trim() === text.match(filePathRe)[0]) {
+            var match = text.match(filePathRe)[0];
+            var a = document.createElement('a');
+            a.href = '#';
+            a.className = 'file-link';
+            a.dataset.path = match;
+            a.textContent = text;
+            a.title = 'Open in editor';
+            code.textContent = '';
+            code.appendChild(a);
+        }
+    }
+    var links = container.querySelectorAll('a[href]');
+    for (var j = 0; j < links.length; j++) {
+        var link = links[j];
+        var href = link.getAttribute('href');
+        if (!href) continue;
+        if (/^(https?|mailto|ftp|javascript):/i.test(href)) continue;
+        link.classList.add('file-link');
+        link.dataset.path = href;
+        link.title = 'Open in editor';
+        link.href = '#';
+    }
+}
+
+function renderMd(text) {
+    if (!text) return '';
+    return converter.makeHtml(text);
+}
+
+function isNearBottom() {
+    if (!_container) return true;
+    return _container.scrollHeight - _container.scrollTop - _container.clientHeight < 50;
+}
+
+function scrollToBottom() {
+    if (_container) {
+        _container.scrollTop = _container.scrollHeight;
+    }
+}
+
+function maybeScrollToBottom() {
+    if (!_userScrolledUp) {
+        scrollToBottom();
+    }
+}
+
+// --- Public API ---
+
+function addMessage(id, type, dataJson) {
+    var data = typeof dataJson === 'string' ? JSON.parse(dataJson) : dataJson;
+    var div = document.createElement('div');
+    div.id = 'msg-' + id;
+    div.className = 'msg';
+    div.dataset.type = type;
+
+    if (type === 'User') {
+        div.classList.add('msg-user');
+        var label = document.createElement('div');
+        label.className = 'msg-label';
+        label.textContent = 'You';
+        var content = document.createElement('div');
+        content.className = 'md-content msg-content';
+        content.innerHTML = renderMd(data.Content || '');
+        linkifyFilePaths(content);
+        div.appendChild(label);
+        div.appendChild(content);
+    }
+    else if (type === 'Assistant') {
+        div.classList.add('msg-assistant');
+        var inner = document.createElement('div');
+        inner.className = 'msg-assistant-inner';
+        var bullet = document.createElement('span');
+        bullet.className = 'msg-assistant-bullet';
+        bullet.textContent = '\u25cf';
+        var content = document.createElement('div');
+        content.className = 'md-content msg-content';
+        if (data.IsStreaming) content.classList.add('streaming-cursor');
+        content.innerHTML = renderMd(data.Content || '');
+        linkifyFilePaths(content);
+        inner.appendChild(bullet);
+        inner.appendChild(content);
+        div.appendChild(inner);
+    }
+    else if (type === 'ToolStep') {
+        div.classList.add('msg-toolstep');
+        // Header row
+        var header = document.createElement('div');
+        header.className = 'toolstep-header';
+        var statusSpan = document.createElement('span');
+        statusSpan.className = 'toolstep-status msg-status';
+        statusSpan.style.color = STATUS_COLORS[data.Status] || STATUS_COLORS.Pending;
+        statusSpan.textContent = STATUS_SYMBOLS[data.Status] || STATUS_SYMBOLS.Pending;
+        var nameSpan = document.createElement('span');
+        nameSpan.className = 'toolstep-name';
+        nameSpan.textContent = '[' + (data.ToolName || '') + ']';
+        var titleSpan = document.createElement('span');
+        titleSpan.className = 'toolstep-title msg-title';
+        titleSpan.textContent = data.Title || '';
+        header.appendChild(statusSpan);
+        header.appendChild(nameSpan);
+        header.appendChild(titleSpan);
+        div.appendChild(header);
+
+        // Streaming expander
+        if (data.IsStreaming) {
+            var expander = document.createElement('div');
+            expander.className = 'toolstep-expander msg-expander';
+            var expHeader = document.createElement('div');
+            expHeader.className = 'toolstep-expander-header';
+            var arrow = document.createElement('span');
+            arrow.className = 'toolstep-expander-arrow';
+            arrow.textContent = '\u25b6';
+            var expTitle = document.createElement('span');
+            expTitle.className = 'msg-expander-title';
+            expTitle.textContent = data.ExpanderTitle || data.Title || '';
+            expHeader.appendChild(arrow);
+            expHeader.appendChild(expTitle);
+            expHeader.addEventListener('click', function() {
+                var a = this.querySelector('.toolstep-expander-arrow');
+                var c = this.nextElementSibling;
+                if (c) {
+                    var show = !c.classList.contains('visible');
+                    c.classList.toggle('visible', show);
+                    a.classList.toggle('expanded', show);
+                }
+            });
+            var expContent = document.createElement('div');
+            expContent.className = 'toolstep-expander-content msg-streaming-content';
+            expContent.textContent = data.Content || '';
+            expander.appendChild(expHeader);
+            expander.appendChild(expContent);
+            div.appendChild(expander);
+        }
+
+        // Body placeholder (populated on completion)
+        var body = document.createElement('div');
+        body.className = 'md-content toolstep-body msg-body';
+        body.style.display = 'none';
+        div.appendChild(body);
+    }
+    else if (type === 'Thinking') {
+        div.classList.add('msg-thinking');
+        var header = document.createElement('div');
+        header.className = 'thinking-header';
+        var arrow = document.createElement('span');
+        arrow.className = 'thinking-arrow';
+        arrow.textContent = '\u25b6';
+        var statusSpan = document.createElement('span');
+        statusSpan.className = 'thinking-status msg-status';
+        statusSpan.style.color = STATUS_COLORS[data.Status] || STATUS_COLORS.Pending;
+        statusSpan.textContent = STATUS_SYMBOLS[data.Status] || STATUS_SYMBOLS.Pending;
+        var title = document.createElement('span');
+        title.className = 'thinking-title msg-expander-title';
+        title.textContent = data.ExpanderTitle || 'Thinking...';
+        header.appendChild(arrow);
+        header.appendChild(statusSpan);
+        header.appendChild(title);
+        header.addEventListener('click', function() {
+            var a = this.querySelector('.thinking-arrow');
+            var c = this.nextElementSibling;
+            if (c) {
+                var show = !c.classList.contains('visible');
+                c.classList.toggle('visible', show);
+                a.classList.toggle('expanded', show);
+            }
+        });
+        var content = document.createElement('div');
+        content.className = 'thinking-content msg-streaming-content';
+        content.textContent = data.Content || '';
+        div.appendChild(header);
+        div.appendChild(content);
+    }
+
+    _container.appendChild(div);
+    maybeScrollToBottom();
+}
+
+var _rafPending = {};
+function updateContent(id, contentMarkdown) {
+    if (_rafPending[id]) return;
+    _rafPending[id] = requestAnimationFrame(function() {
+        delete _rafPending[id];
+        var el = document.getElementById('msg-' + id);
+        if (!el) return;
+        var type = el.dataset.type;
+
+        if (type === 'User' || type === 'Assistant') {
+            var mc = el.querySelector('.msg-content');
+            if (mc) {
+                mc.innerHTML = renderMd(contentMarkdown);
+                linkifyFilePaths(mc);
+            }
+        } else if (type === 'ToolStep' || type === 'Thinking') {
+            var sc = el.querySelector('.msg-streaming-content');
+            if (sc) sc.textContent = contentMarkdown;
+        }
+        maybeScrollToBottom();
+    });
+}
+
+function updateStatus(id, status, expanderTitle) {
+    var el = document.getElementById('msg-' + id);
+    if (!el) return;
+    var st = el.querySelector('.msg-status');
+    if (st) {
+        st.textContent = STATUS_SYMBOLS[status] || STATUS_SYMBOLS.Pending;
+        st.style.color = STATUS_COLORS[status] || STATUS_COLORS.Pending;
+    }
+    if (expanderTitle) {
+        var et = el.querySelector('.msg-expander-title');
+        if (et) et.textContent = expanderTitle;
+    }
+}
+
+function setBody(id, bodyContent, bodyMode) {
+    var el = document.getElementById('msg-' + id);
+    if (!el) return;
+    var body = el.querySelector('.msg-body');
+    if (!body) return;
+    if (!bodyContent) { body.style.display = 'none'; return; }
+
+    if (bodyMode === 'Html') {
+        body.innerHTML = bodyContent;
+    } else {
+        body.innerHTML = renderMd(bodyContent);
+    }
+    linkifyFilePaths(body);
+    body.style.display = '';
+
+    // Apply cap and show-more link
+    body.classList.add('capped');
+    // Check if content exceeds cap after render
+    requestAnimationFrame(function() {
+        if (body.scrollHeight <= 120) {
+            body.classList.remove('capped');
+        } else {
+            // Add show more link if not already present
+            var existing = el.querySelector('.show-more-link');
+            if (!existing) {
+                var link = document.createElement('span');
+                link.className = 'show-more-link';
+                link.textContent = 'Show more';
+                link.addEventListener('click', function() {
+                    var isCapped = body.classList.contains('capped');
+                    body.classList.toggle('capped', !isCapped);
+                    link.textContent = isCapped ? 'Show less' : 'Show more';
+                });
+                body.parentNode.insertBefore(link, body.nextSibling);
+            }
+        }
+    });
+    maybeScrollToBottom();
+}
+
+function completeMessage(id) {
+    var el = document.getElementById('msg-' + id);
+    if (!el) return;
+    var type = el.dataset.type;
+
+    // Remove streaming cursor
+    var mc = el.querySelector('.msg-content');
+    if (mc) mc.classList.remove('streaming-cursor');
+
+    // Hide streaming expander for tool steps
+    if (type === 'ToolStep') {
+        var exp = el.querySelector('.msg-expander');
+        if (exp) exp.style.display = 'none';
+    }
+}
+
+function clearAll() {
+    if (_container) _container.innerHTML = '';
+    _userScrolledUp = false;
+}
+
+function loadMessages(jsonArray) {
+    var messages = typeof jsonArray === 'string' ? JSON.parse(jsonArray) : jsonArray;
+    for (var i = 0; i < messages.length; i++) {
+        var m = messages[i];
+        addMessage(m.Id, m.Type, m);
+        // For completed messages with body, set it
+        if (m.Body) {
+            setBody(m.Id, m.Body, m.BodyMode || 'Markdown');
+        }
+        // Mark as completed (removes streaming indicators)
+        if (!m.IsStreaming) {
+            completeMessage(m.Id);
+        }
+    }
+    scrollToBottom();
+}
+
+function setThemeColors(colorsJson) {
+    var colors = typeof colorsJson === 'string' ? JSON.parse(colorsJson) : colorsJson;
+    var root = document.documentElement;
+    for (var key in colors) {
+        if (colors.hasOwnProperty(key)) {
+            root.style.setProperty(key, colors[key]);
+        }
+    }
+}
+
+// --- Event handlers ---
+
+document.addEventListener('click', function(e) {
+    var link = e.target.closest('a.file-link');
+    if (link) {
+        e.preventDefault();
+        var path = link.dataset.path;
+        if (path) {
+            window.chrome.webview.postMessage(JSON.stringify({type:'openFile', path:path}));
+        }
+    }
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+    _container = document.getElementById('chat-container');
+    _container.addEventListener('scroll', function() {
+        _userScrolledUp = !isNearBottom();
+    });
+});
+</script>
+</head>
+<body>
+<div id="chat-container"></div>
+</body>
+</html>

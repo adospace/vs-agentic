@@ -22,7 +22,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Assets\showdown.min.js" />
-    <EmbeddedResource Include="Assets\markdown-template.html" />
+    <EmbeddedResource Include="Assets\chat-template.html" />
   </ItemGroup>
 
 </Project>

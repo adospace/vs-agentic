@@ -27,6 +27,7 @@ public sealed class ClaudeCliChatService : IChatService
     private readonly ILogger _logger;
 
     private string? _cliSessionId;
+    private decimal _cumulativeCostUsd;
 
     public ModelMode ModelMode { get; set; } = ModelMode.Auto;
 
@@ -396,8 +397,11 @@ public sealed class ClaudeCliChatService : IChatService
         }
         else
         {
-            _logger.LogDebug("[ClaudeCli] Completed: {Turns} turns, {Duration}ms, ${Cost}",
-                evt.NumTurns, evt.DurationMs, evt.CostUsd);
+            if (evt.CostUsd.HasValue)
+                _cumulativeCostUsd += evt.CostUsd.Value;
+
+            _logger.LogDebug("[ClaudeCli] Completed: {Turns} turns, {Duration}ms, ${Cost} (cumulative: ${Cumulative})",
+                evt.NumTurns, evt.DurationMs, evt.CostUsd, _cumulativeCostUsd);
         }
     }
 
@@ -518,7 +522,7 @@ public sealed class ClaudeCliChatService : IChatService
         return Task.FromResult(firstLine.Length > 0 ? firstLine : "New Chat");
     }
 
-    public decimal? GetSessionCost() => null; // Cost tracking is handled by the CLI
+    public decimal? GetSessionCost() => _cumulativeCostUsd > 0 ? _cumulativeCostUsd : null;
 
     public SessionTokenUsageSnapshot GetTokenUsageSnapshot() => new();
 
@@ -527,6 +531,7 @@ public sealed class ClaudeCliChatService : IChatService
     public void ClearHistory()
     {
         _cliSessionId = null;
+        _cumulativeCostUsd = 0;
         _logger.LogInformation("[ClaudeCli] Session cleared");
     }
 

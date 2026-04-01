@@ -36,7 +36,7 @@ public partial class SessionInfo : ObservableObject
     /// Empty string when cost is not yet available.
     /// </summary>
     public string SessionCostDisplay => SessionCost.HasValue
-        ? $"${SessionCost.Value:F4}"
+        ? $"${SessionCost.Value:F2}"
         : string.Empty;
 
     partial void OnSessionCostChanged(decimal? value)

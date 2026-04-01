@@ -20,11 +20,13 @@ namespace VsAgentic.VSExtension;
 
 [PackageRegistration(UseManagedResourcesOnly = true, AllowsBackgroundLoading = true)]
 [ProvideBindingPath]
+[ProvideAutoLoad(UIContextGuids80.NoSolution, PackageAutoLoadFlags.BackgroundLoad)]
+[ProvideAutoLoad(UIContextGuids80.SolutionExists, PackageAutoLoadFlags.BackgroundLoad)]
 [ProvideOptionPage(typeof(VsAgenticOptionsPage), "VsAgentic", "General", 0, 0, true)]
 [ProvideToolWindow(typeof(SessionListToolWindow), Style = VsDockStyle.Tabbed, Window = EnvDTE.Constants.vsWindowKindSolutionExplorer)]
 [ProvideToolWindow(typeof(ChatSessionToolWindow), Style = VsDockStyle.MDI, MultiInstances = true, Transient = true)]
 [Guid("c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f")]
-public sealed class VsAgenticPackage : AsyncPackage
+public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 {
     private static VsAgenticPackage? _instance;
 
@@ -36,8 +38,12 @@ public sealed class VsAgenticPackage : AsyncPackage
     private string? _solutionDirectory;
     private readonly Dictionary<string, int> _sessionWindowMap = new();
     private int _nextWindowId;
+    private uint _solutionEventsCookie;
 
     public static bool IsLoaded => _instance is not null;
+
+    /// <summary>Raised on the UI thread after the package has fully initialized.</summary>
+    internal static event Action? Initialized;
 
     protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
     {
@@ -72,6 +78,14 @@ public sealed class VsAgenticPackage : AsyncPackage
                 await CloseSessionWindowAsync(session);
             });
         };
+
+        // Listen for solution open/close/switch events
+        if (GetService(typeof(SVsSolution)) is IVsSolution solutionService)
+        {
+            solutionService.AdviseSolutionEvents(this, out _solutionEventsCookie);
+        }
+
+        Initialized?.Invoke();
     }
 
     private async Task InitializeSessionPersistenceAsync()
@@ -128,6 +142,7 @@ public sealed class VsAgenticPackage : AsyncPackage
                 options.BackendMode = optionsPage.BackendMode;
                 options.ApiKey = optionsPage.ApiKey;
                 options.ClaudeCliPath = optionsPage.ClaudeCliPath;
+                options.CliPermissionMode = optionsPage.CliPermissionMode;
                 options.ModelId = optionsPage.ModelId;
                 options.GitBashPath = optionsPage.GitBashPath;
                 options.BashTimeoutSeconds = optionsPage.BashTimeoutSeconds;
@@ -300,5 +315,104 @@ public sealed class VsAgenticPackage : AsyncPackage
             }
             _instance._sessionWindowMap.Remove(session.Id);
         }
+    }
+
+    /// <summary>
+    /// Switches the session list to a new workspace directory.
+    /// Closes idle chat windows and keeps busy (waiting for AI) ones open.
+    /// </summary>
+    private async Task SwitchWorkspaceAsync(string newSolutionDirectory)
+    {
+        if (_sessionStore is null || _sessionListViewModel is null) return;
+        if (string.Equals(_solutionDirectory, newSolutionDirectory, StringComparison.OrdinalIgnoreCase)) return;
+
+        await JoinableTaskFactory.SwitchToMainThreadAsync();
+
+        // Close idle chat windows, keep busy ones
+        var sessionsToClose = new List<string>();
+        foreach (var kvp in _sessionWindowMap)
+        {
+            var window = FindToolWindow(typeof(ChatSessionToolWindow), kvp.Value, false);
+            if (window is ChatSessionToolWindow chatWindow
+                && chatWindow.ChatControl.DataContext is ChatSessionViewModel vm
+                && vm.IsBusy)
+            {
+                // Session is busy (waiting for AI response) — keep it open
+                continue;
+            }
+
+            // Idle session — close the window
+            if (window?.Frame is IVsWindowFrame frame)
+            {
+                frame.CloseFrame((uint)__FRAMECLOSE.FRAMECLOSE_NoSave);
+            }
+            sessionsToClose.Add(kvp.Key);
+        }
+
+        foreach (var id in sessionsToClose)
+        {
+            _sessionWindowMap.Remove(id);
+        }
+
+        // Switch to the new workspace
+        _solutionDirectory = newSolutionDirectory;
+
+        try
+        {
+            await _sessionStore.EnsureWorkspaceAsync(_solutionDirectory);
+            _sessionListViewModel.Initialize(_sessionStore, _solutionDirectory);
+            await _sessionListViewModel.LoadSessionsAsync();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"VsAgentic: Failed to switch workspace: {ex}");
+        }
+    }
+
+    // --- IVsSolutionEvents implementation ---
+
+    int IVsSolutionEvents.OnAfterOpenSolution(object pUnkReserved, int fNewSolution)
+    {
+        _ = JoinableTaskFactory.RunAsync(async () =>
+        {
+            await JoinableTaskFactory.SwitchToMainThreadAsync();
+            var newDir = GetSolutionDirectory()
+                ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            await SwitchWorkspaceAsync(newDir);
+        });
+        return Microsoft.VisualStudio.VSConstants.S_OK;
+    }
+
+    int IVsSolutionEvents.OnBeforeCloseSolution(object pUnkReserved) => Microsoft.VisualStudio.VSConstants.S_OK;
+    int IVsSolutionEvents.OnAfterCloseSolution(object pUnkReserved)
+    {
+        _ = JoinableTaskFactory.RunAsync(async () =>
+        {
+            var fallback = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            await SwitchWorkspaceAsync(fallback);
+        });
+        return Microsoft.VisualStudio.VSConstants.S_OK;
+    }
+
+    int IVsSolutionEvents.OnAfterOpenProject(IVsHierarchy pHierarchy, int fAdded) => Microsoft.VisualStudio.VSConstants.S_OK;
+    int IVsSolutionEvents.OnQueryCloseProject(IVsHierarchy pHierarchy, int fRemoving, ref int pfCancel) => Microsoft.VisualStudio.VSConstants.S_OK;
+    int IVsSolutionEvents.OnBeforeCloseProject(IVsHierarchy pHierarchy, int fRemoved) => Microsoft.VisualStudio.VSConstants.S_OK;
+    int IVsSolutionEvents.OnAfterLoadProject(IVsHierarchy pStubHierarchy, IVsHierarchy pRealHierarchy) => Microsoft.VisualStudio.VSConstants.S_OK;
+    int IVsSolutionEvents.OnQueryUnloadProject(IVsHierarchy pRealHierarchy, ref int pfCancel) => Microsoft.VisualStudio.VSConstants.S_OK;
+    int IVsSolutionEvents.OnBeforeUnloadProject(IVsHierarchy pRealHierarchy, IVsHierarchy pStubHierarchy) => Microsoft.VisualStudio.VSConstants.S_OK;
+    int IVsSolutionEvents.OnQueryCloseSolution(object pUnkReserved, ref int pfCancel) => Microsoft.VisualStudio.VSConstants.S_OK;
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && _solutionEventsCookie != 0)
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            if (GetService(typeof(SVsSolution)) is IVsSolution solutionService)
+            {
+                solutionService.UnadviseSolutionEvents(_solutionEventsCookie);
+            }
+            _solutionEventsCookie = 0;
+        }
+        base.Dispose(disposing);
     }
 }

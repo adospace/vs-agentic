@@ -210,6 +210,16 @@ public sealed class ClaudeCliChatService : IChatService
         sb.Append(EscapeArgument(userMessage));
         sb.Append(" --output-format stream-json --verbose --bare");
 
+        // Permission mode — required since the CLI runs non-interactively
+        var permFlag = _options.CliPermissionMode switch
+        {
+            Configuration.CliPermissionMode.BypassPermissions => "bypassPermissions",
+            Configuration.CliPermissionMode.Default => "default",
+            _ => "acceptEdits",
+        };
+        sb.Append(" --permission-mode ");
+        sb.Append(permFlag);
+
         // Multi-turn: resume the existing session
         if (_cliSessionId is not null)
         {

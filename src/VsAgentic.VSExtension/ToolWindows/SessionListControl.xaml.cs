@@ -11,21 +11,42 @@ public partial class SessionListControl : UserControl
     public SessionListControl()
     {
         InitializeComponent();
+        Loaded += OnLoaded;
+    }
+
+    private void OnLoaded(object sender, System.Windows.RoutedEventArgs e)
+    {
+        if (_initialized) return;
+
+        if (!BindIfNeeded())
+        {
+            // Package hasn't initialized yet (VS restored the window before the package loaded).
+            // Subscribe to be notified when it's ready.
+            VsAgenticPackage.Initialized += OnPackageInitialized;
+        }
+    }
+
+    private void OnPackageInitialized()
+    {
+        VsAgenticPackage.Initialized -= OnPackageInitialized;
+        BindIfNeeded();
     }
 
     /// <summary>
     /// Binds the ViewModel if not already bound.
     /// Called both from the package and when the control loads (for VS-restored windows).
     /// </summary>
-    public void BindIfNeeded()
+    /// <returns>True if binding succeeded.</returns>
+    public bool BindIfNeeded()
     {
-        if (_initialized) return;
+        if (_initialized) return true;
 
         var vm = VsAgenticPackage.SessionListVM;
-        if (vm is null) return;
+        if (vm is null) return false;
 
         DataContext = vm;
         _initialized = true;
+        return true;
     }
 
     private void ListBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)

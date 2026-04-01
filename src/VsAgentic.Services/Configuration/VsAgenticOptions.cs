@@ -61,6 +61,12 @@ public class VsAgenticOptions
     public string ClaudeCliPath { get; set; } = "claude";
 
     /// <summary>
+    /// Permission mode for the Claude CLI. Controls how tool permissions are handled.
+    /// Defaults to AcceptEdits since the CLI runs non-interactively as a subprocess.
+    /// </summary>
+    public CliPermissionMode CliPermissionMode { get; set; } = CliPermissionMode.AcceptEdits;
+
+    /// <summary>
     /// Anthropic API key. If set, overrides the ANTHROPIC_API_KEY environment variable.
     /// </summary>
     public string ApiKey { get; set; } = "";

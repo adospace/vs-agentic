@@ -34,6 +34,12 @@ public class VsAgenticOptionsPage : DialogPage
     [DefaultValue("claude")]
     public string ClaudeCliPath { get; set; } = "claude";
 
+    [Category("Backend")]
+    [DisplayName("CLI Permission Mode")]
+    [Description("Controls how the CLI handles tool permissions. AcceptEdits: auto-accepts file edits (recommended). BypassPermissions: skips all checks (use in trusted environments only). Default: prompts for all permissions (not recommended — CLI runs non-interactively).")]
+    [DefaultValue(CliPermissionMode.AcceptEdits)]
+    public CliPermissionMode CliPermissionMode { get; set; } = CliPermissionMode.AcceptEdits;
+
     // ── Model ─────────────────────────────────────────────────────────────
 
     [Category("Model")]

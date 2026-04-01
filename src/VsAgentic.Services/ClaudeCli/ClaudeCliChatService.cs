@@ -72,7 +72,7 @@ public sealed class ClaudeCliChatService : IChatService
         ChannelWriter<string> writer,
         CancellationToken cancellationToken)
     {
-        var args = BuildArguments(userMessage);
+        var args = BuildArguments();
         _logger.LogDebug("[ClaudeCli] Launching: {Exe} {Args}", _options.ClaudeCliPath, args);
 
         var psi = new ProcessStartInfo
@@ -82,6 +82,7 @@ public sealed class ClaudeCliChatService : IChatService
             WorkingDirectory = _options.WorkingDirectory,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            RedirectStandardInput = true,
             UseShellExecute = false,
             CreateNoWindow = true,
             StandardOutputEncoding = Encoding.UTF8,
@@ -93,6 +94,11 @@ public sealed class ClaudeCliChatService : IChatService
         try
         {
             process.Start();
+
+            // Pipe the user message via stdin to avoid newlines/special chars
+            // breaking command-line argument parsing on Windows
+            await process.StandardInput.WriteAsync(userMessage);
+            process.StandardInput.Close();
         }
         catch (Exception ex)
         {
@@ -203,12 +209,10 @@ public sealed class ClaudeCliChatService : IChatService
         }
     }
 
-    private string BuildArguments(string userMessage)
+    private string BuildArguments()
     {
         var sb = new StringBuilder();
-        sb.Append("-p ");
-        sb.Append(EscapeArgument(userMessage));
-        sb.Append(" --output-format stream-json --verbose --bare");
+        sb.Append("-p --output-format stream-json --verbose --bare");
 
         // Permission mode — required since the CLI runs non-interactively
         var permFlag = _options.CliPermissionMode switch
@@ -520,16 +524,51 @@ public sealed class ClaudeCliChatService : IChatService
 
     // ── IChatService members ──────────────────────────────────────────────
 
-    public Task<string> GenerateTitleAsync(string userMessage, CancellationToken cancellationToken = default)
+    public async Task<string> GenerateTitleAsync(string userMessage, CancellationToken cancellationToken = default)
     {
-        // Generate a simple title from the first message (no extra API call needed)
-        var title = userMessage.Length <= 50
-            ? userMessage
-            : userMessage[..50] + "…";
+        const string titlePrompt =
+            "Generate a short title (max 6 words) for a coding assistant conversation that starts with the message below. " +
+            "The title should capture the intent or topic. Do NOT use quotes or punctuation at the end. " +
+            "Respond with ONLY the title, nothing else.\n\nUser message: ";
 
-        // Clean up: take first line only, remove markdown
-        var firstLine = title.Split('\n')[0].TrimStart('#', ' ', '-');
-        return Task.FromResult(firstLine.Length > 0 ? firstLine : "New Chat");
+        try
+        {
+            var prompt = titlePrompt + userMessage;
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = _options.ClaudeCliPath,
+                Arguments = "-p --output-format text --model claude-haiku-4-5-20251001 --bare --no-session-persistence",
+                WorkingDirectory = _options.WorkingDirectory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                RedirectStandardInput = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+            };
+
+            using var process = new Process { StartInfo = psi };
+            process.Start();
+
+            await process.StandardInput.WriteAsync(prompt);
+            process.StandardInput.Close();
+
+            var result = await process.StandardOutput.ReadToEndAsync();
+            await Task.Run(() => process.WaitForExit(), cancellationToken);
+
+            var title = result.Trim().Trim('"').Trim();
+            if (!string.IsNullOrWhiteSpace(title))
+                return title;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[ClaudeCli] Title generation failed, using fallback");
+        }
+
+        // Fallback: truncate user message
+        var fallback = userMessage.Split('\n')[0].TrimStart('#', ' ', '-');
+        return fallback.Length <= 50 ? fallback : fallback[..50] + "…";
     }
 
     public decimal? GetSessionCost() => _cumulativeCostUsd > 0 ? _cumulativeCostUsd : null;

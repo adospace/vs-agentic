@@ -253,6 +253,10 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                         MessageBox.Show($"VsAgentic service init failed:\n\n{ex.Message}\n\n{ex.InnerException?.Message}", "VsAgentic Debug", MessageBoxButton.OK, MessageBoxImage.Warning);
                     }
 
+                    // Wire up the UI event handlers BEFORE restoring messages,
+                    // so the MessagesRestored event is received by the WebView.
+                    chatWindow.ChatControl.Initialize(viewModel);
+
                     // Enable persistence on the view model
                     if (session.PersistedId.HasValue && _instance._sessionStore is not null && _instance._solutionDirectory is not null)
                     {
@@ -273,8 +277,6 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                             }
                         }
                     }
-
-                    chatWindow.ChatControl.Initialize(viewModel);
 
                     // Link the view model to its session entry so cost updates flow back to the list
                     viewModel.SessionInfo = session;

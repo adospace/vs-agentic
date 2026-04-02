@@ -295,6 +295,16 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                     };
                 }
 
+                // Clean up when the user closes the window (e.g. via X button)
+                if (window is ChatSessionToolWindow closableWindow)
+                {
+                    closableWindow.Closed += () =>
+                    {
+                        _instance?._sessionWindowMap.Remove(session.Id);
+                        session.IsActive = false;
+                    };
+                }
+
                 if (window.Frame is IVsWindowFrame frame)
                 {
                     frame.Show();
@@ -321,6 +331,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 frame.CloseFrame((uint)__FRAMECLOSE.FRAMECLOSE_NoSave);
             }
             _instance._sessionWindowMap.Remove(session.Id);
+            session.IsActive = false;
         }
     }
 

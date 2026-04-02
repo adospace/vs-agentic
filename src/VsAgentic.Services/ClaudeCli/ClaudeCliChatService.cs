@@ -477,7 +477,7 @@ public sealed class ClaudeCliChatService : IChatService
             if (input.TryGetProperty("command", out var cmd))
                 return $"```\n{cmd.GetString()}\n```";
             if (input.TryGetProperty("file_path", out var fp))
-                return fp.GetString() ?? "";
+                return $"`{fp.GetString()}`";
             if (input.TryGetProperty("pattern", out var pat))
                 return pat.GetString() ?? "";
 

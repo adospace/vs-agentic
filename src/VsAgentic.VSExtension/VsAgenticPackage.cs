@@ -283,7 +283,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
                     // Sync generated title back to session list and window caption
                     viewModel.PropertyChanged += (_, e) =>
-                    {
+                    {        
+                        ThreadHelper.ThrowIfNotOnUIThread();
+
                         if (e.PropertyName == nameof(ChatSessionViewModel.SessionTitle))
                         {
                             session.Name = viewModel.SessionTitle;

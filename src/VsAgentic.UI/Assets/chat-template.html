@@ -81,7 +81,6 @@ html, body {
 }
 .toolstep-status { font-size: 10px; }
 .toolstep-name { color: var(--text-muted); }
-.toolstep-title { color: var(--text-heading); }
 
 .toolstep-expander {
     margin: 4px 0 0 18px;
@@ -255,7 +254,8 @@ var STATUS_SYMBOLS = { Pending: '\u25cb', Success: '\u25cf', Error: '\u25cf', In
 var STATUS_COLORS = { Pending: 'var(--info)', Success: 'var(--success)', Error: 'var(--error)', Info: 'var(--info)' };
 
 // File path regex (same as markdown-template.html)
-var filePathRe = /(?:[A-Za-z]:[\\\/]|\.{0,2}\/|(?=[\w@]))(?:[\w\-\.@]+[\\\/])+[\w\-\.]+\.[A-Za-z]{1,10}(?::(\d+)(?:-\d+)?)?/g;
+// File path regex: require extension starts lowercase to avoid false positives like RTR.MobileApp
+var filePathRe = /(?:[A-Za-z]:[\\\/]|\.{0,2}\/|(?=[\w@]))(?:[\w\-\.@]+[\\\/])+[\w\-\.]+\.[a-z][a-zA-Z0-9]{0,9}(?::(\d+)(?:-\d+)?)?/g;
 
 function linkifyFilePaths(container) {
     var codes = container.querySelectorAll('code');
@@ -280,6 +280,7 @@ function linkifyFilePaths(container) {
     var links = container.querySelectorAll('a[href]');
     for (var j = 0; j < links.length; j++) {
         var link = links[j];
+        if (link.classList.contains('file-link')) continue; // already processed
         var href = link.getAttribute('href');
         if (!href) continue;
         if (/^(https?|mailto|ftp|javascript):/i.test(href)) continue;
@@ -287,6 +288,37 @@ function linkifyFilePaths(container) {
         link.dataset.path = href;
         link.title = 'Open in editor';
         link.href = '#';
+    }
+
+    // Walk text nodes outside <pre>/<code> and linkify file paths in plain text
+    var walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
+    var textNodes = [];
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+    for (var k = 0; k < textNodes.length; k++) {
+        var node = textNodes[k];
+        if (node.parentNode.closest('pre, code, a')) continue;
+        var txt = node.nodeValue;
+        filePathRe.lastIndex = 0;
+        if (!filePathRe.test(txt)) continue;
+        filePathRe.lastIndex = 0;
+        var frag = document.createDocumentFragment();
+        var lastIdx = 0;
+        var m;
+        while ((m = filePathRe.exec(txt)) !== null) {
+            if (m.index > lastIdx)
+                frag.appendChild(document.createTextNode(txt.slice(lastIdx, m.index)));
+            var a = document.createElement('a');
+            a.href = '#';
+            a.className = 'file-link';
+            a.dataset.path = m[0];
+            a.textContent = m[0];
+            a.title = 'Open in editor';
+            frag.appendChild(a);
+            lastIdx = filePathRe.lastIndex;
+        }
+        if (lastIdx < txt.length)
+            frag.appendChild(document.createTextNode(txt.slice(lastIdx)));
+        node.parentNode.replaceChild(frag, node);
     }
 }
 
@@ -361,12 +393,8 @@ function addMessage(id, type, dataJson) {
         var nameSpan = document.createElement('span');
         nameSpan.className = 'toolstep-name';
         nameSpan.textContent = '[' + (data.ToolName || '') + ']';
-        var titleSpan = document.createElement('span');
-        titleSpan.className = 'toolstep-title msg-title';
-        titleSpan.textContent = data.Title || '';
         header.appendChild(statusSpan);
         header.appendChild(nameSpan);
-        header.appendChild(titleSpan);
         div.appendChild(header);
 
         // Streaming expander

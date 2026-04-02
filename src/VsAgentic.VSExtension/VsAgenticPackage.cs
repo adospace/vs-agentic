@@ -144,16 +144,8 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
             if (optionsPage is not null)
             {
-                options.BackendMode = optionsPage.BackendMode;
-                options.ApiKey = optionsPage.ApiKey;
                 options.ClaudeCliPath = optionsPage.ClaudeCliPath;
                 options.CliPermissionMode = optionsPage.CliPermissionMode;
-                options.ModelId = optionsPage.ModelId;
-                options.GitBashPath = optionsPage.GitBashPath;
-                options.BashTimeoutSeconds = optionsPage.BashTimeoutSeconds;
-                options.MaxOutputChars = optionsPage.MaxOutputChars;
-                options.MaxReadLines = optionsPage.MaxReadLines;
-                options.SystemPrompt = optionsPage.SystemPrompt;
             }
         });
 

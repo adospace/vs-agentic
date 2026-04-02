@@ -4,7 +4,6 @@ using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using VsAgentic.Services.Abstractions;
-using VsAgentic.Services.Anthropic;
 using VsAgentic.Services.Configuration;
 using VsAgentic.Services.Models;
 using Microsoft.Extensions.Options;
@@ -233,14 +232,10 @@ public partial class ChatSessionViewModel : ObservableObject
             // Persist conversation history after each completed exchange
             PersistConversationHistoryFireAndForget();
 
-            // Refresh cost display in the session list and persist token usage
-            if (_chatService is not null)
+            // Refresh cost display in the session list
+            if (_chatService is not null && SessionInfo is not null)
             {
-                var cost = _chatService.GetSessionCost();
-                var snapshot = _chatService.GetTokenUsageSnapshot();
-                if (SessionInfo is not null)
-                    SessionInfo.SessionCost = cost;
-                PersistTokenUsageFireAndForget(snapshot);
+                SessionInfo.SessionCost = _chatService.GetSessionCost();
             }
         }
         catch (Exception ex)
@@ -416,33 +411,6 @@ public partial class ChatSessionViewModel : ObservableObject
         _ = Task.Run(async () =>
         {
             try { await store.SaveConversationHistoryAsync(folder, sessionId.Value, historyJson); }
-            catch { /* best effort */ }
-        });
-    }
-
-    private void PersistTokenUsageFireAndForget(SessionTokenUsageSnapshot snapshot)
-    {
-        var store = ActiveStore;
-        var folder = ActiveFolder;
-        var sessionId = ActiveSessionId;
-        if (store is null || folder is null || !sessionId.HasValue) return;
-
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                var index = await store.GetSessionIndexAsync(folder);
-                var entry = index.FirstOrDefault(e => e.Id == sessionId.Value);
-                if (entry is not null)
-                {
-                    entry.TotalInputTokens         = snapshot.TotalInputTokens;
-                    entry.TotalOutputTokens        = snapshot.TotalOutputTokens;
-                    entry.TotalCacheCreationTokens = snapshot.TotalCacheCreationTokens;
-                    entry.TotalCacheReadTokens     = snapshot.TotalCacheReadTokens;
-                    entry.LastModelId              = snapshot.LastModelId;
-                    await store.UpdateSessionAsync(folder, entry);
-                }
-            }
             catch { /* best effort */ }
         });
     }

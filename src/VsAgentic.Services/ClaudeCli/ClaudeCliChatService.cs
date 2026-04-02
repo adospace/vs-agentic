@@ -4,7 +4,6 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using VsAgentic.Services.Abstractions;
-using VsAgentic.Services.Anthropic;
 using VsAgentic.Services.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -16,7 +15,7 @@ namespace VsAgentic.Services.ClaudeCli;
 /// Uses the user's Claude subscription (Pro/Max) instead of a per-token API key.
 ///
 /// CLI invocation:
-///   claude -p "{prompt}" --output-format stream-json --verbose --bare --no-session-persistence
+///   claude -p "{prompt}" --output-format stream-json --verbose --no-session-persistence
 ///
 /// For multi-turn conversations, we use --resume {sessionId} to maintain context.
 /// </summary>
@@ -29,8 +28,6 @@ public sealed class ClaudeCliChatService : IChatService
     private string? _cliSessionId;
     private decimal _cumulativeCostUsd;
 
-    public ModelMode ModelMode { get; set; } = ModelMode.Auto;
-
     public ClaudeCliChatService(
         IOptions<VsAgenticOptions> options,
         IOutputListener outputListener,
@@ -39,6 +36,10 @@ public sealed class ClaudeCliChatService : IChatService
         _options = options.Value;
         _outputListener = outputListener;
         _logger = logger;
+
+        // Remove any inherited API key from the host process (e.g. Visual Studio)
+        // so the CLI uses subscription auth instead of a stale/invalid API key.
+        Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", null);
     }
 
     public async IAsyncEnumerable<string> SendMessageAsync(
@@ -212,7 +213,7 @@ public sealed class ClaudeCliChatService : IChatService
     private string BuildArguments()
     {
         var sb = new StringBuilder();
-        sb.Append("-p --output-format stream-json --verbose --bare");
+        sb.Append("-p --output-format stream-json --verbose");
 
         // Permission mode — required since the CLI runs non-interactively
         var permFlag = _options.CliPermissionMode switch
@@ -538,7 +539,7 @@ public sealed class ClaudeCliChatService : IChatService
             var psi = new ProcessStartInfo
             {
                 FileName = _options.ClaudeCliPath,
-                Arguments = "-p --output-format text --model claude-haiku-4-5-20251001 --bare --no-session-persistence",
+                Arguments = "-p --output-format text --no-session-persistence",
                 WorkingDirectory = _options.WorkingDirectory,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -572,10 +573,6 @@ public sealed class ClaudeCliChatService : IChatService
     }
 
     public decimal? GetSessionCost() => _cumulativeCostUsd > 0 ? _cumulativeCostUsd : null;
-
-    public SessionTokenUsageSnapshot GetTokenUsageSnapshot() => new();
-
-    public void RestoreTokenUsage(SessionTokenUsageSnapshot snapshot) { }
 
     public void ClearHistory()
     {

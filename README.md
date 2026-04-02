@@ -1,6 +1,6 @@
-﻿# VsAgentic
+# VsAgentic
 
-**An agentic AI coding assistant for Visual Studio 2026** — chat with Claude to explore, understand, and modify your codebase using integrated tools for file search, code navigation, and inline editing.
+**An agentic AI coding assistant for Visual Studio 2026** — chat with Claude to explore, understand, and modify your codebase, powered by the Claude Code CLI and your Claude subscription.
 
 > ⭐ If VsAgentic saves you time, please consider giving it a star — it helps others discover the extension and motivates continued development!
 
@@ -12,54 +12,21 @@
 
 ## ✨ Features
 
-### 🤖 Powered by Anthropic Claude
-VsAgentic connects directly to the Anthropic API and uses the latest Claude models (Haiku, Sonnet, Opus) to understand your questions and act on your codebase — not just answer them.
-
-### 🔑 Two Ways to Connect
-| Mode | Description |
-|------|-------------|
-| **API Key** *(default)* | Direct Anthropic API calls — billed per token, requires an `ANTHROPIC_API_KEY` |
-| **Claude CLI** | Uses your Claude subscription (Pro/Max) via the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — no API key needed |
-
-Switch between modes in **Tools → Options → VsAgentic → General**.
+### 🤖 Powered by Claude Code CLI
+VsAgentic uses the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) as its backend, leveraging your Claude subscription (Pro/Max) to understand your questions and act on your codebase — not just answer them. The CLI handles model selection, tool execution, and all agentic capabilities natively.
 
 ### ⚙️ Configurable Settings
-All settings are available in the Visual Studio **Tools → Options → VsAgentic** dialog and are persisted across sessions:
+Settings are available in the Visual Studio **Tools → Options → VsAgentic** dialog:
 
-- **Backend Mode** — API Key or Claude CLI
-- **Anthropic API Key** — set directly in VS (overrides the environment variable)
-- **Claude CLI Path** — path to the `claude` executable
-- **Default Model** — choose which Claude model to use
-- **Git Bash Path** / **Bash Timeout** — tool configuration
-- **System Prompt** — fully customizable
+- **Claude CLI Path** — path to the `claude` executable (defaults to `claude` on PATH)
+- **CLI Permission Mode** — controls how the CLI handles tool permissions
 
-### 🧰 8 Integrated Agentic Tools
-Claude doesn't just suggest code — it **uses tools** to do the work for you:
-
-| Tool | Description |
-|------|-------------|
-| `bash` | Execute Git Bash commands — run builds, git operations, scripts, package installs |
-| `grop` | Find files by glob pattern (e.g. `**/*.cs`, `src/**/*.json`) |
-| `greb` | Search file contents with regex — like `grep` with file filtering and context lines |
-| `read` | Read file contents with line numbers, with offset/limit for large files |
-| `edit` | Perform exact string replacements in files — surgical, reviewable edits |
-| `write` | Create new files or overwrite existing ones |
-| `web_fetch` | Fetch a web page and return its content as clean Markdown (HTML converted via ReverseMarkdown) |
-| `agent` | Spawn a sub-agent (Haiku) to handle a focused sub-task in parallel |
-
-### 🧠 Smart Model Routing
-VsAgentic automatically selects the right Claude model for each message:
-
-| Mode | Behaviour |
-|------|-----------|
-| **Auto** *(default)* | Classifies task complexity and picks the best model automatically |
-| **Simple** | Always uses Claude Haiku — fastest, great for quick lookups |
-| **Moderate** | Always uses Claude Sonnet — balanced speed and reasoning |
-| **Complex** | Always uses Claude Opus — maximum reasoning for hard problems |
+### 🧰 Built-in Agentic Tools
+Claude Code comes with a full suite of agentic tools — file search, code search, file reading/editing, bash commands, web fetching, and sub-agent delegation. The CLI manages all tools natively; VsAgentic displays tool steps inline so you can follow every action.
 
 ### 💬 Persistent Chat Sessions
 - Sessions are saved per-workspace under `%AppData%\VsAgentic\workspaces\`
-- Conversation history and messages are fully restored when you reopen VS
+- Conversation history is fully restored when you reopen VS
 - Auto-generated session titles based on your first message
 - Manage sessions from the **VsAgentic Sessions** panel (open, rename, delete)
 
@@ -70,19 +37,14 @@ Responses are rendered with full Markdown support — syntax-highlighted code bl
 - Open multiple chat sessions simultaneously as floating or docked tool windows
 - Each session maintains its own independent conversation history and AI context
 
-### 🔁 Built-in Resilience
-Automatic retry with exponential back-off on Anthropic API rate limits (429) and transient errors (502, 503, 504, 529).
-
 ---
 
 ## 📋 Requirements
 
 - **Visual Studio 2026** version **17.14 or later** (Community, Professional, or Enterprise)
 - **Windows x64** (amd64)
-- **[Git for Windows](https://git-scm.com/download/win)** — required for the `bash` tool (expects `C:\Program Files\Git\bin\bash.exe`)
-- **One of the following** to connect to Claude:
-  - An **Anthropic API key** — get one at [console.anthropic.com](https://console.anthropic.com), **or**
-  - The **Claude Code CLI** installed (`npm install -g @anthropic-ai/claude-code`) with an active Claude subscription
+- **[Node.js](https://nodejs.org/)** (v18 or later) — required to install the Claude Code CLI
+- **An active [Claude Pro or Max subscription](https://claude.ai/pricing)** — VsAgentic uses the Claude Code CLI which requires a paid Claude subscription. API keys are **not** supported.
 
 ---
 
@@ -102,35 +64,51 @@ Automatic retry with exponential back-off on Anthropic API rate limits (429) and
 
 ## ⚙️ Setup
 
-### Option A — API Key mode *(default)*
+### 1. Install the Claude Code CLI
 
-Set your Anthropic API key using **one** of these methods:
+Follow the official [Claude Code installation guide](https://docs.anthropic.com/en/docs/claude-code/getting-started) or run:
 
-1. **In Visual Studio** *(easiest)* — go to **Tools → Options → VsAgentic → General** and paste your key into the **Anthropic API Key** field.
+```
+npm install -g @anthropic-ai/claude-code
+```
 
-2. **Environment variable** — set `ANTHROPIC_API_KEY` as a system or user environment variable:
-   ```powershell
-   # Run in an elevated PowerShell prompt
-   [System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-...", "Machine")
-   ```
-   Then **restart Visual Studio** to pick up the new variable.
+### 2. Log in with your Claude subscription
 
-### Option B — Claude CLI mode *(uses your Claude subscription)*
+Open a terminal (PowerShell or Command Prompt) and run:
 
-1. Install the Claude Code CLI:
-   ```
-   npm install -g @anthropic-ai/claude-code
-   ```
-2. Make sure `claude` is on your PATH, or note the full path (e.g. `C:\Users\<you>\AppData\Roaming\npm\claude.cmd`)
-3. In Visual Studio, go to **Tools → Options → VsAgentic → General**:
-   - Set **Backend Mode** to `ClaudeCli`
-   - If `claude` is not on your PATH, set **Claude CLI Path** to the full path
+```
+claude login
+```
+
+This will open your browser to authenticate with your Claude account. You need an active **Pro** or **Max** subscription.
+
+> For detailed instructions, see the official [Claude Code authentication docs](https://docs.anthropic.com/en/docs/claude-code/getting-started#authentication).
+
+### 3. Verify the CLI works
+
+```
+claude -p "hello"
+```
+
+If you see a response from Claude, you're all set.
+
+### 4. Configure VsAgentic (optional)
+
+- If `claude` is not on your PATH, go to **Tools → Options → VsAgentic → General** and set **Claude CLI Path** to the full path (e.g. `C:\Users\<you>\AppData\Roaming\npm\claude.cmd`)
 
 ### Open VsAgentic
 
 Go to **View → Other Windows → VsAgentic** to open a new chat session.
 
 A **VsAgentic Sessions** panel will also appear (docked next to Solution Explorer by default) where you can manage all your conversations.
+
+### Troubleshooting
+
+| Error | Cause | Fix |
+|-------|-------|-----|
+| **"Not logged in · Please run /login"** | The CLI is not authenticated | Run `claude login` from a terminal and complete the browser-based login flow |
+| **"Invalid API key"** | An `ANTHROPIC_API_KEY` environment variable is set and interfering | Remove the `ANTHROPIC_API_KEY` env var — VsAgentic uses subscription auth, not API keys. Remove it with: `[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", $null, "User")` then restart Visual Studio |
+| **"Failed to start Claude CLI"** | The `claude` command was not found | Install the CLI with `npm install -g @anthropic-ai/claude-code`, or set the full path in **Tools → Options → VsAgentic** |
 
 ---
 
@@ -139,7 +117,6 @@ A **VsAgentic Sessions** panel will also appear (docked next to Solution Explore
 1. **Open a solution** — VsAgentic automatically scopes all file operations to your solution's root directory.
 2. **Type a message** in the chat input and press **Enter** or click **Send**.
 3. **Watch Claude work** — tool calls are shown inline as expandable steps so you can follow every action.
-4. **Switch model modes** — use the model selector in the chat toolbar to change routing behaviour mid-conversation.
 
 ### Example prompts
 
@@ -166,25 +143,24 @@ Run the unit tests and fix any failures you find.
 ```
 VsAgentic.sln
 ├── VsAgentic.VSExtension/   # VSIX entry point — commands, tool windows, package bootstrap
-├── VsAgentic.UI/   # Shared WPF controls, ViewModels, Markdown renderer (WebView2)
-├── VsAgentic.Services/      # Core AI logic — tools, chat service, model router, session store
+├── VsAgentic.UI/            # Shared WPF controls, ViewModels, Markdown renderer (WebView2)
+├── VsAgentic.Services/      # Core service layer — CLI integration, session store
 ├── VsAgentic.Desktop/       # Standalone WPF desktop app (for development & testing)
-└── VsAgentic.Console/   # Console host (for development & testing)
+└── VsAgentic.Console/       # Console host (for development & testing)
 ```
 
 ---
 
 ## 🔒 Privacy & Security
 
-- Your code is sent to the **Anthropic API** to fulfill requests. Review [Anthropic's privacy policy](https://www.anthropic.com/privacy) before use on sensitive or proprietary codebases.
-- Your API key is stored either as an environment variable or in the Visual Studio settings registry (if configured via Tools → Options).
+- Your code is sent to **Anthropic** via the Claude Code CLI to fulfill requests. Review [Anthropic's privacy policy](https://www.anthropic.com/privacy) before use on sensitive or proprietary codebases.
+- **No API keys are stored or required.** Authentication is handled entirely by the Claude Code CLI via your Claude subscription.
 - Session history (messages) is stored **locally** in `%AppData%\VsAgentic\` and never leaves your machine.
 
 ---
 
 ## 🐛 Known Limitations
 
-- Requires **Git for Windows** to be installed at the default path for the `bash` tool to function.
 - Currently supports **Visual Studio 2026 (17.14+)** only — VS Code and Rider are not yet supported.
 - The extension targets **x64 Windows** only.
 

@@ -1,4 +1,4 @@
-﻿namespace VsAgentic.Services.Models;
+namespace VsAgentic.Services.Models;
 
 public class SessionEntry
 {
@@ -7,11 +7,4 @@ public class SessionEntry
     public int Ordinal { get; set; }
     public DateTime CreatedUtc { get; set; }
     public DateTime LastActivityUtc { get; set; }
-
-    // Token usage — persisted so cost survives IDE restarts
-    public int TotalInputTokens { get; set; }
-    public int TotalOutputTokens { get; set; }
-    public int TotalCacheCreationTokens { get; set; }
-    public int TotalCacheReadTokens { get; set; }
-    public string? LastModelId { get; set; }
 }

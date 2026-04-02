@@ -2,7 +2,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using VsAgentic.Services.Abstractions;
-using VsAgentic.Services.Anthropic;
 using VsAgentic.Services.Models;
 
 namespace VsAgentic.UI.ViewModels;
@@ -84,18 +83,6 @@ public partial class SessionListViewModel : ObservableObject
                 LastActivity = entry.LastActivityUtc.ToLocalTime(),
                 IsActive = false
             };
-
-            // Restore cost from persisted token usage so it shows immediately on load
-            if (entry.LastModelId is not null)
-            {
-                var cost = ModelPricing.CalculateCost(
-                    entry.LastModelId,
-                    entry.TotalInputTokens,
-                    entry.TotalOutputTokens,
-                    entry.TotalCacheCreationTokens,
-                    entry.TotalCacheReadTokens);
-                info.SessionCost = cost;
-            }
 
             Sessions.Add(info);
         }

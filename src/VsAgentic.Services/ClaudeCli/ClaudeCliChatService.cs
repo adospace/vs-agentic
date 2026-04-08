@@ -338,19 +338,26 @@ public sealed class ClaudeCliChatService : IChatService
                     var toolName = block.TryGetProperty("name", out var np) ? np.GetString() ?? "tool" : "tool";
                     var toolId = block.TryGetProperty("id", out var ip) ? ip.GetString() ?? "" : "";
 
+                    var toolTitle = $"Using {toolName}";
+                    string? toolBody = null;
+
+                    if (block.TryGetProperty("input", out var input))
+                    {
+                        // For Agent tool, extract description for the title
+                        if (toolName == "Agent" && input.TryGetProperty("description", out var descProp))
+                            toolTitle = descProp.GetString() ?? toolTitle;
+
+                        toolBody = FormatToolInput(toolName, input);
+                    }
+
                     toolItem = new OutputItem
                     {
                         Id = toolId,
                         ToolName = toolName,
-                        Title = $"Using {toolName}",
-                        Status = OutputItemStatus.Pending
+                        Title = toolTitle,
+                        Status = OutputItemStatus.Pending,
+                        Body = toolBody
                     };
-
-                    // Try to extract a summary from tool input
-                    if (block.TryGetProperty("input", out var input))
-                    {
-                        toolItem.Body = FormatToolInput(toolName, input);
-                    }
 
                     _outputListener.OnStepStarted(toolItem);
                     break;
@@ -365,7 +372,9 @@ public sealed class ClaudeCliChatService : IChatService
                             : "";
 
                         toolItem.Status = OutputItemStatus.Success;
-                        toolItem.Title = $"Used {toolItem.ToolName}";
+                        // Preserve Agent description title; default to "Used {tool}" for others
+                        if (toolItem.ToolName != "Agent")
+                            toolItem.Title = $"Used {toolItem.ToolName}";
                         toolItem.Body = content;
                         toolItem.Delta = null;
                         _outputListener.OnStepCompleted(toolItem);
@@ -451,7 +460,9 @@ public sealed class ClaudeCliChatService : IChatService
         if (item.Status == OutputItemStatus.Pending)
         {
             item.Status = OutputItemStatus.Success;
-            item.Title = $"Used {item.ToolName}";
+            // Preserve Agent description title; default to "Used {tool}" for others
+            if (item.ToolName != "Agent")
+                item.Title = $"Used {item.ToolName}";
             item.Delta = null;
             _outputListener.OnStepCompleted(item);
         }
@@ -474,6 +485,10 @@ public sealed class ClaudeCliChatService : IChatService
     {
         try
         {
+            // Agent tool: show the prompt as the body content
+            if (toolName == "Agent" && input.TryGetProperty("prompt", out var prompt))
+                return prompt.GetString() ?? "";
+
             // Show the most relevant field for common tools
             if (input.TryGetProperty("command", out var cmd))
                 return $"```\n{cmd.GetString()}\n```";

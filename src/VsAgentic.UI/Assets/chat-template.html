@@ -40,6 +40,85 @@ html, body {
     padding: 8px 0;
 }
 
+/* Custom scrollbar styling */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb, rgba(128, 128, 128, 0.4));
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover, rgba(128, 128, 128, 0.7));
+}
+::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+/* Copy button on hover */
+.msg {
+    position: relative;
+}
+.msg-copy-btn {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 24px;
+    height: 24px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    transition: opacity 0.15s;
+    z-index: 10;
+    padding: 0;
+    font-size: 13px;
+    line-height: 1;
+}
+.msg:hover .msg-copy-btn {
+    opacity: 1;
+}
+.msg-copy-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-input);
+}
+.msg-copy-btn.copied {
+    color: var(--success);
+}
+
+/* Custom context menu */
+.ctx-menu {
+    position: fixed;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 0;
+    min-width: 120px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    z-index: 1000;
+    display: none;
+}
+.ctx-menu-item {
+    padding: 4px 16px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-primary);
+    user-select: none;
+}
+.ctx-menu-item:hover {
+    background: var(--accent);
+    color: #fff;
+}
+
 /* Message containers */
 .msg { margin: 2px 12px; }
 
@@ -607,6 +686,121 @@ document.addEventListener('click', function(e) {
             window.chrome.webview.postMessage(JSON.stringify({type:'openFile', path:path}));
         }
     }
+});
+
+// --- Copy button ---
+// SVG icons for copy button
+var ICON_COPY = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5h-1a1.5 1.5 0 01-1.5-1.5v-6a1.5 1.5 0 011.5-1.5h6a1.5 1.5 0 011.5 1.5v1"/></svg>';
+var ICON_CHECK = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3.5 8.5 6.5 11.5 12.5 4.5"/></svg>';
+
+function getMessageText(msgEl) {
+    var type = msgEl.dataset.type;
+    if (type === 'User' || type === 'Assistant') {
+        var mc = msgEl.querySelector('.msg-content');
+        return mc ? mc.innerText : '';
+    } else if (type === 'ToolStep') {
+        var name = msgEl.querySelector('.toolstep-name');
+        var body = msgEl.querySelector('.msg-body');
+        var streaming = msgEl.querySelector('.msg-streaming-content');
+        var parts = [];
+        if (name) parts.push(name.textContent);
+        if (body && body.style.display !== 'none') parts.push(body.innerText);
+        else if (streaming) parts.push(streaming.textContent);
+        return parts.join('\n');
+    } else if (type === 'Thinking') {
+        var tc = msgEl.querySelector('.thinking-content');
+        return tc ? tc.textContent : '';
+    }
+    return '';
+}
+
+function copyToClipboard(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    ta.style.top = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+}
+
+function addCopyButton(msgDiv) {
+    var btn = document.createElement('button');
+    btn.className = 'msg-copy-btn';
+    btn.title = 'Copy to clipboard';
+    btn.innerHTML = ICON_COPY;
+    btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        var text = getMessageText(msgDiv);
+        if (!text) return;
+        copyToClipboard(text);
+        btn.innerHTML = ICON_CHECK;
+        btn.classList.add('copied');
+        setTimeout(function() {
+            btn.innerHTML = ICON_COPY;
+            btn.classList.remove('copied');
+        }, 1500);
+    });
+    msgDiv.appendChild(btn);
+}
+
+// Patch addMessage to include copy button
+var _origAddMessage = addMessage;
+addMessage = function(id, type, dataJson) {
+    _origAddMessage(id, type, dataJson);
+    var el = document.getElementById('msg-' + id);
+    if (el) addCopyButton(el);
+};
+
+// Patch loadMessages to include copy buttons
+var _origLoadMessages = loadMessages;
+loadMessages = function(jsonArray) {
+    _origLoadMessages(jsonArray);
+    var msgs = _container.querySelectorAll('.msg');
+    for (var i = 0; i < msgs.length; i++) {
+        if (!msgs[i].querySelector('.msg-copy-btn')) {
+            addCopyButton(msgs[i]);
+        }
+    }
+};
+
+// --- Context menu ---
+var _ctxMenu;
+function createCtxMenu() {
+    _ctxMenu = document.createElement('div');
+    _ctxMenu.className = 'ctx-menu';
+    var copyItem = document.createElement('div');
+    copyItem.className = 'ctx-menu-item';
+    copyItem.textContent = 'Copy';
+    copyItem.addEventListener('click', function() {
+        var sel = window.getSelection().toString();
+        if (sel) {
+            copyToClipboard(sel);
+        }
+        _ctxMenu.style.display = 'none';
+    });
+    _ctxMenu.appendChild(copyItem);
+    document.body.appendChild(_ctxMenu);
+}
+
+document.addEventListener('contextmenu', function(e) {
+    var sel = window.getSelection().toString();
+    if (sel) {
+        e.preventDefault();
+        if (!_ctxMenu) createCtxMenu();
+        _ctxMenu.style.display = 'block';
+        // Position near cursor, clamped to viewport
+        var x = Math.min(e.clientX, window.innerWidth - 140);
+        var y = Math.min(e.clientY, window.innerHeight - 40);
+        _ctxMenu.style.left = x + 'px';
+        _ctxMenu.style.top = y + 'px';
+    }
+});
+
+document.addEventListener('click', function() {
+    if (_ctxMenu) _ctxMenu.style.display = 'none';
 });
 
 document.addEventListener('DOMContentLoaded', function() {

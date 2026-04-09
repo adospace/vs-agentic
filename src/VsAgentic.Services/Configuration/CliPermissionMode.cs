@@ -1,25 +1,31 @@
 namespace VsAgentic.Services.Configuration;
 
 /// <summary>
-/// Permission mode passed to the Claude CLI via --permission-mode.
-/// Controls how the CLI handles tool permission requests.
+/// Permission mode passed to the Claude CLI via --permission-mode. Controls
+/// which gated tool calls the CLI forwards to our in-process MCP permission
+/// helper (which raises the chat banner) versus auto-accepting silently.
 /// </summary>
 public enum CliPermissionMode
 {
     /// <summary>
-    /// Auto-accept file edits (Edit, Write) but prompt for dangerous operations.
-    /// Recommended for VS extension use since the CLI runs non-interactively.
+    /// Auto-accept file-edit tools (Edit, Write, NotebookEdit, etc.) without
+    /// prompting. All other gated tools (Bash, WebFetch, …) still surface a
+    /// banner via the MCP permission helper.
     /// </summary>
     AcceptEdits,
 
     /// <summary>
-    /// Bypass all permission checks. Only use in trusted/sandboxed environments.
+    /// Auto-accept every gated tool call. The MCP permission helper is never
+    /// invoked, so no banners appear. Only use in trusted/sandboxed
+    /// environments — the agent can run arbitrary commands without confirmation.
     /// </summary>
     BypassPermissions,
 
     /// <summary>
-    /// Default CLI permission behavior (prompts for all permissions).
-    /// Not recommended — the CLI cannot prompt when running as a subprocess.
+    /// Prompt for every gated tool call. Each request is forwarded to the
+    /// in-process MCP permission helper and surfaced to the user as an
+    /// Allow / Deny banner in the chat. This is the safest mode and the
+    /// default for the extension.
     /// </summary>
     Default
 }

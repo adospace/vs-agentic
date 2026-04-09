@@ -21,7 +21,7 @@ public class VsAgenticOptionsPage : DialogPage
 
     [Category("Claude CLI")]
     [DisplayName("CLI Permission Mode")]
-    [Description("Controls how the CLI handles tool permissions. AcceptEdits: auto-accepts file edits (recommended). BypassPermissions: skips all checks (use in trusted environments only). Default: prompts for all permissions (not recommended — CLI runs non-interactively).")]
-    [DefaultValue(CliPermissionMode.AcceptEdits)]
-    public CliPermissionMode CliPermissionMode { get; set; } = CliPermissionMode.AcceptEdits;
+    [Description("Controls how the CLI handles tool permissions. Default: every gated tool call surfaces an Allow/Deny banner in the chat (safest). AcceptEdits: file edits (Edit, Write, NotebookEdit) auto-accept; everything else still prompts. BypassPermissions: auto-accept every tool call without prompting (use only in trusted environments).")]
+    [DefaultValue(CliPermissionMode.Default)]
+    public CliPermissionMode CliPermissionMode { get; set; } = CliPermissionMode.Default;
 }

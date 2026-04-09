@@ -4,17 +4,20 @@
              xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf">
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
-        <!-- Banner host: permission banner or question card injected here at runtime -->
+        <wv2:WebView2 x:Name="WebView"
+                      Grid.Row="0"
+                      DefaultBackgroundColor="Transparent"/>
+        <!-- Banner host: permission banner or question card injected here at
+             runtime. Sits below the chat history and above the input box so
+             the user can still see what the AI is doing while answering.
+             BorderBrush is set from BannerTheme in code-behind. -->
         <Border x:Name="BannerHost"
-                Grid.Row="0"
+                Grid.Row="1"
                 Visibility="Collapsed"
                 Padding="0"
-                BorderThickness="0,0,0,1"/>
-        <wv2:WebView2 x:Name="WebView"
-                      Grid.Row="1"
-                      DefaultBackgroundColor="Transparent"/>
+                BorderThickness="0,1,0,0"/>
     </Grid>
 </UserControl>

@@ -75,7 +75,10 @@ public partial class ChatSessionControl : UserControl
         Map("--text-heading", EnvironmentColors.ToolWindowTextColorKey);
         Map("--text-muted", EnvironmentColors.CommandBarTextInactiveColorKey);
         Map("--border", EnvironmentColors.ToolWindowBorderColorKey);
-        Map("--accent", EnvironmentColors.SystemHighlightColorKey);
+        // Use VS hyperlink color (theme-driven) rather than the OS system
+        // highlight, which on Win11 is often violet/purple and clashes with
+        // the dark/light VS theme.
+        Map("--accent", EnvironmentColors.PanelHyperlinkColorKey);
         Map("--user-bg", EnvironmentColors.CommandBarGradientBeginColorKey);
         Map("--code-bg", EnvironmentColors.ToolWindowContentGridColorKey);
         Map("--pre-bg", EnvironmentColors.ToolWindowBackgroundColorKey);

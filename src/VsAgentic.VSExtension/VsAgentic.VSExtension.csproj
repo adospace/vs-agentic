@@ -25,7 +25,39 @@
 
   <ItemGroup>
     <ProjectReference Include="..\VsAgentic.UI\VsAgentic.UI.csproj" />
+    <!--
+      Build (but do not link) the MCP permission helper exe so its output is
+      available before our build runs. We deliberately avoid OutputItemType=
+      Content here because that would make VSSDK add the absolute source path
+      as a VSIXSourceItem, leaking dev-machine paths into the VSIX. The
+      CopyMcpPermissionHelper target below copies the bits into our output.
+    -->
+    <ProjectReference Include="..\VsAgentic.Services.McpPermissionServer\VsAgentic.Services.McpPermissionServer.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
+      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
+    </ProjectReference>
   </ItemGroup>
+
+  <!--
+    Copy the MCP permission helper exe (and its .exe.config) next to our
+    output assemblies so ResolvePermissionHelperExe in ClaudeCliProcessHost
+    can find it alongside VsAgentic.Services.dll at runtime.
+  -->
+  <Target Name="CopyMcpPermissionHelper"
+          AfterTargets="ResolveProjectReferences"
+          BeforeTargets="GetVsixSourceItems;CopyFilesToOutputDirectory">
+    <PropertyGroup>
+      <_McpHelperSourceDir>$(MSBuildThisFileDirectory)..\VsAgentic.Services.McpPermissionServer\bin\$(Configuration)\net472\</_McpHelperSourceDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <_McpHelperFiles Include="$(_McpHelperSourceDir)vsagentic-mcp-permissions.exe" />
+      <_McpHelperFiles Include="$(_McpHelperSourceDir)vsagentic-mcp-permissions.exe.config" Condition="Exists('$(_McpHelperSourceDir)vsagentic-mcp-permissions.exe.config')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_McpHelperFiles)"
+          DestinationFolder="$(OutputPath)"
+          SkipUnchangedFiles="true" />
+  </Target>
 
   <ItemGroup>
     <Reference Include="System.Net.Http" />
@@ -63,6 +95,14 @@
   <Target Name="IncludeAllDllsInVsix" BeforeTargets="GetVsixSourceItems">
     <ItemGroup>
       <VSIXSourceItem Include="$(OutputPath)*.dll" />
+      <!--
+        Also pack the MCP permission helper exe (and its app.config) so it
+        deploys next to the managed assemblies in the Extensions folder.
+        ResolvePermissionHelperExe in ClaudeCliProcessHost looks for
+        vsagentic-mcp-permissions.exe alongside VsAgentic.Services.dll.
+      -->
+      <VSIXSourceItem Include="$(OutputPath)vsagentic-mcp-permissions.exe" />
+      <VSIXSourceItem Include="$(OutputPath)vsagentic-mcp-permissions.exe.config" Condition="Exists('$(OutputPath)vsagentic-mcp-permissions.exe.config')" />
     </ItemGroup>
   </Target>
 

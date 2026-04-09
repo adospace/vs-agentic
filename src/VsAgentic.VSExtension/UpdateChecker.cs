@@ -1,11 +1,13 @@
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Net.Http;
 using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Xml.Linq;
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
@@ -32,30 +34,98 @@ internal sealed class UpdateChecker : IVsInfoBarUIEvents
 
     public UpdateChecker(AsyncPackage package) => _package = package;
 
-    public async Task CheckAsync(CancellationToken ct)
+    private static void Log(string message)
     {
         try
         {
-            var localVersion = Assembly.GetExecutingAssembly().GetName().Version;
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "VsAgentic", "logs");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, $"updatechecker-{DateTime.Now:yyyyMMdd}.log");
+            File.AppendAllText(path, $"{DateTime.Now:HH:mm:ss.fff} {message}{Environment.NewLine}");
+        }
+        catch
+        {
+            // Logging must never throw.
+        }
+    }
+
+    public async Task CheckAsync(CancellationToken ct)
+    {
+        Log("CheckAsync: start");
+        try
+        {
+            var localVersion = ReadInstalledVersion();
+            Log($"CheckAsync: localVersion = {localVersion?.ToString() ?? "<null>"}");
             if (localVersion is null) return;
 
             var latest = await FetchLatestVersionAsync(ct).ConfigureAwait(false);
+            Log($"CheckAsync: marketplace latest = {latest?.ToString() ?? "<null>"}");
             if (latest is null) return;
 
             if (latest > localVersion)
             {
+                Log($"CheckAsync: newer version available, showing InfoBar ({localVersion} -> {latest})");
                 await _package.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
                 ShowInfoBar(localVersion, latest);
+            }
+            else
+            {
+                Log($"CheckAsync: up to date ({localVersion} >= {latest})");
             }
         }
         catch (OperationCanceledException)
         {
-            // Shutdown — ignore.
+            Log("CheckAsync: cancelled");
         }
         catch (Exception ex)
         {
+            Log($"CheckAsync: exception {ex}");
             Debug.WriteLine($"VsAgentic UpdateChecker: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Reads the version from extension.vsixmanifest (deployed next to this assembly).
+    /// The VSIX manifest is the source of truth for the published version — the assembly
+    /// version is independent and typically left at 1.0.0.0. Falls back to the assembly
+    /// version if the manifest can't be located or parsed.
+    /// </summary>
+    private static Version? ReadInstalledVersion()
+    {
+        try
+        {
+            var asmDir = Path.GetDirectoryName(typeof(UpdateChecker).Assembly.Location);
+            Log($"ReadInstalledVersion: asmDir = {asmDir ?? "<null>"}");
+            if (!string.IsNullOrEmpty(asmDir))
+            {
+                var manifestPath = Path.Combine(asmDir, "extension.vsixmanifest");
+                Log($"ReadInstalledVersion: manifestPath = {manifestPath}, exists = {File.Exists(manifestPath)}");
+                if (File.Exists(manifestPath))
+                {
+                    var doc = XDocument.Load(manifestPath);
+                    var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
+                    Log($"ReadInstalledVersion: root = {doc.Root?.Name.LocalName}, ns = {ns.NamespaceName}");
+                    var identity = doc.Root?
+                        .Element(ns + "Metadata")?
+                        .Element(ns + "Identity");
+                    var versionAttr = identity?.Attribute("Version");
+                    Log($"ReadInstalledVersion: identity found = {identity is not null}, version attr = {versionAttr?.Value ?? "<null>"}");
+                    if (versionAttr is not null && Version.TryParse(versionAttr.Value, out var v))
+                        return v;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"ReadInstalledVersion: exception {ex}");
+            Debug.WriteLine($"VsAgentic UpdateChecker: failed to read vsixmanifest: {ex.Message}");
+        }
+
+        var asmVersion = Assembly.GetExecutingAssembly().GetName().Version;
+        Log($"ReadInstalledVersion: falling back to assembly version = {asmVersion?.ToString() ?? "<null>"}");
+        return asmVersion;
     }
 
     private static async Task<Version?> FetchLatestVersionAsync(CancellationToken ct)

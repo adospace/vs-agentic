@@ -214,6 +214,7 @@ public partial class ChatWebView : UserControl
                 HideBanner();
                 onResolved(decision);
             });
+            ApplyBannerHostChrome();
             BannerHost.Child = element;
             BannerHost.Visibility = Visibility.Visible;
         });
@@ -233,9 +234,22 @@ public partial class ChatWebView : UserControl
                 HideBanner();
                 onSubmitted(answers);
             });
+            ApplyBannerHostChrome();
             BannerHost.Child = element;
             BannerHost.Visibility = Visibility.Visible;
         });
+    }
+
+    /// <summary>
+    /// Pull the BannerHost border + background from the current BannerTheme so
+    /// the host chrome matches the IDE/OS theme. Called each time a banner is
+    /// shown so theme changes apply on the next prompt.
+    /// </summary>
+    private void ApplyBannerHostChrome()
+    {
+        var theme = BannerTheme.Current;
+        BannerHost.BorderBrush = theme.Border;
+        BannerHost.Background = theme.Background;
     }
 
     public void HideBanner()

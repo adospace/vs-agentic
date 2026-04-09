@@ -1,7 +1,9 @@
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using Microsoft.VisualStudio.PlatformUI;
 using Microsoft.VisualStudio.Shell;
+using VsAgentic.UI.Controls;
 using VsAgentic.UI.ViewModels;
 
 namespace VsAgentic.VSExtension.ToolWindows;
@@ -37,6 +39,12 @@ public partial class ChatSessionControl : UserControl
 
         viewModel.MessagesRestored += (messages) =>
             _ = ChatWebView.LoadMessagesAsync(messages);
+
+        viewModel.PermissionPromptRequested += (request, resolve) =>
+            ChatWebView.ShowPermissionBanner(request, resolve);
+
+        viewModel.UserQuestionRequested += (request, submit) =>
+            ChatWebView.ShowQuestionCard(request, submit);
 
         // Apply VS theme colors to the WebView
         ApplyThemeColors();
@@ -79,6 +87,26 @@ public partial class ChatSessionControl : UserControl
         colors["--scrollbar-thumb-hover"] = $"rgba({grayHover.R}, {grayHover.G}, {grayHover.B}, 0.8)";
 
         _ = ChatWebView.SetThemeColorsAsync(colors);
+
+        // Apply the same VS theme to the WPF banner controls. The banner is
+        // hosted in WPF (not the WebView), so it needs Brushes built from VS
+        // colors directly.
+        BannerTheme.Current = BannerTheme.FromColors(
+            background:        ToWpf(EnvironmentColors.ToolWindowBackgroundColorKey),
+            border:            ToWpf(EnvironmentColors.ToolWindowBorderColorKey),
+            foreground:        ToWpf(EnvironmentColors.ToolWindowTextColorKey),
+            muted:             ToWpf(EnvironmentColors.CommandBarTextInactiveColorKey),
+            inputBackground:   ToWpf(EnvironmentColors.ComboBoxBackgroundColorKey),
+            accent:            ToWpf(EnvironmentColors.SystemHighlightColorKey),
+            accentForeground:  ToWpf(EnvironmentColors.SystemHighlightTextColorKey),
+            danger:            Color.FromRgb(0xDC, 0x26, 0x26),
+            dangerForeground:  Colors.White);
+    }
+
+    private static Color ToWpf(ThemeResourceKey key)
+    {
+        var c = VSColorTheme.GetThemedColor(key);
+        return Color.FromArgb(c.A, c.R, c.G, c.B);
     }
 
     private void InputTextBox_KeyDown(object sender, KeyEventArgs e)

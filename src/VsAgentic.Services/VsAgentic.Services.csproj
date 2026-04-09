@@ -18,4 +18,19 @@
     <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />
   </ItemGroup>
 
+  <!--
+    Reference the MCP permission helper exe so it gets built before us and
+    its output is copied to consumers' bin directories. We do NOT want a
+    managed reference (it's an exe, not a library), hence ReferenceOutputAssembly=false.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\VsAgentic.Services.McpPermissionServer\VsAgentic.Services.McpPermissionServer.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <OutputItemType>Content</OutputItemType>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Private>true</Private>
+      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
+    </ProjectReference>
+  </ItemGroup>
+
 </Project>

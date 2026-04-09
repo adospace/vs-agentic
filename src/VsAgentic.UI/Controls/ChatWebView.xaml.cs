@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text.Json;
@@ -6,6 +7,8 @@ using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Web.WebView2.Core;
 using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.ClaudeCli.Permissions;
+using VsAgentic.Services.ClaudeCli.Questions;
 using VsAgentic.UI.ViewModels;
 
 namespace VsAgentic.UI.Controls;
@@ -192,5 +195,55 @@ public partial class ChatWebView : UserControl
         {
             System.Diagnostics.Debug.WriteLine($"ChatWebView script failed: {ex.Message}");
         }
+    }
+
+    // ── Permission banner / question card mounting ───────────────────────
+
+    /// <summary>
+    /// Show the permission banner for a request from the Claude CLI. The
+    /// supplied callback is invoked once when the user clicks Allow or Deny.
+    /// Replaces any banner currently shown.
+    /// </summary>
+    public void ShowPermissionBanner(PermissionRequest request, Action<PermissionDecision> onResolved)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            FrameworkElement? element = null;
+            element = ChatBannerBuilder.BuildPermissionBanner(request, decision =>
+            {
+                HideBanner();
+                onResolved(decision);
+            });
+            BannerHost.Child = element;
+            BannerHost.Visibility = Visibility.Visible;
+        });
+    }
+
+    /// <summary>
+    /// Show the AskUserQuestion card. Callback receives the answer dictionary
+    /// (question text → selected label or free-text) on Submit.
+    /// </summary>
+    public void ShowQuestionCard(UserQuestionRequest request, Action<IReadOnlyDictionary<string, string>> onSubmitted)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            FrameworkElement? element = null;
+            element = ChatBannerBuilder.BuildQuestionCard(request, answers =>
+            {
+                HideBanner();
+                onSubmitted(answers);
+            });
+            BannerHost.Child = element;
+            BannerHost.Visibility = Visibility.Visible;
+        });
+    }
+
+    public void HideBanner()
+    {
+        Dispatcher.Invoke(() =>
+        {
+            BannerHost.Child = null;
+            BannerHost.Visibility = Visibility.Collapsed;
+        });
     }
 }

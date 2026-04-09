@@ -4,6 +4,8 @@ using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.ClaudeCli.Permissions;
+using VsAgentic.Services.ClaudeCli.Questions;
 using VsAgentic.Services.Configuration;
 using VsAgentic.Services.Models;
 using Microsoft.Extensions.Options;
@@ -48,6 +50,15 @@ public partial class ChatSessionViewModel : ObservableObject
     public event Action? AllCleared;
     public event Action<IEnumerable<ChatMessageData>>? MessagesRestored;
 
+    // Interactive prompts surfaced via the in-process MCP permission helper /
+    // AskUserQuestion tool. The host (ChatSessionControl / MainWindow) wires
+    // these to the chat banner controls.
+    public event Action<PermissionRequest, Action<PermissionDecision>>? PermissionPromptRequested;
+    public event Action<UserQuestionRequest, Action<IReadOnlyDictionary<string, string>>>? UserQuestionRequested;
+
+    private readonly IPermissionBroker? _permissionBroker;
+    private readonly IUserQuestionBroker? _questionBroker;
+
     /// <summary>
     /// Standalone constructor for use without a chat service (e.g. before service is wired up).
     /// </summary>
@@ -57,6 +68,16 @@ public partial class ChatSessionViewModel : ObservableObject
     }
 
     public ChatSessionViewModel(IChatService chatService, OutputListener outputListener, IOptions<VsAgenticOptions> options)
+        : this(chatService, outputListener, options, permissionBroker: null, questionBroker: null)
+    {
+    }
+
+    public ChatSessionViewModel(
+        IChatService chatService,
+        OutputListener outputListener,
+        IOptions<VsAgenticOptions> options,
+        IPermissionBroker? permissionBroker,
+        IUserQuestionBroker? questionBroker)
     {
         _chatService = chatService;
         WorkingDirectory = options.Value.WorkingDirectory;
@@ -64,6 +85,37 @@ public partial class ChatSessionViewModel : ObservableObject
         outputListener.StepStarted += OnStepStarted;
         outputListener.StepUpdated += OnStepUpdated;
         outputListener.StepCompleted += OnStepCompleted;
+
+        _permissionBroker = permissionBroker;
+        _questionBroker = questionBroker;
+
+        if (_permissionBroker is not null)
+            _permissionBroker.PermissionRequested += OnPermissionBrokerRequested;
+        if (_questionBroker is not null)
+            _questionBroker.QuestionRequested += OnQuestionBrokerRequested;
+    }
+
+    private void OnPermissionBrokerRequested(PermissionRequest request)
+    {
+        // Re-raise on the UI dispatcher so the host can mount the banner safely.
+        Dispatch(() =>
+        {
+            PermissionPromptRequested?.Invoke(request, decision =>
+            {
+                _permissionBroker?.Resolve(request.Id, decision);
+            });
+        });
+    }
+
+    private void OnQuestionBrokerRequested(UserQuestionRequest request)
+    {
+        Dispatch(() =>
+        {
+            UserQuestionRequested?.Invoke(request, answers =>
+            {
+                _questionBroker?.Resolve(request.ToolUseId, answers);
+            });
+        });
     }
 
     /// <summary>

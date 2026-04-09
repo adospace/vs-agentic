@@ -1,5 +1,7 @@
 using VsAgentic.Console;
 using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.ClaudeCli.Permissions;
+using VsAgentic.Services.ClaudeCli.Questions;
 using VsAgentic.Services.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -37,6 +39,51 @@ try
     using var host = builder.Build();
 
     var chatService = host.Services.GetRequiredService<IChatService>();
+
+    // Wire permission + question brokers to a simple stdin y/n handler so the
+    // console mode is usable without a graphical banner UI.
+    var permissionBroker = host.Services.GetRequiredService<IPermissionBroker>();
+    permissionBroker.PermissionRequested += request =>
+    {
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine($"\n[Permission] Claude wants to use {request.ToolName}");
+        try { Console.WriteLine(request.Input.GetRawText()); } catch { }
+        Console.Write("Allow? (y/N): ");
+        Console.ResetColor();
+        var reply = Console.ReadLine();
+        if (reply is not null && reply.Trim().Equals("y", StringComparison.OrdinalIgnoreCase))
+        {
+            var inputJson = request.Input.ValueKind == System.Text.Json.JsonValueKind.Undefined
+                ? "{}"
+                : request.Input.GetRawText();
+            permissionBroker.Resolve(request.Id, PermissionDecision.Allow(inputJson));
+        }
+        else
+        {
+            permissionBroker.Resolve(request.Id, PermissionDecision.Deny("User denied"));
+        }
+    };
+
+    var questionBroker = host.Services.GetRequiredService<IUserQuestionBroker>();
+    questionBroker.QuestionRequested += request =>
+    {
+        var answers = new Dictionary<string, string>();
+        foreach (var q in request.Questions)
+        {
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"\n[{q.Header}] {q.Question}");
+            for (int i = 0; i < q.Options.Count; i++)
+                Console.WriteLine($"  {i + 1}. {q.Options[i].Label} - {q.Options[i].Description}");
+            Console.Write("Your choice (number or free text): ");
+            Console.ResetColor();
+            var reply = Console.ReadLine()?.Trim() ?? "";
+            if (int.TryParse(reply, out var idx) && idx >= 1 && idx <= q.Options.Count)
+                answers[q.Question] = q.Options[idx - 1].Label;
+            else
+                answers[q.Question] = reply;
+        }
+        questionBroker.Resolve(request.ToolUseId, answers);
+    };
 
     Console.WriteLine("╔══════════════════════════════════════╗");
     Console.WriteLine("║  VsAgentic - AI Coding Assistant     ║");

@@ -152,8 +152,10 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         var provider = services.BuildServiceProvider();
         var chatService = provider.GetRequiredService<IChatService>();
         var optionsAccessor = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<VsAgentic.Services.Configuration.VsAgenticOptions>>();
+        var permissionBroker = provider.GetRequiredService<VsAgentic.Services.ClaudeCli.Permissions.IPermissionBroker>();
+        var questionBroker = provider.GetRequiredService<VsAgentic.Services.ClaudeCli.Questions.IUserQuestionBroker>();
 
-        return new ChatSessionViewModel(chatService, outputListener, optionsAccessor);
+        return new ChatSessionViewModel(chatService, outputListener, optionsAccessor, permissionBroker, questionBroker);
     }
 
     private string? GetSolutionDirectory()

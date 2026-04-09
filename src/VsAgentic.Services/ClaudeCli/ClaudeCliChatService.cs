@@ -1,44 +1,72 @@
+using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Channels;
-using VsAgentic.Services.Abstractions;
-using VsAgentic.Services.Configuration;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.ClaudeCli.Permissions;
+using VsAgentic.Services.ClaudeCli.Questions;
+using VsAgentic.Services.Configuration;
 
 namespace VsAgentic.Services.ClaudeCli;
 
 /// <summary>
-/// IChatService implementation that delegates to the Claude Code CLI subprocess.
-/// Uses the user's Claude subscription (Pro/Max) instead of a per-token API key.
+/// IChatService implementation backed by a single long-running Claude CLI
+/// process driven via the bidirectional stream-json protocol.
 ///
-/// CLI invocation:
-///   claude -p "{prompt}" --output-format stream-json --verbose --no-session-persistence
-///
-/// For multi-turn conversations, we use --resume {sessionId} to maintain context.
+///  - Multi-turn conversations reuse the same subprocess; session state lives
+///    inside the CLI for as long as the process is alive.
+///  - Each <see cref="SendMessageAsync"/> call writes one user message line
+///    and consumes events until the matching <c>result</c> event arrives.
+///  - Tool permission requests are intercepted via an in-process MCP server
+///    and surfaced through <see cref="IPermissionBroker"/>.
+///  - <c>AskUserQuestion</c> tool calls are surfaced through
+///    <see cref="IUserQuestionBroker"/>; the answers are returned to the CLI
+///    as a tool_result block on the next stdin write.
 /// </summary>
-public sealed class ClaudeCliChatService : IChatService
+public sealed class ClaudeCliChatService : IChatService, IDisposable
 {
     private readonly VsAgenticOptions _options;
     private readonly IOutputListener _outputListener;
+    private readonly IUserQuestionBroker _questionBroker;
+    private readonly ClaudeCliProcessHost _host;
     private readonly ILogger _logger;
 
     private string? _cliSessionId;
     private decimal _cumulativeCostUsd;
+    private Task? _dispatcherTask;
+    private readonly object _dispatcherLock = new object();
+
+    // The dispatcher consumes events from the host and routes them to whichever
+    // turn is currently active. We only ever have one active turn at a time —
+    // SendMessageAsync calls are serialized by the UI (IsBusy gate) — so a
+    // single mutable reference is enough.
+    private TurnState? _activeTurn;
+    private readonly object _activeTurnLock = new object();
 
     public ClaudeCliChatService(
         IOptions<VsAgenticOptions> options,
         IOutputListener outputListener,
+        IUserQuestionBroker questionBroker,
+        ClaudeCliProcessHost host,
         ILogger<ClaudeCliChatService> logger)
     {
         _options = options.Value;
         _outputListener = outputListener;
+        _questionBroker = questionBroker;
+        _host = host;
         _logger = logger;
 
-        // Remove any inherited API key from the host process (e.g. Visual Studio)
-        // so the CLI uses subscription auth instead of a stale/invalid API key.
+        // Strip any inherited API key from the host process so child CLI uses
+        // subscription auth.
         Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", null);
     }
 
@@ -46,437 +74,487 @@ public sealed class ClaudeCliChatService : IChatService
         string userMessage,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var channel = Channel.CreateUnbounded<string>();
-
-        var producerTask = Task.Run(async () =>
-        {
-            try
-            {
-                await RunCliAsync(userMessage, channel.Writer, cancellationToken);
-            }
-            finally
-            {
-                channel.Writer.Complete();
-            }
-        }, cancellationToken);
-
-        await foreach (var text in channel.Reader.ReadAllAsync(cancellationToken))
-        {
-            yield return text;
-        }
-
-        await producerTask;
-    }
-
-    private async Task RunCliAsync(
-        string userMessage,
-        ChannelWriter<string> writer,
-        CancellationToken cancellationToken)
-    {
-        var args = BuildArguments();
-        _logger.LogDebug("[ClaudeCli] Launching: {Exe} {Args}", _options.ClaudeCliPath, args);
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = _options.ClaudeCliPath,
-            Arguments = args,
-            WorkingDirectory = _options.WorkingDirectory,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            RedirectStandardInput = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8,
-        };
-
-        using var process = new Process { StartInfo = psi };
-
+        // Lazy start: bring the long-running process up if it's not running.
         try
         {
-            process.Start();
-
-            // Pipe the user message via stdin to avoid newlines/special chars
-            // breaking command-line argument parsing on Windows
-            await process.StandardInput.WriteAsync(userMessage);
-            process.StandardInput.Close();
+            _host.SetResumeSessionId(_cliSessionId);
+            await _host.EnsureStartedAsync(cancellationToken).ConfigureAwait(false);
+            EnsureDispatcherStarted();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[ClaudeCli] Failed to start CLI process at '{Path}'", _options.ClaudeCliPath);
+            _logger.LogError(ex, "[ClaudeCli] Failed to start CLI process");
+            EmitFatalError($"Failed to start Claude CLI: {ex.Message}\n\nMake sure 'claude' is installed and on your PATH.\nInstall with: npm install -g @anthropic-ai/claude-code");
+            yield break;
+        }
+
+        var turn = new TurnState();
+        lock (_activeTurnLock)
+        {
+            _activeTurn = turn;
+        }
+
+        // Send the user message line.
+        try
+        {
+            var line = StreamJsonProtocol.BuildUserTextMessage(userMessage);
+            await _host.WriteLineAsync(line, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[ClaudeCli] Failed to write user message to stdin");
+            EmitFatalError($"Failed to send message to Claude CLI: {ex.Message}");
+            ClearActiveTurn(turn);
+            yield break;
+        }
+
+        // Stream text deltas to the caller as they arrive; complete on result.
+        var reader = turn.TextDeltas.Reader;
+        while (true)
+        {
+            ValueTask<bool> wait;
+            try
+            {
+                wait = reader.WaitToReadAsync(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                ClearActiveTurn(turn);
+                throw;
+            }
+
+            bool more;
+            try { more = await wait.ConfigureAwait(false); }
+            catch (OperationCanceledException)
+            {
+                ClearActiveTurn(turn);
+                throw;
+            }
+
+            if (!more) break;
+            while (reader.TryRead(out var text))
+                yield return text;
+        }
+
+        ClearActiveTurn(turn);
+    }
+
+    private void ClearActiveTurn(TurnState turn)
+    {
+        lock (_activeTurnLock)
+        {
+            if (ReferenceEquals(_activeTurn, turn))
+                _activeTurn = null;
+        }
+    }
+
+    private void EnsureDispatcherStarted()
+    {
+        lock (_dispatcherLock)
+        {
+            if (_dispatcherTask is { IsCompleted: false }) return;
+            _dispatcherTask = Task.Run(DispatcherLoopAsync);
+        }
+    }
+
+    private async Task DispatcherLoopAsync()
+    {
+        try
+        {
+            var reader = _host.EventReader;
+            while (await reader.WaitToReadAsync().ConfigureAwait(false))
+            {
+                while (reader.TryRead(out var evt))
+                {
+                    try { await DispatchEventAsync(evt).ConfigureAwait(false); }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "[ClaudeCli] dispatcher: event handler crashed");
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[ClaudeCli] dispatcher loop crashed");
+        }
+        finally
+        {
+            // Process exited unexpectedly; tear down any active turn so callers unblock.
+            TurnState? turn;
+            lock (_activeTurnLock) { turn = _activeTurn; _activeTurn = null; }
+            if (turn != null)
+            {
+                FinalizeOpenBlocks(turn);
+                turn.TextDeltas.Writer.TryComplete();
+            }
+        }
+    }
+
+    private async Task DispatchEventAsync(JsonElement evt)
+    {
+        if (!evt.TryGetProperty("type", out var typeProp)) return;
+        var type = typeProp.GetString();
+
+        switch (type)
+        {
+            case "system":
+                HandleSystemEvent(evt);
+                return;
+
+            case "assistant":
+                await HandleAssistantEventAsync(evt).ConfigureAwait(false);
+                return;
+
+            case "user":
+                // The CLI echoes user messages and tool_results; nothing to do here.
+                return;
+
+            case "result":
+                HandleResultEvent(evt);
+                return;
+        }
+    }
+
+    private void HandleSystemEvent(JsonElement evt)
+    {
+        var subtype = evt.TryGetProperty("subtype", out var s) ? s.GetString() : null;
+        if (subtype != "init") return;
+        if (evt.TryGetProperty("session_id", out var sid))
+        {
+            _cliSessionId = sid.GetString();
+            _logger.LogDebug("[ClaudeCli] Session started: {SessionId}", _cliSessionId);
+        }
+        // Diagnostic: dump the available tool names so we can verify whether
+        // AskUserQuestion is registered in headless mode.
+        if (evt.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array)
+        {
+            var names = new List<string>();
+            foreach (var t in tools.EnumerateArray())
+            {
+                if (t.ValueKind == JsonValueKind.String) names.Add(t.GetString() ?? "");
+                else if (t.ValueKind == JsonValueKind.Object && t.TryGetProperty("name", out var n))
+                    names.Add(n.GetString() ?? "");
+            }
+            _logger.LogInformation("[ClaudeCli] Available tools ({Count}): {Tools}", names.Count, string.Join(", ", names));
+        }
+    }
+
+    private async Task HandleAssistantEventAsync(JsonElement evt)
+    {
+        TurnState? turn;
+        lock (_activeTurnLock) { turn = _activeTurn; }
+        if (turn == null) return;
+
+        if (!evt.TryGetProperty("message", out var msg)) return;
+        if (!msg.TryGetProperty("content", out var contentArr)) return;
+        if (contentArr.ValueKind != JsonValueKind.Array) return;
+
+        foreach (var block in contentArr.EnumerateArray())
+        {
+            if (!block.TryGetProperty("type", out var bt)) continue;
+            switch (bt.GetString())
+            {
+                case "thinking":
+                    HandleThinkingBlock(turn, block);
+                    break;
+
+                case "text":
+                    HandleTextBlock(turn, block);
+                    break;
+
+                case "tool_use":
+                    await HandleToolUseBlockAsync(turn, block).ConfigureAwait(false);
+                    break;
+
+                case "tool_result":
+                    HandleToolResultBlock(turn, block);
+                    break;
+            }
+        }
+    }
+
+    private void HandleThinkingBlock(TurnState turn, JsonElement block)
+    {
+        FinalizeResponseItem(turn);
+        FinalizeToolItem(turn);
+
+        var thinking = block.TryGetProperty("thinking", out var tp) ? tp.GetString() ?? "" : "";
+        if (string.IsNullOrEmpty(thinking)) return;
+
+        if (turn.ThinkingItem == null)
+        {
+            turn.ThinkingStartTime = DateTime.UtcNow;
+            turn.ThinkingItem = new OutputItem
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                ToolName = "Thinking",
+                Title = "Thinking...",
+                Status = OutputItemStatus.Pending
+            };
+            _outputListener.OnStepStarted(turn.ThinkingItem);
+        }
+
+        turn.ThinkingBuilder.Append(thinking);
+        var elapsed = (int)(DateTime.UtcNow - turn.ThinkingStartTime!.Value).TotalSeconds;
+        turn.ThinkingItem.Delta = thinking;
+        turn.ThinkingItem.Body = turn.ThinkingBuilder.ToString();
+        turn.ThinkingItem.Title = elapsed > 0 ? $"Thought for {elapsed}s" : "Thinking...";
+        _outputListener.OnStepUpdated(turn.ThinkingItem);
+    }
+
+    private void HandleTextBlock(TurnState turn, JsonElement block)
+    {
+        FinalizeThinkingItem(turn);
+        FinalizeToolItem(turn);
+
+        var text = block.TryGetProperty("text", out var tp) ? tp.GetString() ?? "" : "";
+        if (string.IsNullOrEmpty(text)) return;
+
+        if (turn.ResponseItem == null)
+        {
+            turn.ResponseItem = new OutputItem
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                ToolName = "AI",
+                Title = "Responding",
+                Status = OutputItemStatus.Pending
+            };
+            _outputListener.OnStepStarted(turn.ResponseItem);
+        }
+
+        turn.ResponseBuilder.Append(text);
+        turn.ResponseItem.Delta = text;
+        turn.ResponseItem.Body = turn.ResponseBuilder.ToString();
+        _outputListener.OnStepUpdated(turn.ResponseItem);
+        turn.TextDeltas.Writer.TryWrite(text);
+    }
+
+    private async Task HandleToolUseBlockAsync(TurnState turn, JsonElement block)
+    {
+        var toolName = block.TryGetProperty("name", out var np) ? np.GetString() ?? "tool" : "tool";
+        var toolId = block.TryGetProperty("id", out var ip) ? ip.GetString() ?? "" : "";
+
+        // The MCP permission tool call is internal plumbing — hide from the UI.
+        if (toolName == "mcp__vsagentic__approval_prompt")
+            return;
+
+        // AskUserQuestion is rendered separately as a question card, not as a tool step.
+        if (toolName == "AskUserQuestion")
+        {
+            _logger.LogInformation("[ClaudeCli] AskUserQuestion tool_use received (id={Id})", toolId);
+            await HandleAskUserQuestionAsync(toolId, block).ConfigureAwait(false);
+            return;
+        }
+
+        FinalizeThinkingItem(turn);
+        FinalizeResponseItem(turn);
+        FinalizeToolItem(turn);
+
+        var toolTitle = $"Using {toolName}";
+        string? toolBody = null;
+        if (block.TryGetProperty("input", out var input))
+        {
+            if (toolName == "Agent" && input.TryGetProperty("description", out var descProp))
+                toolTitle = descProp.GetString() ?? toolTitle;
+            toolBody = FormatToolInput(toolName, input);
+        }
+
+        turn.ToolItem = new OutputItem
+        {
+            Id = toolId,
+            ToolName = toolName,
+            Title = toolTitle,
+            Status = OutputItemStatus.Pending,
+            Body = toolBody
+        };
+        _outputListener.OnStepStarted(turn.ToolItem);
+    }
+
+    private void HandleToolResultBlock(TurnState turn, JsonElement block)
+    {
+        if (turn.ToolItem == null) return;
+        var content = block.TryGetProperty("content", out var cp) ? ExtractToolResultText(cp) : "";
+        turn.ToolItem.Status = OutputItemStatus.Success;
+        if (turn.ToolItem.ToolName != "Agent")
+            turn.ToolItem.Title = $"Used {turn.ToolItem.ToolName}";
+        turn.ToolItem.Body = content;
+        turn.ToolItem.Delta = null;
+        _outputListener.OnStepCompleted(turn.ToolItem);
+        turn.ToolItem = null;
+    }
+
+    private async Task HandleAskUserQuestionAsync(string toolUseId, JsonElement block)
+    {
+        if (!block.TryGetProperty("input", out var input))
+            return;
+
+        var questions = ParseQuestions(input);
+        var request = new UserQuestionRequest(toolUseId, questions, input.Clone());
+
+        IReadOnlyDictionary<string, string> answers;
+        try
+        {
+            answers = await _questionBroker.SubmitAsync(request, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[ClaudeCli] AskUserQuestion broker threw");
+            answers = new Dictionary<string, string>();
+        }
+
+        // Build the tool_result content as the JSON shape the AskUserQuestion
+        // tool expects: { "questions": [...], "answers": { question: label, ... } }
+        var resultJson = BuildAskUserQuestionResult(input, answers);
+        var line = StreamJsonProtocol.BuildToolResultMessage(toolUseId, resultJson);
+        try
+        {
+            await _host.WriteLineAsync(line, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[ClaudeCli] Failed to write AskUserQuestion answer");
+        }
+    }
+
+    private static IReadOnlyList<UserQuestion> ParseQuestions(JsonElement input)
+    {
+        var list = new List<UserQuestion>();
+        if (!input.TryGetProperty("questions", out var qs) || qs.ValueKind != JsonValueKind.Array)
+            return list;
+
+        foreach (var q in qs.EnumerateArray())
+        {
+            var uq = new UserQuestion
+            {
+                Question = q.TryGetProperty("question", out var qt) ? qt.GetString() ?? "" : "",
+                Header = q.TryGetProperty("header", out var hd) ? hd.GetString() ?? "" : "",
+                MultiSelect = q.TryGetProperty("multiSelect", out var ms) && ms.ValueKind == JsonValueKind.True,
+            };
+            if (q.TryGetProperty("options", out var opts) && opts.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var o in opts.EnumerateArray())
+                {
+                    uq.Options.Add(new UserQuestionOption
+                    {
+                        Label = o.TryGetProperty("label", out var lb) ? lb.GetString() ?? "" : "",
+                        Description = o.TryGetProperty("description", out var dp) ? dp.GetString() ?? "" : "",
+                    });
+                }
+            }
+            list.Add(uq);
+        }
+        return list;
+    }
+
+    private static string BuildAskUserQuestionResult(JsonElement input, IReadOnlyDictionary<string, string> answers)
+    {
+        // Re-emit the original questions array verbatim plus the answers map.
+        var sb = new StringBuilder();
+        sb.Append("{\"questions\":");
+        if (input.TryGetProperty("questions", out var qs))
+            sb.Append(qs.GetRawText());
+        else
+            sb.Append("[]");
+        sb.Append(",\"answers\":");
+        sb.Append(JsonSerializer.Serialize(answers));
+        sb.Append("}");
+        return sb.ToString();
+    }
+
+    private void HandleResultEvent(JsonElement evt)
+    {
+        TurnState? turn;
+        lock (_activeTurnLock) { turn = _activeTurn; }
+        if (turn == null) return;
+
+        FinalizeOpenBlocks(turn);
+
+        var isError = evt.TryGetProperty("is_error", out var ie) && ie.ValueKind == JsonValueKind.True;
+        if (isError)
+        {
+            var resultText = evt.TryGetProperty("result", out var rp) ? rp.GetString() : null;
+            _logger.LogWarning("[ClaudeCli] CLI returned error result: {Result}", resultText);
+
             var errorItem = new OutputItem
             {
                 Id = Guid.NewGuid().ToString("N"),
                 ToolName = "ClaudeCli",
-                Title = "CLI Error",
+                Title = "Error",
                 Status = OutputItemStatus.Error,
-                Body = $"Failed to start Claude CLI: {ex.Message}\n\nMake sure 'claude' is installed and on your PATH.\nInstall with: npm install -g @anthropic-ai/claude-code"
+                Body = resultText ?? "Unknown CLI error"
             };
             _outputListener.OnStepStarted(errorItem);
             _outputListener.OnStepCompleted(errorItem);
-            return;
-        }
-
-        OutputItem? thinkingItem = null;
-        var thinkingBuilder = new StringBuilder();
-        DateTime? thinkingStartTime = null;
-
-        OutputItem? responseItem = null;
-        var responseBuilder = new StringBuilder();
-
-        OutputItem? toolItem = null;
-
-        try
-        {
-            // Read stderr in background for diagnostics
-            var stderrTask = process.StandardError.ReadToEndAsync();
-
-            var reader = process.StandardOutput;
-            while (!reader.EndOfStream)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var line = await reader.ReadLineAsync();
-                if (string.IsNullOrWhiteSpace(line)) continue;
-
-                ClaudeCliStreamEvent? evt;
-                try
-                {
-                    evt = JsonSerializer.Deserialize<ClaudeCliStreamEvent>(line);
-                }
-                catch (JsonException ex)
-                {
-                    _logger.LogTrace("[ClaudeCli] Skipping non-JSON line: {Line} ({Error})", line, ex.Message);
-                    continue;
-                }
-
-                if (evt is null) continue;
-
-                switch (evt.Type)
-                {
-                    case "system":
-                        HandleSystemEvent(evt);
-                        break;
-
-                    case "assistant":
-                        ProcessAssistantMessage(evt, ref thinkingItem, thinkingBuilder,
-                            ref thinkingStartTime, ref responseItem, responseBuilder,
-                            ref toolItem, writer);
-                        break;
-
-                    case "result":
-                        HandleResultEvent(evt, ref responseItem, responseBuilder,
-                            ref thinkingItem, thinkingStartTime);
-                        break;
-                }
-            }
-
-            await Task.Run(() => process.WaitForExit(), cancellationToken);
-
-            if (process.ExitCode != 0)
-            {
-                var stderr = await stderrTask;
-                _logger.LogWarning("[ClaudeCli] Process exited with code {Code}. stderr: {Stderr}",
-                    process.ExitCode, stderr);
-
-                if (!string.IsNullOrWhiteSpace(stderr) && responseBuilder.Length == 0)
-                {
-                    var errorItem = new OutputItem
-                    {
-                        Id = Guid.NewGuid().ToString("N"),
-                        ToolName = "ClaudeCli",
-                        Title = "CLI Error",
-                        Status = OutputItemStatus.Error,
-                        Body = stderr.Trim()
-                    };
-                    _outputListener.OnStepStarted(errorItem);
-                    _outputListener.OnStepCompleted(errorItem);
-                }
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            if (!process.HasExited)
-            {
-                try { process.Kill(); } catch { }
-            }
-            throw;
-        }
-        finally
-        {
-            // Finalize any open UI blocks
-            FinalizeOpenBlocks(ref thinkingItem, thinkingStartTime, ref responseItem, ref toolItem);
-            // Turn complete
-        }
-    }
-
-    private string BuildArguments()
-    {
-        var sb = new StringBuilder();
-        sb.Append("-p --output-format stream-json --verbose");
-
-        // Permission mode — required since the CLI runs non-interactively
-        var permFlag = _options.CliPermissionMode switch
-        {
-            Configuration.CliPermissionMode.BypassPermissions => "bypassPermissions",
-            Configuration.CliPermissionMode.Default => "default",
-            _ => "acceptEdits",
-        };
-        sb.Append(" --permission-mode ");
-        sb.Append(permFlag);
-
-        // Multi-turn: resume the existing session
-        if (_cliSessionId is not null)
-        {
-            sb.Append(" --resume ");
-            sb.Append(EscapeArgument(_cliSessionId));
-        }
-
-        return sb.ToString();
-    }
-
-    private void HandleSystemEvent(ClaudeCliStreamEvent evt)
-    {
-        if (evt.Subtype == "init")
-        {
-            if (evt.SessionId is not null)
-            {
-                _cliSessionId = evt.SessionId;
-                _logger.LogDebug("[ClaudeCli] Session started: {SessionId}, model: {Model}",
-                    evt.SessionId, evt.Model);
-            }
-        }
-    }
-
-    private void ProcessAssistantMessage(
-        ClaudeCliStreamEvent evt,
-        ref OutputItem? thinkingItem, StringBuilder thinkingBuilder,
-        ref DateTime? thinkingStartTime,
-        ref OutputItem? responseItem, StringBuilder responseBuilder,
-        ref OutputItem? toolItem,
-        ChannelWriter<string> writer)
-    {
-        if (evt.Message is not { } msgElement) return;
-
-        // Extract content blocks from the assistant message
-        if (!msgElement.TryGetProperty("content", out var contentArray)) return;
-        if (contentArray.ValueKind != JsonValueKind.Array) return;
-
-        foreach (var block in contentArray.EnumerateArray())
-        {
-            if (!block.TryGetProperty("type", out var typeProp)) continue;
-            var blockType = typeProp.GetString();
-
-            switch (blockType)
-            {
-                case "thinking":
-                {
-                    // Close any open response/tool block
-                    FinalizeResponseItem(ref responseItem, responseBuilder);
-                    FinalizeToolItem(ref toolItem);
-
-                    var thinking = block.TryGetProperty("thinking", out var tp) ? tp.GetString() ?? "" : "";
-                    if (string.IsNullOrEmpty(thinking)) break;
-
-                    if (thinkingItem is null)
-                    {
-                        thinkingStartTime = DateTime.UtcNow;
-                        thinkingItem = new OutputItem
-                        {
-                            Id = Guid.NewGuid().ToString("N"),
-                            ToolName = "Thinking",
-                            Title = "Thinking...",
-                            Status = OutputItemStatus.Pending
-                        };
-                        _outputListener.OnStepStarted(thinkingItem);
-                    }
-
-                    thinkingBuilder.Append(thinking);
-                    var elapsed = (int)(DateTime.UtcNow - thinkingStartTime!.Value).TotalSeconds;
-                    thinkingItem.Delta = thinking;
-                    thinkingItem.Body = thinkingBuilder.ToString();
-                    thinkingItem.Title = elapsed > 0 ? $"Thought for {elapsed}s" : "Thinking...";
-                    _outputListener.OnStepUpdated(thinkingItem);
-                    break;
-                }
-
-                case "text":
-                {
-                    // Close thinking block
-                    FinalizeThinkingItem(ref thinkingItem, thinkingBuilder, thinkingStartTime);
-                    FinalizeToolItem(ref toolItem);
-
-                    var text = block.TryGetProperty("text", out var tp) ? tp.GetString() ?? "" : "";
-                    if (string.IsNullOrEmpty(text)) break;
-
-                    if (responseItem is null)
-                    {
-                        responseItem = new OutputItem
-                        {
-                            Id = Guid.NewGuid().ToString("N"),
-                            ToolName = "AI",
-                            Title = "Responding",
-                            Status = OutputItemStatus.Pending
-                        };
-                        _outputListener.OnStepStarted(responseItem);
-                    }
-
-                    responseBuilder.Append(text);
-                    responseItem.Delta = text;
-                    responseItem.Body = responseBuilder.ToString();
-                    _outputListener.OnStepUpdated(responseItem);
-                    writer.TryWrite(text);
-                    break;
-                }
-
-                case "tool_use":
-                {
-                    FinalizeThinkingItem(ref thinkingItem, thinkingBuilder, thinkingStartTime);
-                    FinalizeResponseItem(ref responseItem, responseBuilder);
-                    FinalizeToolItem(ref toolItem);
-
-                    var toolName = block.TryGetProperty("name", out var np) ? np.GetString() ?? "tool" : "tool";
-                    var toolId = block.TryGetProperty("id", out var ip) ? ip.GetString() ?? "" : "";
-
-                    var toolTitle = $"Using {toolName}";
-                    string? toolBody = null;
-
-                    if (block.TryGetProperty("input", out var input))
-                    {
-                        // For Agent tool, extract description for the title
-                        if (toolName == "Agent" && input.TryGetProperty("description", out var descProp))
-                            toolTitle = descProp.GetString() ?? toolTitle;
-
-                        toolBody = FormatToolInput(toolName, input);
-                    }
-
-                    toolItem = new OutputItem
-                    {
-                        Id = toolId,
-                        ToolName = toolName,
-                        Title = toolTitle,
-                        Status = OutputItemStatus.Pending,
-                        Body = toolBody
-                    };
-
-                    _outputListener.OnStepStarted(toolItem);
-                    break;
-                }
-
-                case "tool_result":
-                {
-                    if (toolItem is not null)
-                    {
-                        var content = block.TryGetProperty("content", out var cp)
-                            ? ExtractToolResultText(cp)
-                            : "";
-
-                        toolItem.Status = OutputItemStatus.Success;
-                        // Preserve Agent description title; default to "Used {tool}" for others
-                        if (toolItem.ToolName != "Agent")
-                            toolItem.Title = $"Used {toolItem.ToolName}";
-                        toolItem.Body = content;
-                        toolItem.Delta = null;
-                        _outputListener.OnStepCompleted(toolItem);
-                        toolItem = null;
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    private void HandleResultEvent(
-        ClaudeCliStreamEvent evt,
-        ref OutputItem? responseItem, StringBuilder responseBuilder,
-        ref OutputItem? thinkingItem, DateTime? thinkingStartTime)
-    {
-        FinalizeThinkingItem(ref thinkingItem, new StringBuilder(), thinkingStartTime);
-
-        if (evt.IsError == true)
-        {
-            _logger.LogWarning("[ClaudeCli] CLI returned error result: {Result}", evt.Result);
-
-            if (responseItem is not null)
-            {
-                responseItem.Status = OutputItemStatus.Error;
-                responseItem.Title = "Error";
-                responseItem.Delta = null;
-                _outputListener.OnStepCompleted(responseItem);
-                responseItem = null;
-            }
-            else
-            {
-                var errorItem = new OutputItem
-                {
-                    Id = Guid.NewGuid().ToString("N"),
-                    ToolName = "ClaudeCli",
-                    Title = "Error",
-                    Status = OutputItemStatus.Error,
-                    Body = evt.Result ?? "Unknown CLI error"
-                };
-                _outputListener.OnStepStarted(errorItem);
-                _outputListener.OnStepCompleted(errorItem);
-            }
         }
         else
         {
-            if (evt.CostUsd.HasValue)
-                _cumulativeCostUsd += evt.CostUsd.Value;
-
-            _logger.LogDebug("[ClaudeCli] Completed: {Turns} turns, {Duration}ms, ${Cost} (cumulative: ${Cumulative})",
-                evt.NumTurns, evt.DurationMs, evt.CostUsd, _cumulativeCostUsd);
+            if (evt.TryGetProperty("cost_usd", out var cost) && cost.ValueKind == JsonValueKind.Number)
+                _cumulativeCostUsd += cost.GetDecimal();
         }
+
+        // Signal SendMessageAsync to return.
+        turn.TextDeltas.Writer.TryComplete();
     }
 
     // ── Finalization helpers ───────────────────────────────────────────────
 
-    private void FinalizeThinkingItem(ref OutputItem? item, StringBuilder builder, DateTime? startTime)
+    private void FinalizeThinkingItem(TurnState turn)
     {
-        if (item is null) return;
-        var elapsed = startTime.HasValue ? (int)(DateTime.UtcNow - startTime.Value).TotalSeconds : 0;
-        item.Status = OutputItemStatus.Success;
-        item.Title = $"Thought for {elapsed}s";
-        item.Delta = null;
-        _outputListener.OnStepCompleted(item);
-        item = null;
-        builder.Clear();
+        if (turn.ThinkingItem == null) return;
+        var elapsed = turn.ThinkingStartTime.HasValue ? (int)(DateTime.UtcNow - turn.ThinkingStartTime.Value).TotalSeconds : 0;
+        turn.ThinkingItem.Status = OutputItemStatus.Success;
+        turn.ThinkingItem.Title = $"Thought for {elapsed}s";
+        turn.ThinkingItem.Delta = null;
+        _outputListener.OnStepCompleted(turn.ThinkingItem);
+        turn.ThinkingItem = null;
+        turn.ThinkingBuilder.Clear();
     }
 
-    private void FinalizeResponseItem(ref OutputItem? item, StringBuilder builder)
+    private void FinalizeResponseItem(TurnState turn)
     {
-        if (item is null) return;
-        item.Status = OutputItemStatus.Success;
-        item.Title = "Response complete";
-        item.Delta = null;
-        _outputListener.OnStepCompleted(item);
-        item = null;
-        builder.Clear();
+        if (turn.ResponseItem == null) return;
+        turn.ResponseItem.Status = OutputItemStatus.Success;
+        turn.ResponseItem.Title = "Response complete";
+        turn.ResponseItem.Delta = null;
+        _outputListener.OnStepCompleted(turn.ResponseItem);
+        turn.ResponseItem = null;
+        turn.ResponseBuilder.Clear();
     }
 
-    private void FinalizeToolItem(ref OutputItem? item)
+    private void FinalizeToolItem(TurnState turn)
     {
-        if (item is null) return;
-        if (item.Status == OutputItemStatus.Pending)
+        if (turn.ToolItem == null) return;
+        if (turn.ToolItem.Status == OutputItemStatus.Pending)
         {
-            item.Status = OutputItemStatus.Success;
-            // Preserve Agent description title; default to "Used {tool}" for others
-            if (item.ToolName != "Agent")
-                item.Title = $"Used {item.ToolName}";
-            item.Delta = null;
-            _outputListener.OnStepCompleted(item);
+            turn.ToolItem.Status = OutputItemStatus.Success;
+            if (turn.ToolItem.ToolName != "Agent")
+                turn.ToolItem.Title = $"Used {turn.ToolItem.ToolName}";
+            turn.ToolItem.Delta = null;
+            _outputListener.OnStepCompleted(turn.ToolItem);
         }
-        item = null;
+        turn.ToolItem = null;
     }
 
-    private void FinalizeOpenBlocks(
-        ref OutputItem? thinkingItem, DateTime? thinkingStartTime,
-        ref OutputItem? responseItem,
-        ref OutputItem? toolItem)
+    private void FinalizeOpenBlocks(TurnState turn)
     {
-        FinalizeThinkingItem(ref thinkingItem, new StringBuilder(), thinkingStartTime);
-        FinalizeResponseItem(ref responseItem, new StringBuilder());
-        FinalizeToolItem(ref toolItem);
+        FinalizeThinkingItem(turn);
+        FinalizeResponseItem(turn);
+        FinalizeToolItem(turn);
+    }
+
+    private void EmitFatalError(string body)
+    {
+        var errorItem = new OutputItem
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            ToolName = "ClaudeCli",
+            Title = "CLI Error",
+            Status = OutputItemStatus.Error,
+            Body = body
+        };
+        _outputListener.OnStepStarted(errorItem);
+        _outputListener.OnStepCompleted(errorItem);
     }
 
     // ── Formatting helpers ────────────────────────────────────────────────
@@ -485,11 +563,9 @@ public sealed class ClaudeCliChatService : IChatService
     {
         try
         {
-            // Agent tool: show the prompt as the body content
             if (toolName == "Agent" && input.TryGetProperty("prompt", out var prompt))
                 return prompt.GetString() ?? "";
 
-            // Show the most relevant field for common tools
             if (input.TryGetProperty("command", out var cmd))
                 return $"```\n{cmd.GetString()}\n```";
             if (input.TryGetProperty("file_path", out var fp))
@@ -497,9 +573,8 @@ public sealed class ClaudeCliChatService : IChatService
             if (input.TryGetProperty("pattern", out var pat))
                 return pat.GetString() ?? "";
 
-            return input.GetRawText().Length > 200
-                ? input.GetRawText()[..200] + "..."
-                : input.GetRawText();
+            var raw = input.GetRawText();
+            return raw.Length > 200 ? raw.Substring(0, 200) + "..." : raw;
         }
         catch
         {
@@ -512,7 +587,6 @@ public sealed class ClaudeCliChatService : IChatService
         if (content.ValueKind == JsonValueKind.String)
             return content.GetString() ?? "";
 
-        // content can be an array of text blocks
         if (content.ValueKind == JsonValueKind.Array)
         {
             var sb = new StringBuilder();
@@ -527,21 +601,13 @@ public sealed class ClaudeCliChatService : IChatService
         return content.GetRawText();
     }
 
-    // ── Argument escaping ─────────────────────────────────────────────────
-
-    private static string EscapeArgument(string arg)
-    {
-        // Wrap in double quotes, escaping internal quotes and backslashes
-        var escaped = arg
-            .Replace("\\", "\\\\")
-            .Replace("\"", "\\\"");
-        return $"\"{escaped}\"";
-    }
-
     // ── IChatService members ──────────────────────────────────────────────
 
     public async Task<string> GenerateTitleAsync(string userMessage, CancellationToken cancellationToken = default)
     {
+        // Title generation stays one-shot — multiplexing onto the long-running
+        // process would require a session fork. A short transient subprocess
+        // is fine here.
         const string titlePrompt =
             "Generate a short title (max 6 words) for a coding assistant conversation that starts with the message below. " +
             "The title should capture the intent or topic. Do NOT use quotes or punctuation at the end. " +
@@ -550,11 +616,10 @@ public sealed class ClaudeCliChatService : IChatService
         try
         {
             var prompt = titlePrompt + userMessage;
-
             var psi = new ProcessStartInfo
             {
                 FileName = _options.ClaudeCliPath,
-                Arguments = "-p --output-format text --no-session-persistence",
+                Arguments = "-p --output-format text",
                 WorkingDirectory = _options.WorkingDirectory,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -567,11 +632,11 @@ public sealed class ClaudeCliChatService : IChatService
             using var process = new Process { StartInfo = psi };
             process.Start();
 
-            await process.StandardInput.WriteAsync(prompt);
+            await process.StandardInput.WriteAsync(prompt).ConfigureAwait(false);
             process.StandardInput.Close();
 
-            var result = await process.StandardOutput.ReadToEndAsync();
-            await Task.Run(() => process.WaitForExit(), cancellationToken);
+            var result = await process.StandardOutput.ReadToEndAsync().ConfigureAwait(false);
+            await Task.Run(() => process.WaitForExit(), cancellationToken).ConfigureAwait(false);
 
             var title = result.Trim().Trim('"').Trim();
             if (!string.IsNullOrWhiteSpace(title))
@@ -582,9 +647,8 @@ public sealed class ClaudeCliChatService : IChatService
             _logger.LogWarning(ex, "[ClaudeCli] Title generation failed, using fallback");
         }
 
-        // Fallback: truncate user message
         var fallback = userMessage.Split('\n')[0].TrimStart('#', ' ', '-');
-        return fallback.Length <= 50 ? fallback : fallback[..50] + "…";
+        return fallback.Length <= 50 ? fallback : fallback.Substring(0, 50) + "…";
     }
 
     public decimal? GetSessionCost() => _cumulativeCostUsd > 0 ? _cumulativeCostUsd : null;
@@ -593,13 +657,13 @@ public sealed class ClaudeCliChatService : IChatService
     {
         _cliSessionId = null;
         _cumulativeCostUsd = 0;
-        _logger.LogInformation("[ClaudeCli] Session cleared");
+        _host.Stop();
+        lock (_dispatcherLock) { _dispatcherTask = null; }
+        _logger.LogInformation("[ClaudeCli] Session cleared (process killed)");
     }
 
     public string SerializeHistory()
     {
-        // For CLI mode, the session is managed by the CLI itself.
-        // We persist the session ID so we can resume.
         return JsonSerializer.Serialize(new { cliSessionId = _cliSessionId });
     }
 
@@ -611,14 +675,33 @@ public sealed class ClaudeCliChatService : IChatService
             if (doc.RootElement.TryGetProperty("cliSessionId", out var sid))
             {
                 _cliSessionId = sid.GetString();
-                // Turn complete
                 _logger.LogInformation("[ClaudeCli] Restored session: {SessionId}", _cliSessionId);
             }
         }
         catch (JsonException)
         {
-            // Not a CLI session — likely an API session. Start fresh.
             _logger.LogDebug("[ClaudeCli] Could not restore history (not a CLI session)");
         }
+    }
+
+    public void Dispose() => _host.Dispose();
+
+    /// <summary>State for one in-flight turn.</summary>
+    private sealed class TurnState
+    {
+        public OutputItem? ThinkingItem;
+        public StringBuilder ThinkingBuilder = new StringBuilder();
+        public DateTime? ThinkingStartTime;
+
+        public OutputItem? ResponseItem;
+        public StringBuilder ResponseBuilder = new StringBuilder();
+
+        public OutputItem? ToolItem;
+
+        public Channel<string> TextDeltas { get; } = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = true,
+        });
     }
 }

@@ -11,7 +11,10 @@ public class VsAgenticOptions
 
     /// <summary>
     /// Permission mode for the Claude CLI. Controls how tool permissions are handled.
-    /// Defaults to AcceptEdits since the CLI runs non-interactively as a subprocess.
+    /// Defaults to <see cref="CliPermissionMode.Default"/>: every gated tool call is
+    /// surfaced to the user via the in-process MCP permission helper, and the user
+    /// approves/denies it through the chat banner. Use <see cref="CliPermissionMode.AcceptEdits"/>
+    /// or <see cref="CliPermissionMode.BypassPermissions"/> as escape hatches.
     /// </summary>
-    public CliPermissionMode CliPermissionMode { get; set; } = CliPermissionMode.AcceptEdits;
+    public CliPermissionMode CliPermissionMode { get; set; } = CliPermissionMode.Default;
 }

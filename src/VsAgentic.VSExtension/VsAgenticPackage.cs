@@ -91,6 +91,19 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         }
 
         Initialized?.Invoke();
+
+        // Check the Marketplace for a newer published version and surface an InfoBar
+        // if one is available. Fire-and-forget on a background task with a small delay
+        // so we don't compete with VS startup work.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(10), DisposalToken);
+                await new UpdateChecker(this).CheckAsync(DisposalToken);
+            }
+            catch (OperationCanceledException) { }
+        });
     }
 
     private async Task InitializeSessionPersistenceAsync()

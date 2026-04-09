@@ -28,6 +28,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.VisualStudio.Extensibility.Sdk" Version="17.14.40608" PrivateAssets="all" />
     <PackageReference Include="Microsoft.VisualStudio.Extensibility.Build" Version="17.14.40608" PrivateAssets="all" />
     <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="17.14.2120">

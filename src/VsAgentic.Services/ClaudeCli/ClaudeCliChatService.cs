@@ -567,6 +567,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             if (toolName == "Agent" && input.TryGetProperty("prompt", out var prompt))
                 return prompt.GetString() ?? "";
 
+            if (toolName == "TodoWrite" && input.TryGetProperty("todos", out var todos) && todos.ValueKind == JsonValueKind.Array)
+                return FormatTodoList(todos);
+
             if (input.TryGetProperty("command", out var cmd))
                 return $"```\n{cmd.GetString()}\n```";
             if (input.TryGetProperty("file_path", out var fp))
@@ -581,6 +584,28 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         {
             return "";
         }
+    }
+
+    private static string FormatTodoList(JsonElement todos)
+    {
+        var sb = new StringBuilder();
+        foreach (var todo in todos.EnumerateArray())
+        {
+            var status = todo.TryGetProperty("status", out var s) ? s.GetString() ?? "" : "";
+            var content = todo.TryGetProperty("content", out var c) ? c.GetString() ?? "" : "";
+            var activeForm = todo.TryGetProperty("activeForm", out var a) ? a.GetString() ?? "" : "";
+
+            var marker = status switch
+            {
+                "completed" => "- [x]",
+                "in_progress" => "- [~]",
+                _ => "- [ ]",
+            };
+
+            var text = status == "in_progress" && !string.IsNullOrEmpty(activeForm) ? activeForm : content;
+            sb.Append(marker).Append(' ').AppendLine(text);
+        }
+        return sb.ToString().TrimEnd();
     }
 
     private static string ExtractToolResultText(JsonElement content)

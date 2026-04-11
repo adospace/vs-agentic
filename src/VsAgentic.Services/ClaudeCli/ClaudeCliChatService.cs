@@ -570,6 +570,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             if (toolName == "TodoWrite" && input.TryGetProperty("todos", out var todos) && todos.ValueKind == JsonValueKind.Array)
                 return FormatTodoList(todos);
 
+            if (toolName == "WebFetch")
+                return FormatWebFetch(input);
+
             if (input.TryGetProperty("command", out var cmd))
                 return $"```\n{cmd.GetString()}\n```";
             if (input.TryGetProperty("file_path", out var fp))
@@ -604,6 +607,22 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
             var text = status == "in_progress" && !string.IsNullOrEmpty(activeForm) ? activeForm : content;
             sb.Append(marker).Append(' ').AppendLine(text);
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    private static string FormatWebFetch(JsonElement input)
+    {
+        var url = input.TryGetProperty("url", out var u) ? u.GetString() ?? "" : "";
+        var prompt = input.TryGetProperty("prompt", out var p) ? p.GetString() ?? "" : "";
+
+        var sb = new StringBuilder();
+        if (!string.IsNullOrEmpty(url))
+            sb.Append("**URL:** <").Append(url).AppendLine(">");
+        if (!string.IsNullOrEmpty(prompt))
+        {
+            if (sb.Length > 0) sb.AppendLine();
+            sb.AppendLine("**Prompt:**").Append(prompt);
         }
         return sb.ToString().TrimEnd();
     }

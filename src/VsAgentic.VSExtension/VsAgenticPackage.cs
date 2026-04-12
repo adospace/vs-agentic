@@ -440,6 +440,11 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             var lineMatch = Regex.Match(rawPath, @":(\d+)(?:-\d+)?$");
             var filePath = lineMatch.Success ? rawPath.Substring(0, lineMatch.Index) : rawPath;
 
+            // Convert MSYS/Git-Bash style paths ("/c/foo/bar") to Windows form ("c:\foo\bar")
+            var msysMatch = Regex.Match(filePath, @"^/([A-Za-z])/");
+            if (msysMatch.Success)
+                filePath = msysMatch.Groups[1].Value + ":/" + filePath.Substring(3);
+
             // Normalize forward slashes
             filePath = filePath.Replace('/', '\\');
 

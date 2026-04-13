@@ -573,6 +573,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             if (toolName == "WebFetch")
                 return FormatWebFetch(input);
 
+            if (toolName == "ToolSearch")
+                return FormatToolSearch(input);
+
             if (input.TryGetProperty("command", out var cmd))
                 return $"```\n{cmd.GetString()}\n```";
             if (input.TryGetProperty("file_path", out var fp))
@@ -625,6 +628,22 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             sb.AppendLine("**Prompt:**").Append(prompt);
         }
         return sb.ToString().TrimEnd();
+    }
+
+    private static string FormatToolSearch(JsonElement input)
+    {
+        var query = input.TryGetProperty("query", out var q) ? q.GetString() ?? "" : "";
+        const string selectPrefix = "select:";
+        if (query.StartsWith(selectPrefix, StringComparison.Ordinal))
+        {
+            var names = query.Substring(selectPrefix.Length);
+            var sb = new StringBuilder();
+            sb.AppendLine("**Loading tool schema:**");
+            foreach (var name in names.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries))
+                sb.Append("- `").Append(name.Trim()).AppendLine("`");
+            return sb.ToString().TrimEnd();
+        }
+        return $"**Searching tools:** {query}";
     }
 
     private static string ExtractToolResultText(JsonElement content)

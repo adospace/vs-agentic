@@ -26,7 +26,10 @@ public partial class ChatSessionViewModel : ObservableObject
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SendCommand))]
+    [NotifyCanExecuteChangedFor(nameof(StopCommand))]
     private bool _isBusy;
+
+    private CancellationTokenSource? _sendCts;
 
     [ObservableProperty]
     private string _sessionTitle = "New Session";
@@ -274,9 +277,11 @@ public partial class ChatSessionViewModel : ObservableObject
         }
 
         IsBusy = true;
+        _sendCts = new CancellationTokenSource();
+        var token = _sendCts.Token;
         try
         {
-            await foreach (var _ in _chatService.SendMessageAsync(message))
+            await foreach (var _ in _chatService.SendMessageAsync(message, token))
             {
                 // Output is handled by listener callbacks
             }
@@ -289,6 +294,23 @@ public partial class ChatSessionViewModel : ObservableObject
             {
                 SessionInfo.SessionCost = _chatService.GetSessionCost();
             }
+        }
+        catch (OperationCanceledException)
+        {
+            var cancelId = $"cancel-{++_userMsgCounter}";
+            var cancelContent = "_Processing stopped._";
+            Items.Add(new ChatItemViewModel
+            {
+                Type = ChatItemType.Assistant,
+                Content = cancelContent,
+                IsStreaming = false
+            });
+            MessageAdded?.Invoke(cancelId, ChatItemType.Assistant, new ChatMessageData
+            {
+                Id = cancelId,
+                Type = "Assistant",
+                Content = cancelContent
+            });
         }
         catch (Exception ex)
         {
@@ -309,9 +331,26 @@ public partial class ChatSessionViewModel : ObservableObject
         }
         finally
         {
+            _sendCts?.Dispose();
+            _sendCts = null;
             IsBusy = false;
         }
         RequestScroll();
+    }
+
+    private bool CanStop() => IsBusy;
+
+    [RelayCommand(CanExecute = nameof(CanStop))]
+    private void Stop()
+    {
+        try
+        {
+            _sendCts?.Cancel();
+        }
+        catch
+        {
+            // Best effort — token may already be disposed
+        }
     }
 
     [RelayCommand]

@@ -10,6 +10,27 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
 
+        <Style x:Key="SendWhenIdleStyle" TargetType="Button" BasedOn="{StaticResource SendButtonStyle}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="StopWhenBusyStyle" TargetType="Button" BasedOn="{StaticResource SendButtonStyle}">
+            <Setter Property="Background" Value="#c42b2b"/>
+            <Setter Property="Visibility" Value="Collapsed"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                    <Setter Property="Visibility" Value="Visible"/>
+                </DataTrigger>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#e03535"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
         <!-- Button style for dark theme -->
         <Style x:Key="SendButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="#007acc"/>
@@ -58,10 +79,15 @@
         <Border DockPanel.Dock="Bottom" Background="#252526" Padding="12,10"
                 BorderBrush="#3c3c3c" BorderThickness="0,1,0,0">
             <DockPanel>
-                <Button DockPanel.Dock="Right" Content="Send"
-                        Command="{Binding SendCommand}"
-                        Style="{StaticResource SendButtonStyle}"
-                        VerticalAlignment="Bottom" Margin="8,0,0,0"/>
+                <Grid DockPanel.Dock="Right" VerticalAlignment="Bottom" Margin="8,0,0,0">
+                    <Button Content="Send"
+                            Command="{Binding SendCommand}"
+                            Style="{StaticResource SendWhenIdleStyle}"/>
+                    <Button Content="&#9632; Stop"
+                            ToolTip="Stop processing"
+                            Command="{Binding StopCommand}"
+                            Style="{StaticResource StopWhenBusyStyle}"/>
+                </Grid>
                 <TextBox x:Name="InputTextBox"
                          Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
                          Background="#3c3c3c" Foreground="#d4d4d4"

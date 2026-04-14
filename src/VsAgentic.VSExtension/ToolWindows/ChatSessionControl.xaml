@@ -6,6 +6,25 @@
 
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+
+        <Style x:Key="SendWhenIdleStyle" TargetType="Button"
+               BasedOn="{StaticResource {x:Static vs:VsResourceKeys.ButtonStyleKey}}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="StopWhenBusyStyle" TargetType="Button"
+               BasedOn="{StaticResource {x:Static vs:VsResourceKeys.ButtonStyleKey}}">
+            <Setter Property="Visibility" Value="Collapsed"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsBusy}" Value="True">
+                    <Setter Property="Visibility" Value="Visible"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
     </UserControl.Resources>
 
     <DockPanel Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}">
@@ -34,11 +53,17 @@
                 BorderBrush="{DynamicResource {x:Static vs:VsBrushes.CommandBarBorderKey}}"
                 BorderThickness="0,1,0,0">
             <DockPanel>
-                <Button DockPanel.Dock="Right" Content="Send"
-                        Command="{Binding SendCommand}"
-                        Style="{StaticResource {x:Static vs:VsResourceKeys.ButtonStyleKey}}"
-                        VerticalAlignment="Bottom" Margin="8,0,0,0"
-                        Padding="16,6"/>
+                <Grid DockPanel.Dock="Right" VerticalAlignment="Bottom" Margin="8,0,0,0">
+                    <Button Content="Send"
+                            Command="{Binding SendCommand}"
+                            Style="{StaticResource SendWhenIdleStyle}"
+                            Padding="16,6"/>
+                    <Button Content="&#9632; Stop"
+                            ToolTip="Stop processing"
+                            Command="{Binding StopCommand}"
+                            Style="{StaticResource StopWhenBusyStyle}"
+                            Padding="16,6"/>
+                </Grid>
                 <TextBox x:Name="InputTextBox"
                          Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
                          Style="{StaticResource {x:Static vs:VsResourceKeys.TextBoxStyleKey}}"

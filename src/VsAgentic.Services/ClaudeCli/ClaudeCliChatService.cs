@@ -576,6 +576,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             if (toolName == "ToolSearch")
                 return FormatToolSearch(input);
 
+            if (toolName == "WebSearch" && input.TryGetProperty("query", out var wsq))
+                return $"**Searching the web:** {wsq.GetString()}";
+
             if (input.TryGetProperty("command", out var cmd))
                 return $"```\n{cmd.GetString()}\n```";
             if (input.TryGetProperty("file_path", out var fp))

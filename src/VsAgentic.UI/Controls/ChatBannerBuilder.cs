@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using VsAgentic.Services.ClaudeCli.Permissions;
 using VsAgentic.Services.ClaudeCli.Questions;
@@ -243,17 +244,62 @@ internal static class ChatBannerBuilder
 
     private static Button MakeButton(string text, Brush background, Brush foreground)
     {
+        var border = new FrameworkElementFactory(typeof(Border));
+        border.SetValue(Border.BackgroundProperty, new TemplateBindingExtension(Control.BackgroundProperty));
+        border.SetValue(Border.BorderBrushProperty, new TemplateBindingExtension(Control.BorderBrushProperty));
+        border.SetValue(Border.BorderThicknessProperty, new TemplateBindingExtension(Control.BorderThicknessProperty));
+        border.SetValue(Border.CornerRadiusProperty, new CornerRadius(2));
+        border.Name = "bd";
+
+        var content = new FrameworkElementFactory(typeof(ContentPresenter));
+        content.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        content.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+        content.SetValue(ContentPresenter.MarginProperty, new Thickness(14, 6, 14, 6));
+        border.AppendChild(content);
+
+        var template = new ControlTemplate(typeof(Button)) { VisualTree = border };
+
+        var hoverBg = Darken(background, 0.15);
+        var pressedBg = Darken(background, 0.30);
+        template.Triggers.Add(new Trigger
+        {
+            Property = UIElement.IsMouseOverProperty,
+            Value = true,
+            Setters = { new Setter(Border.BackgroundProperty, hoverBg, "bd") }
+        });
+        template.Triggers.Add(new Trigger
+        {
+            Property = ButtonBase.IsPressedProperty,
+            Value = true,
+            Setters = { new Setter(Border.BackgroundProperty, pressedBg, "bd") }
+        });
+
         return new Button
         {
             Content = text,
             Background = background,
             Foreground = foreground,
             BorderThickness = new Thickness(0),
-            Padding = new Thickness(14, 6, 14, 6),
             Margin = new Thickness(6, 0, 0, 0),
             FontWeight = FontWeights.SemiBold,
             Cursor = System.Windows.Input.Cursors.Hand,
+            Template = template,
         };
+    }
+
+    private static Brush Darken(Brush brush, double amount)
+    {
+        if (brush is SolidColorBrush scb)
+        {
+            var c = scb.Color;
+            byte r = (byte)Math.Max(0, c.R - (c.R * amount));
+            byte g = (byte)Math.Max(0, c.G - (c.G * amount));
+            byte b = (byte)Math.Max(0, c.B - (c.B * amount));
+            var result = new SolidColorBrush(Color.FromArgb(c.A, r, g, b));
+            result.Freeze();
+            return result;
+        }
+        return brush;
     }
 
     private static string FormatPermissionBody(PermissionRequest request)

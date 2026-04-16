@@ -25,6 +25,10 @@ internal sealed class UpdateChecker : IVsInfoBarUIEvents
     // Marketplace identifier (publisher.extensionName) — matches publishManifest.json
     private const string MarketplaceItemName = "adospace.VsAgentic";
     private const string MarketplaceListingUrl = "https://marketplace.visualstudio.com/items?itemName=" + MarketplaceItemName;
+
+    // The Identity Id from source.extension.vsixmanifest — used to match our extension
+    // across multiple install directories that VS may leave behind during updates.
+    private const string ExtensionId = "VsAgentic.VSExtension.c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f";
     private const string ExtensionQueryUrl = "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery";
 
     private static readonly HttpClient s_http = new() { Timeout = TimeSpan.FromSeconds(15) };
@@ -98,22 +102,40 @@ internal sealed class UpdateChecker : IVsInfoBarUIEvents
         {
             var asmDir = Path.GetDirectoryName(typeof(UpdateChecker).Assembly.Location);
             Log($"ReadInstalledVersion: asmDir = {asmDir ?? "<null>"}");
+
+            // VS may keep stale extension directories after an update, and the running
+            // assembly can still be loaded from an old directory.  Scan ALL sibling
+            // directories under the parent Extensions folder for manifests that match
+            // our extension Id, and return the highest version found.
             if (!string.IsNullOrEmpty(asmDir))
             {
+                var extensionsRoot = Path.GetDirectoryName(asmDir);
+                if (!string.IsNullOrEmpty(extensionsRoot))
+                {
+                    Version? best = null;
+                    foreach (var dir in Directory.EnumerateDirectories(extensionsRoot))
+                    {
+                        var candidate = Path.Combine(dir, "extension.vsixmanifest");
+                        if (!File.Exists(candidate)) continue;
+                        var version = TryReadVersionFromManifest(candidate, ExtensionId);
+                        if (version is not null && (best is null || version > best))
+                            best = version;
+                    }
+
+                    if (best is not null)
+                    {
+                        Log($"ReadInstalledVersion: best version across Extensions = {best}");
+                        return best;
+                    }
+                }
+
+                // Fallback: read just the manifest next to the running assembly.
                 var manifestPath = Path.Combine(asmDir, "extension.vsixmanifest");
-                Log($"ReadInstalledVersion: manifestPath = {manifestPath}, exists = {File.Exists(manifestPath)}");
+                Log($"ReadInstalledVersion: fallback manifestPath = {manifestPath}, exists = {File.Exists(manifestPath)}");
                 if (File.Exists(manifestPath))
                 {
-                    var doc = XDocument.Load(manifestPath);
-                    var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
-                    Log($"ReadInstalledVersion: root = {doc.Root?.Name.LocalName}, ns = {ns.NamespaceName}");
-                    var identity = doc.Root?
-                        .Element(ns + "Metadata")?
-                        .Element(ns + "Identity");
-                    var versionAttr = identity?.Attribute("Version");
-                    Log($"ReadInstalledVersion: identity found = {identity is not null}, version attr = {versionAttr?.Value ?? "<null>"}");
-                    if (versionAttr is not null && Version.TryParse(versionAttr.Value, out var v))
-                        return v;
+                    var v = TryReadVersionFromManifest(manifestPath, extensionId: null);
+                    if (v is not null) return v;
                 }
             }
         }
@@ -126,6 +148,43 @@ internal sealed class UpdateChecker : IVsInfoBarUIEvents
         var asmVersion = Assembly.GetExecutingAssembly().GetName().Version;
         Log($"ReadInstalledVersion: falling back to assembly version = {asmVersion?.ToString() ?? "<null>"}");
         return asmVersion;
+    }
+
+    /// <summary>
+    /// Reads the version from an extension.vsixmanifest file.  When <paramref name="extensionId"/>
+    /// is supplied, the manifest is only considered a match if its Identity Id equals the value.
+    /// </summary>
+    private static Version? TryReadVersionFromManifest(string path, string? extensionId)
+    {
+        try
+        {
+            var doc = XDocument.Load(path);
+            var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
+            var identity = doc.Root?
+                .Element(ns + "Metadata")?
+                .Element(ns + "Identity");
+            if (identity is null) return null;
+
+            if (extensionId is not null)
+            {
+                var id = identity.Attribute("Id")?.Value;
+                if (!string.Equals(id, extensionId, StringComparison.OrdinalIgnoreCase))
+                    return null;
+            }
+
+            var versionAttr = identity.Attribute("Version");
+            if (versionAttr is not null && Version.TryParse(versionAttr.Value, out var v))
+            {
+                Log($"TryReadVersionFromManifest: {path} -> {v}");
+                return v;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"TryReadVersionFromManifest: {path} -> exception {ex.Message}");
+        }
+
+        return null;
     }
 
     private static async Task<Version?> FetchLatestVersionAsync(CancellationToken ct)

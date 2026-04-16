@@ -1,5 +1,7 @@
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using VsAgentic.UI.ViewModels;
 
 namespace VsAgentic.VSExtension.ToolWindows;
@@ -14,7 +16,7 @@ public partial class SessionListControl : UserControl
         Loaded += OnLoaded;
     }
 
-    private void OnLoaded(object sender, System.Windows.RoutedEventArgs e)
+    private void OnLoaded(object sender, RoutedEventArgs e)
     {
         if (_initialized) return;
 
@@ -49,11 +51,20 @@ public partial class SessionListControl : UserControl
         return true;
     }
 
-    private void ListBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    private void ListBoxItem_Click(object sender, MouseButtonEventArgs e)
     {
-        if (DataContext is SessionListViewModel vm && vm.SelectedSession is not null)
+        // Don't open session when clicking buttons (e.g., delete)
+        var source = e.OriginalSource as DependencyObject;
+        while (source != null && source != sender)
         {
-            vm.OpenSessionCommand.Execute(vm.SelectedSession);
+            if (source is Button) return;
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        if (sender is ListBoxItem item && item.DataContext is SessionInfo session
+            && DataContext is SessionListViewModel vm)
+        {
+            vm.OpenSessionCommand.Execute(session);
         }
     }
 }

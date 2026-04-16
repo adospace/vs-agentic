@@ -1,4 +1,6 @@
 ﻿using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Windows.Data;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using VsAgentic.Services.Abstractions;
@@ -49,11 +51,27 @@ public partial class SessionListViewModel : ObservableObject
 
     public ObservableCollection<SessionInfo> Sessions { get; } = new();
 
+    public ICollectionView FilteredSessions { get; }
+
     [ObservableProperty]
     private SessionInfo? _selectedSession;
 
+    [ObservableProperty]
+    private string _searchText = string.Empty;
+
     public event Action<SessionInfo>? SessionOpenRequested;
     public event Action<SessionInfo>? SessionRemoved;
+
+    public SessionListViewModel()
+    {
+        FilteredSessions = CollectionViewSource.GetDefaultView(Sessions);
+        FilteredSessions.Filter = obj =>
+            obj is SessionInfo s
+            && (string.IsNullOrWhiteSpace(SearchText)
+                || s.Name.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0);
+    }
+
+    partial void OnSearchTextChanged(string value) => FilteredSessions.Refresh();
 
     /// <summary>
     /// Initializes the view model with a session store and folder path for persistence.
@@ -107,7 +125,7 @@ public partial class SessionListViewModel : ObservableObject
             catch { /* best effort — session works in-memory even if persistence fails */ }
         }
 
-        Sessions.Add(session);
+        Sessions.Insert(0, session);
         SelectedSession = session;
         SessionOpenRequested?.Invoke(session);
     }

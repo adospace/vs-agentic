@@ -96,11 +96,12 @@
         <ListBox Grid.Row="2"
                  ItemsSource="{Binding FilteredSessions}"
                  SelectedItem="{Binding SelectedSession}"
+                 SelectionChanged="ListBox_SelectionChanged"
+                 MouseDoubleClick="ListBox_MouseDoubleClick"
                  Margin="4,0,4,4">
             <ListBox.ItemContainerStyle>
                 <Style TargetType="ListBoxItem">
                     <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                    <EventSetter Event="PreviewMouseLeftButtonUp" Handler="ListBoxItem_Click" />
                 </Style>
             </ListBox.ItemContainerStyle>
             <ListBox.ItemTemplate>

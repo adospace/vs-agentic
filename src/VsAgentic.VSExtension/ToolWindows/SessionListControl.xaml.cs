@@ -1,7 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
-using System.Windows.Media;
 using VsAgentic.UI.ViewModels;
 
 namespace VsAgentic.VSExtension.ToolWindows;
@@ -51,20 +50,23 @@ public partial class SessionListControl : UserControl
         return true;
     }
 
-    private void ListBoxItem_Click(object sender, MouseButtonEventArgs e)
+    private void ListBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        // Don't open session when clicking buttons (e.g., delete)
-        var source = e.OriginalSource as DependencyObject;
-        while (source != null && source != sender)
-        {
-            if (source is Button) return;
-            source = VisualTreeHelper.GetParent(source);
-        }
-
-        if (sender is ListBoxItem item && item.DataContext is SessionInfo session
+        if (e.AddedItems.Count > 0
+            && e.AddedItems[0] is SessionInfo session
             && DataContext is SessionListViewModel vm)
         {
             vm.OpenSessionCommand.Execute(session);
+        }
+    }
+
+    private void ListBox_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        // Handles re-opening a session whose window was closed while it's
+        // still the selected item (SelectionChanged won't fire in that case).
+        if (DataContext is SessionListViewModel vm && vm.SelectedSession is not null)
+        {
+            vm.OpenSessionCommand.Execute(vm.SelectedSession);
         }
     }
 }

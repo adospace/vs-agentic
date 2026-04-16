@@ -1,6 +1,7 @@
 ﻿using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Windows;
 using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.DependencyInjection;
@@ -39,6 +40,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     private ISessionStore? _sessionStore;
     private string? _solutionDirectory;
     private readonly Dictionary<string, int> _sessionWindowMap = new();
+    private static readonly SemaphoreSlim _openSessionGate = new(1, 1);
     private int _nextWindowId;
     private uint _solutionEventsCookie;
 
@@ -85,7 +87,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         ChatWebView.FileOpenRequested += OnFileOpenRequested;
 
         // Listen for solution open/close/switch events
-        if (GetService(typeof(SVsSolution)) is IVsSolution solutionService)
+        if (await GetServiceAsync(typeof(SVsSolution)) is IVsSolution solutionService)
         {
             solutionService.AdviseSolutionEvents(this, out _solutionEventsCookie);
         }
@@ -103,7 +105,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 await new UpdateChecker(this).CheckAsync(DisposalToken);
             }
             catch (OperationCanceledException) { }
-        });
+        }, cancellationToken);
     }
 
     private async Task InitializeSessionPersistenceAsync()
@@ -219,23 +221,39 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     {
         if (_instance is null) return;
 
-        try
-        {
-            await _instance.JoinableTaskFactory.SwitchToMainThreadAsync();
+        await _instance.JoinableTaskFactory.SwitchToMainThreadAsync();
 
-            if (_instance._sessionWindowMap.TryGetValue(session.Id, out int windowId))
+        // Fast path: if the session already has a window, just focus it.
+        // No gate required — this is cheap and non-destructive.
+        if (_instance._sessionWindowMap.TryGetValue(session.Id, out int existingWindowId))
+        {
+            try
             {
                 var existing = await _instance.ShowToolWindowAsync(
-                    typeof(ChatSessionToolWindow), windowId, true, _instance.DisposalToken);
+                    typeof(ChatSessionToolWindow), existingWindowId, true, _instance.DisposalToken);
 
                 if (existing?.Frame is IVsWindowFrame existingFrame)
                 {
                     existingFrame.Show();
                 }
-                return;
             }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"VsAgentic: Failed to activate session window: {ex}");
+            }
+            return;
+        }
 
-            windowId = _instance._nextWindowId++;
+        // Slow path: create a new tool window + WebView2 + restore messages.
+        // Serialize with a gate so we never create multiple windows concurrently
+        // (concurrent WebView2 init deadlocks the UI thread).
+        // Use WaitAsync(0) to drop rapid clicks rather than queue them up.
+        if (!await _openSessionGate.WaitAsync(0))
+            return;
+
+        try
+        {
+            var windowId = _instance._nextWindowId++;
             _instance._sessionWindowMap[session.Id] = windowId;
 
             var window = await _instance.ShowToolWindowAsync(
@@ -290,7 +308,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
                     // Sync generated title back to session list and window caption
                     viewModel.PropertyChanged += (_, e) =>
-                    {        
+                    {
                         ThreadHelper.ThrowIfNotOnUIThread();
 
                         if (e.PropertyName == nameof(ChatSessionViewModel.SessionTitle))
@@ -323,6 +341,10 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         catch (Exception ex)
         {
             MessageBox.Show($"VsAgentic error: {ex.Message}", "VsAgentic", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _openSessionGate.Release();
         }
     }
 

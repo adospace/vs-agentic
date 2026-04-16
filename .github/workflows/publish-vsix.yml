@@ -108,10 +108,12 @@ jobs:
         run: |
           $version = "${{ steps.version.outputs.version }}"
 
-          # Find the previous tag to generate a changelog
-          $prevTag = git describe --tags --abbrev=0 HEAD^ 2>&1
-          $LASTEXITCODE = 0  # reset so a failed describe doesn't fail the step
-          if ($prevTag -and $prevTag -notmatch 'fatal:') {
+          # Find the previous tag to generate a changelog.
+          # Use git tag --sort to list tags by version; the current tag is first,
+          # so the second entry is the previous release.
+          $tags = git tag --sort=-v:refname
+          $prevTag = ($tags | Select-Object -Skip 1 -First 1)
+          if ($prevTag) {
             $commits = git log "$prevTag..HEAD" --pretty=format:"- %s" --no-merges
           } else {
             $commits = "- Initial release"

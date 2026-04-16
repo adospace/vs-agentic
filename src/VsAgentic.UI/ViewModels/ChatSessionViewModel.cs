@@ -289,10 +289,11 @@ public partial class ChatSessionViewModel : ObservableObject
             // Persist conversation history after each completed exchange
             PersistConversationHistoryFireAndForget();
 
-            // Refresh cost display in the session list
+            // Refresh cost and last activity in the session list
             if (_chatService is not null && SessionInfo is not null)
             {
                 SessionInfo.SessionCost = _chatService.GetSessionCost();
+                SessionInfo.LastActivity = DateTime.Now;
             }
         }
         catch (OperationCanceledException)
@@ -501,7 +502,18 @@ public partial class ChatSessionViewModel : ObservableObject
         var historyJson = _chatService.SerializeHistory();
         _ = Task.Run(async () =>
         {
-            try { await store.SaveConversationHistoryAsync(folder, sessionId.Value, historyJson); }
+            try
+            {
+                await store.SaveConversationHistoryAsync(folder, sessionId.Value, historyJson);
+
+                var index = await store.GetSessionIndexAsync(folder);
+                var entry = index.FirstOrDefault(e => e.Id == sessionId.Value);
+                if (entry is not null)
+                {
+                    entry.LastActivityUtc = DateTime.UtcNow;
+                    await store.UpdateSessionAsync(folder, entry);
+                }
+            }
             catch { /* best effort */ }
         });
     }

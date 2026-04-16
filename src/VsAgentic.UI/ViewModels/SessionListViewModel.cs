@@ -135,7 +135,6 @@ public partial class SessionListViewModel : ObservableObject
     {
         if (session is null) return;
         SelectedSession = session;
-        session.LastActivity = DateTime.Now;
         SessionOpenRequested?.Invoke(session);
     }
 

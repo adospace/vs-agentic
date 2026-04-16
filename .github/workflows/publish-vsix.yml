@@ -101,20 +101,42 @@ jobs:
             -publishManifest $publishManifest `
             -personalAccessToken "${{ secrets.MARKETPLACE_PAT }}"
 
+      - name: Generate release notes
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+
+          # Find the previous tag to generate a changelog
+          $prevTag = git describe --tags --abbrev=0 HEAD^ 2>$null
+          if ($prevTag) {
+            $commits = git log "$prevTag..HEAD" --pretty=format:"- %s" --no-merges
+          } else {
+            $commits = "- Initial release"
+          }
+
+          # Build the full release body
+          $body = @"
+          ## VsAgentic v$version
+
+          ### Changes
+
+          $commits
+
+          ### Links
+
+          - [Install from VS Marketplace](https://marketplace.visualstudio.com/items?itemName=adospace.VsAgentic)
+
+          > **Note:** If you see a persistent update banner after upgrading, uninstall the extension, restart Visual Studio, and reinstall from the Marketplace.
+          "@
+
+          $body | Set-Content "release-notes.txt" -Encoding utf8
+          Write-Host $body
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: ${{ steps.vsix.outputs.path }}
-          body: |
-            ## VsAgentic v${{ steps.version.outputs.version }}
-
-            Published to VS Marketplace
-
-            - Extension ID: VsAgentic.VSExtension.c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f
-            - Publisher: adospace
-            - VS Targets: Visual Studio 2022+ (v17.0+)
-
-            [Install from VS Marketplace](https://marketplace.visualstudio.com/items?itemName=adospace.VsAgentic)
+          body_path: release-notes.txt
           draft: false
           prerelease: false
         env:

@@ -12,9 +12,10 @@ using Microsoft.Extensions.Options;
 
 namespace VsAgentic.UI.ViewModels;
 
-public partial class ChatSessionViewModel : ObservableObject
+public partial class ChatSessionViewModel : ObservableObject, IDisposable
 {
     private readonly IChatService? _chatService;
+    private IDisposable? _serviceScope;
     private readonly ConcurrentDictionary<string, ChatItemViewModel> _activeItems = new();
     private int _userMsgCounter;
 
@@ -186,7 +187,7 @@ public partial class ChatSessionViewModel : ObservableObject
                     Body = msg.Body,
                     BodyMode = msg.BodyMode ?? "Markdown",
                     ExpanderTitle = msg.ExpanderTitle ?? "",
-                    Status = msg.StatusText ?? "Pending",
+                    Status = msg.StatusText,
                     IsStreaming = false
                 });
             }
@@ -556,5 +557,19 @@ public partial class ChatSessionViewModel : ObservableObject
             action();
         else
             dispatcher.BeginInvoke(action);
+    }
+
+    /// <summary>
+    /// Sets a disposable scope (typically the DI <c>ServiceProvider</c>) that
+    /// will be disposed when this view model is disposed, cascading disposal to
+    /// the <c>ClaudeCliChatService</c> → <c>ClaudeCliProcessHost</c> (kills the
+    /// child process and tears down the permission pipe).
+    /// </summary>
+    public void SetServiceScope(IDisposable scope) => _serviceScope = scope;
+
+    public void Dispose()
+    {
+        try { (_chatService as IDisposable)?.Dispose(); } catch { }
+        try { _serviceScope?.Dispose(); } catch { }
     }
 }

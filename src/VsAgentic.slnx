@@ -9,6 +9,8 @@
     <Project Path="VsAgentic.Services/VsAgentic.Services.csproj" />
     <Project Path="VsAgentic.Services.McpPermissionServer/VsAgentic.Services.McpPermissionServer.csproj" />
     <Project Path="VsAgentic.UI/VsAgentic.UI.csproj" />
-    <Project Path="VsAgentic.VSExtension/VsAgentic.VSExtension.csproj" />
+    <Project Path="VsAgentic.VSExtension/VsAgentic.VSExtension.csproj">
+      <Deploy Solution="Debug|*" />
+    </Project>
   </Folder>
 </Solution>

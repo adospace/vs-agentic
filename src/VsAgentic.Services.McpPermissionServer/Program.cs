@@ -29,6 +29,7 @@ internal static class Program
 
     private static StreamWriter? _pipeWriter;
     private static StreamReader? _pipeReader;
+    private static volatile bool _pipeBroken;
     private static readonly SemaphoreSlim _pipeLock = new SemaphoreSlim(1, 1);
     private static readonly object _logLock = new object();
     private static string? _logFilePath;
@@ -197,7 +198,19 @@ internal static class Program
             case "tools/call":
                 if (hasId)
                 {
-                    var result = await HandleToolCallAsync(root).ConfigureAwait(false);
+                    string result;
+                    try
+                    {
+                        result = await HandleToolCallAsync(root).ConfigureAwait(false);
+                    }
+                    catch (IOException ex)
+                    {
+                        // Pipe to parent broke — return an error to the CLI so it
+                        // doesn't hang forever waiting for a response that will
+                        // never arrive.
+                        Log($"tools/call pipe error, returning deny: {ex.Message}");
+                        result = BuildToolErrorContent("Permission pipe disconnected");
+                    }
                     await WriteResponseAsync(stdout, id!.Value, result).ConfigureAwait(false);
                 }
                 break;
@@ -244,6 +257,10 @@ internal static class Program
         var toolName = argsEl.TryGetProperty("tool_name", out var tn) ? tn.GetString() ?? "" : "";
         JsonElement input = argsEl.TryGetProperty("input", out var inp) ? inp : default;
 
+        // If a prior call already discovered the pipe is broken, fail fast.
+        if (_pipeBroken)
+            return BuildToolErrorContent("Permission pipe disconnected");
+
         // Forward to the parent over the pipe and wait for the reply.
         var requestId = Guid.NewGuid().ToString("N");
         var pipeRequest = BuildPipeRequest(requestId, toolName, input);
@@ -255,6 +272,11 @@ internal static class Program
             await _pipeWriter!.WriteLineAsync(pipeRequest).ConfigureAwait(false);
             var line = await _pipeReader!.ReadLineAsync().ConfigureAwait(false);
             pipeResponse = line ?? "";
+        }
+        catch (IOException)
+        {
+            _pipeBroken = true;
+            throw;
         }
         finally
         {

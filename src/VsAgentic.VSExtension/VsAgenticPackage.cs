@@ -170,7 +170,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         var permissionBroker = provider.GetRequiredService<VsAgentic.Services.ClaudeCli.Permissions.IPermissionBroker>();
         var questionBroker = provider.GetRequiredService<VsAgentic.Services.ClaudeCli.Questions.IUserQuestionBroker>();
 
-        return new ChatSessionViewModel(chatService, outputListener, optionsAccessor, permissionBroker, questionBroker);
+        var vm = new ChatSessionViewModel(chatService, outputListener, optionsAccessor, permissionBroker, questionBroker);
+        vm.SetServiceScope(provider);
+        return vm;
     }
 
     private string? GetSolutionDirectory()
@@ -320,15 +322,15 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                             }
                         }
                     };
-                }
 
-                // Clean up when the user closes the window (e.g. via X button)
-                if (window is ChatSessionToolWindow closableWindow)
-                {
-                    closableWindow.Closed += () =>
+                    // Clean up when the user closes the window (e.g. via X button):
+                    // dispose the view model (kills CLI process + pipe server) and
+                    // remove from the session map so re-opening creates a fresh one.
+                    chatWindow.Closed += () =>
                     {
                         _instance?._sessionWindowMap.Remove(session.Id);
                         session.IsActive = false;
+                        viewModel.Dispose();
                     };
                 }
 

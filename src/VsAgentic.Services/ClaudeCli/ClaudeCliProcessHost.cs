@@ -135,15 +135,6 @@ public sealed class ClaudeCliProcessHost : IDisposable
         // Strip any inherited API key so the CLI uses subscription auth.
         psi.EnvironmentVariables["ANTHROPIC_API_KEY"] = "";
 
-        _process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        _process.Exited += (_, __) =>
-        {
-            _logger.LogInformation("[ClaudeCli] Process exited with code {Code}", _process?.ExitCode);
-            // Tear down channels so any blocked reader unblocks.
-            try { _stdoutChannel?.Writer.TryComplete(); } catch { }
-        };
-        _process.Start();
-
         _stdinChannel = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
         {
             SingleReader = true,
@@ -154,6 +145,22 @@ public sealed class ClaudeCliProcessHost : IDisposable
             SingleReader = true,
             SingleWriter = true,
         });
+
+        _process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+        // Capture a local reference so the lambda completes THIS run's channel,
+        // not a newer one created by a subsequent StartLocked() call.
+        var channelForThisRun = _stdoutChannel;
+        _process.Exited += (_, __) =>
+        {
+            _logger.LogInformation("[ClaudeCli] Process exited with code {Code}", _process?.ExitCode);
+            // Tear down the channel so any blocked reader unblocks.
+            try { channelForThisRun.Writer.TryComplete(); } catch { }
+        };
+        _process.Start();
+
+        // Assign to a Win32 Job Object so the child is killed if the IDE
+        // crashes or is force-terminated without a chance to run cleanup.
+        ChildProcessTracker.AddProcess(_process);
 
         _writerTask = Task.Run(() => StdinWriterLoopAsync(_runCts.Token));
         _readerTask = Task.Run(() => StdoutReaderLoopAsync(_runCts.Token));

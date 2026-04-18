@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -236,23 +237,72 @@ public sealed class ClaudeCliProcessHost : IDisposable
 
     private string ResolveHelperExePath()
     {
-        // The helper exe is copied next to VsAgentic.Services.dll by the
-        // ProjectReference-as-content trick. Try the running assembly's directory first.
-        var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-        var candidate = Path.Combine(baseDir, "vsagentic-mcp-permissions.exe");
-        if (File.Exists(candidate)) return candidate;
+        // The helper's entire bin folder (exe + its net472 dependencies like
+        // System.Text.Json, Microsoft.Bcl.AsyncInterfaces, ...) is embedded in
+        // this assembly as a zip so VSIX packaging can't lose it. Extract to
+        // %LOCALAPPDATA%\VsAgentic\helpers. A sentinel file named .extracted
+        // stores the SHA-256 of the embedded zip; on launch we compare against
+        // the current zip's hash and re-extract if they differ. This means a
+        // new VSIX with updated helper bits automatically refreshes the
+        // on-disk copy even when the containing assembly version doesn't
+        // change. The sentinel also makes partial/stale extractions recover
+        // on the next run.
+        const string ResourceName = "vsagentic-mcp-permissions.zip";
+        const string HelperFileName = "vsagentic-mcp-permissions.exe";
+        const string MarkerFileName = ".extracted";
+        var asm = typeof(ClaudeCliProcessHost).Assembly;
+        var helperDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "VsAgentic", "helpers");
+        var helperPath = Path.Combine(helperDir, HelperFileName);
+        var markerPath = Path.Combine(helperDir, MarkerFileName);
 
-        // Fallback: same directory as this assembly.
-        var asmDir = Path.GetDirectoryName(typeof(ClaudeCliProcessHost).Assembly.Location);
-        if (asmDir is not null)
+        byte[] zipBytes;
+        using (var src = asm.GetManifestResourceStream(ResourceName)
+            ?? throw new InvalidOperationException(
+                $"Embedded resource '{ResourceName}' not found in {asm.FullName}"))
+        using (var ms = new MemoryStream())
         {
-            candidate = Path.Combine(asmDir, "vsagentic-mcp-permissions.exe");
-            if (File.Exists(candidate)) return candidate;
+            src.CopyTo(ms);
+            zipBytes = ms.ToArray();
         }
 
-        // Last resort: assume PATH.
-        _logger.LogWarning("[ClaudeCli] vsagentic-mcp-permissions.exe not found near assembly; falling back to PATH");
-        return "vsagentic-mcp-permissions.exe";
+        string expectedHash;
+        using (var sha = System.Security.Cryptography.SHA256.Create())
+        {
+            var bytes = sha.ComputeHash(zipBytes);
+            var sb = new StringBuilder(bytes.Length * 2);
+            foreach (var b in bytes) sb.Append(b.ToString("x2"));
+            expectedHash = sb.ToString();
+        }
+
+        string? existingHash = null;
+        if (File.Exists(markerPath))
+        {
+            try { existingHash = File.ReadAllText(markerPath).Trim(); } catch { }
+        }
+
+        if (!File.Exists(helperPath) || existingHash != expectedHash)
+        {
+            Directory.CreateDirectory(helperDir);
+            using var zipStream = new MemoryStream(zipBytes, writable: false);
+            using var archive = new ZipArchive(zipStream, ZipArchiveMode.Read, leaveOpen: false);
+            foreach (var entry in archive.Entries)
+            {
+                if (string.IsNullOrEmpty(entry.Name)) continue; // skip directory entries
+                var destPath = Path.Combine(helperDir, entry.FullName);
+                var destDir = Path.GetDirectoryName(destPath);
+                if (!string.IsNullOrEmpty(destDir)) Directory.CreateDirectory(destDir);
+                using var entryStream = entry.Open();
+                using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
+                entryStream.CopyTo(fs);
+            }
+            File.WriteAllText(markerPath, expectedHash);
+            _logger.LogInformation("[ClaudeCli] Extracted permission helper to: {Path} (hash {Hash})",
+                helperPath, expectedHash.Substring(0, 12));
+        }
+
+        return helperPath;
     }
 
     /// <summary>

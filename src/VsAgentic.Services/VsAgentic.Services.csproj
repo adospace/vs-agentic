@@ -8,6 +8,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.5" />
     <PackageReference Include="System.Threading.Channels" Version="10.0.3" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.5" />
@@ -19,18 +24,46 @@
   </ItemGroup>
 
   <!--
-    Reference the MCP permission helper exe so it gets built before us and
-    its output is copied to consumers' bin directories. We do NOT want a
-    managed reference (it's an exe, not a library), hence ReferenceOutputAssembly=false.
+    Reference the MCP permission helper exe so it gets built before us. The
+    .exe is not linked as a managed reference; it's embedded as a resource
+    (see EmbedMcpHelper target below) and extracted at runtime by
+    ClaudeCliProcessHost.ResolveHelperExePath. Packaging it this way means
+    the VSIX can never lose it.
   -->
   <ItemGroup>
     <ProjectReference Include="..\VsAgentic.Services.McpPermissionServer\VsAgentic.Services.McpPermissionServer.csproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
-      <OutputItemType>Content</OutputItemType>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Private>true</Private>
+      <Private>false</Private>
       <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
     </ProjectReference>
   </ItemGroup>
+
+  <!--
+    Zip the entire MCP helper bin folder (exe + its net472 dependencies like
+    System.Text.Json, Microsoft.Bcl.AsyncInterfaces, etc.) into a single
+    embedded resource. ClaudeCliProcessHost.ResolveHelperExePath extracts
+    the zip at runtime into a versioned %LOCALAPPDATA% folder so the exe
+    can resolve its deps from the same directory. The zip is staged under
+    obj so it doesn't leak into OutputPath.
+  -->
+  <Target Name="EmbedMcpHelper"
+          BeforeTargets="PrepareForBuild"
+          DependsOnTargets="ResolveProjectReferences">
+    <PropertyGroup>
+      <_McpHelperSourceDir>$(MSBuildThisFileDirectory)..\VsAgentic.Services.McpPermissionServer\bin\$(Configuration)\net472\</_McpHelperSourceDir>
+      <_McpHelperZipPath>$(IntermediateOutputPath)vsagentic-mcp-permissions.zip</_McpHelperZipPath>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(_McpHelperSourceDir)vsagentic-mcp-permissions.exe')"
+           Text="MCP helper exe not found at $(_McpHelperSourceDir). Build VsAgentic.Services.McpPermissionServer first." />
+    <MakeDir Directories="$(IntermediateOutputPath)" />
+    <Delete Files="$(_McpHelperZipPath)" />
+    <ZipDirectory SourceDirectory="$(_McpHelperSourceDir)"
+                  DestinationFile="$(_McpHelperZipPath)" />
+    <ItemGroup>
+      <EmbeddedResource Include="$(_McpHelperZipPath)">
+        <LogicalName>vsagentic-mcp-permissions.zip</LogicalName>
+      </EmbeddedResource>
+    </ItemGroup>
+  </Target>
 
 </Project>

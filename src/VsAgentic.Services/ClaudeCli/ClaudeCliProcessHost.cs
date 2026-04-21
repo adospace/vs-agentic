@@ -191,18 +191,23 @@ public sealed class ClaudeCliProcessHost : IDisposable
         sb.Append(" --mcp-config ");
         sb.Append(EscapeArgument(mcpConfigPath));
 
+        // --resume must come BEFORE --append-system-prompt.  When the
+        // target is a .cmd/.bat file, .NET spawns cmd.exe which can split
+        // the argument string at embedded newlines, silently dropping
+        // everything that follows.  Placing --resume early guarantees it
+        // is always parsed correctly even if a future prompt adds newlines.
+        if (!string.IsNullOrEmpty(_resumeSessionId))
+        {
+            sb.Append(" --resume ");
+            sb.Append(EscapeArgument(_resumeSessionId!));
+        }
+
         // Nudge Claude to actually use the AskUserQuestion tool instead of
         // inlining clarifying questions in plain text. The tool IS available
         // in the headless tool set (we verified via the system/init event),
         // but the default model behavior in print mode is to answer inline.
         sb.Append(" --append-system-prompt ");
         sb.Append(EscapeArgument(AskUserQuestionPromptNudge));
-
-        if (!string.IsNullOrEmpty(_resumeSessionId))
-        {
-            sb.Append(" --resume ");
-            sb.Append(EscapeArgument(_resumeSessionId!));
-        }
 
         return sb.ToString();
     }

@@ -207,7 +207,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
         // in the headless tool set (we verified via the system/init event),
         // but the default model behavior in print mode is to answer inline.
         sb.Append(" --append-system-prompt ");
-        sb.Append(EscapeArgument(AskUserQuestionPromptNudge));
+        sb.Append(EscapeArgument(AskUserQuestionPromptNudge.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ')));
 
         return sb.ToString();
     }

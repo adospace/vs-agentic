@@ -583,8 +583,25 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 return $"```\n{cmd.GetString()}\n```";
             if (input.TryGetProperty("file_path", out var fp))
                 return $"`{fp.GetString()}`";
+            if (input.TryGetProperty("path", out var pathProp))
+                return $"`{pathProp.GetString()}`";
             if (input.TryGetProperty("pattern", out var pat))
                 return pat.GetString() ?? "";
+
+            // Fallback: format as readable key-value pairs instead of raw JSON
+            if (input.ValueKind == JsonValueKind.Object)
+            {
+                var parts = new List<string>();
+                foreach (var prop in input.EnumerateObject())
+                {
+                    var val = prop.Value.ValueKind == JsonValueKind.String
+                        ? prop.Value.GetString() ?? ""
+                        : prop.Value.GetRawText();
+                    if (val.Length > 100) val = val.Substring(0, 100) + "…";
+                    parts.Add($"{prop.Name}: `{val}`");
+                }
+                if (parts.Count > 0) return string.Join("  \n", parts);
+            }
 
             var raw = input.GetRawText();
             return raw.Length > 200 ? raw.Substring(0, 200) + "..." : raw;

@@ -250,11 +250,22 @@ html, body {
     font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
     font-size: 11px;
     white-space: pre-wrap;
-    max-height: 200px;
-    overflow: hidden;
-    text-overflow: ellipsis;
 }
 .thinking-content.visible { display: block; }
+.thinking-content.capped {
+    max-height: 200px;
+    overflow: hidden;
+    position: relative;
+}
+.thinking-content.capped::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 30px;
+    background: linear-gradient(transparent, var(--user-bg));
+}
 
 /* Streaming indicator */
 .streaming-cursor::after {
@@ -537,6 +548,34 @@ function addMessage(id, type, dataJson) {
                 var show = !c.classList.contains('visible');
                 c.classList.toggle('visible', show);
                 a.classList.toggle('expanded', show);
+                if (show) {
+                    requestAnimationFrame(function() {
+                        // Add capped class and check overflow
+                        if (!c.classList.contains('capped') && !c.dataset.uncapped) {
+                            c.classList.add('capped');
+                        }
+                        var existingLink = c.parentNode.querySelector('.show-more-link');
+                        if (existingLink) {
+                            existingLink.style.display = '';
+                        } else if (c.scrollHeight > 200) {
+                            var link = document.createElement('span');
+                            link.className = 'show-more-link';
+                            link.textContent = c.classList.contains('capped') ? 'Show more' : 'Show less';
+                            link.addEventListener('click', function(e) {
+                                e.stopPropagation();
+                                var isCapped = c.classList.contains('capped');
+                                c.classList.toggle('capped', !isCapped);
+                                c.dataset.uncapped = isCapped ? '1' : '';
+                                link.textContent = isCapped ? 'Show less' : 'Show more';
+                            });
+                            c.parentNode.insertBefore(link, c.nextSibling);
+                        }
+                    });
+                } else {
+                    // Hide show-more link when collapsing
+                    var link = this.parentNode.querySelector('.show-more-link');
+                    if (link) link.style.display = 'none';
+                }
             }
         });
         var content = document.createElement('div');

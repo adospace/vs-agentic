@@ -550,25 +550,26 @@ function addMessage(id, type, dataJson) {
                 a.classList.toggle('expanded', show);
                 if (show) {
                     requestAnimationFrame(function() {
-                        // Add capped class and check overflow
-                        if (!c.classList.contains('capped') && !c.dataset.uncapped) {
-                            c.classList.add('capped');
-                        }
                         var existingLink = c.parentNode.querySelector('.show-more-link');
                         if (existingLink) {
                             existingLink.style.display = '';
-                        } else if (c.scrollHeight > 200) {
-                            var link = document.createElement('span');
-                            link.className = 'show-more-link';
-                            link.textContent = c.classList.contains('capped') ? 'Show more' : 'Show less';
-                            link.addEventListener('click', function(e) {
-                                e.stopPropagation();
-                                var isCapped = c.classList.contains('capped');
-                                c.classList.toggle('capped', !isCapped);
-                                c.dataset.uncapped = isCapped ? '1' : '';
-                                link.textContent = isCapped ? 'Show less' : 'Show more';
-                            });
-                            c.parentNode.insertBefore(link, c.nextSibling);
+                        } else {
+                            // Measure scrollHeight BEFORE adding capped class so
+                            // overflow:hidden doesn't clamp the reported height.
+                            var fullHeight = c.scrollHeight;
+                            if (fullHeight > 200) {
+                                c.classList.add('capped');
+                                var link = document.createElement('span');
+                                link.className = 'show-more-link';
+                                link.textContent = 'Show more';
+                                link.addEventListener('click', function(e) {
+                                    e.stopPropagation();
+                                    var isCapped = c.classList.contains('capped');
+                                    c.classList.toggle('capped', !isCapped);
+                                    link.textContent = isCapped ? 'Show less' : 'Show more';
+                                });
+                                c.parentNode.insertBefore(link, c.nextSibling);
+                            }
                         }
                     });
                 } else {

@@ -35,6 +35,71 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private string _sessionTitle = "New Session";
 
+    // Realtime activity indicator: a braille spinner prefix while the AI is
+    // working, a steady "? " prefix while awaiting user input (permission /
+    // question banner), and no prefix while idle. Host bindings (e.g. the VS
+    // tool window caption) should use DisplayTitle; SessionTitle stays plain
+    // for the session list entry so the sidebar doesn't flicker.
+    private static readonly string SpinnerFrames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+    private const string AwaitingPrefix = "? ";
+    private int _pendingUserPrompts;
+    private int _spinnerFrame;
+    private System.Windows.Threading.DispatcherTimer? _activityTimer;
+
+    [ObservableProperty]
+    private string _displayTitle = "New Session";
+
+    public SessionActivity Activity =>
+        _pendingUserPrompts > 0 ? SessionActivity.AwaitingUser :
+        IsBusy ? SessionActivity.Busy :
+        SessionActivity.Idle;
+
+    partial void OnIsBusyChanged(bool value) => UpdateActivityIndicator();
+
+    partial void OnSessionTitleChanged(string value) => UpdateDisplayTitle();
+
+    private void UpdateActivityIndicator()
+    {
+        if (Activity == SessionActivity.Busy)
+        {
+            EnsureActivityTimer();
+            if (!_activityTimer!.IsEnabled) _activityTimer.Start();
+        }
+        else
+        {
+            _activityTimer?.Stop();
+        }
+        UpdateDisplayTitle();
+    }
+
+    private void EnsureActivityTimer()
+    {
+        if (_activityTimer != null) return;
+        var dispatcher = Application.Current?.Dispatcher
+            ?? System.Windows.Threading.Dispatcher.CurrentDispatcher;
+        _activityTimer = new System.Windows.Threading.DispatcherTimer(
+            System.Windows.Threading.DispatcherPriority.Normal, dispatcher)
+        {
+            Interval = TimeSpan.FromMilliseconds(120)
+        };
+        _activityTimer.Tick += (_, _) =>
+        {
+            _spinnerFrame = (_spinnerFrame + 1) % SpinnerFrames.Length;
+            UpdateDisplayTitle();
+        };
+    }
+
+    private void UpdateDisplayTitle()
+    {
+        var prefix = Activity switch
+        {
+            SessionActivity.Busy => SpinnerFrames[_spinnerFrame] + " ",
+            SessionActivity.AwaitingUser => AwaitingPrefix,
+            _ => ""
+        };
+        DisplayTitle = prefix + SessionTitle;
+    }
+
     public string WorkingDirectory { get; }
 
     /// <summary>
@@ -104,8 +169,15 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         // Re-raise on the UI dispatcher so the host can mount the banner safely.
         Dispatch(() =>
         {
+            _pendingUserPrompts++;
+            UpdateActivityIndicator();
             PermissionPromptRequested?.Invoke(request, decision =>
             {
+                Dispatch(() =>
+                {
+                    if (_pendingUserPrompts > 0) _pendingUserPrompts--;
+                    UpdateActivityIndicator();
+                });
                 _permissionBroker?.Resolve(request.Id, decision);
             });
         });
@@ -115,8 +187,15 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         Dispatch(() =>
         {
+            _pendingUserPrompts++;
+            UpdateActivityIndicator();
             UserQuestionRequested?.Invoke(request, answers =>
             {
+                Dispatch(() =>
+                {
+                    if (_pendingUserPrompts > 0) _pendingUserPrompts--;
+                    UpdateActivityIndicator();
+                });
                 _questionBroker?.Resolve(request.ToolUseId, answers);
             });
         });
@@ -569,7 +648,15 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        try { _activityTimer?.Stop(); } catch { }
         try { (_chatService as IDisposable)?.Dispose(); } catch { }
         try { _serviceScope?.Dispose(); } catch { }
     }
+}
+
+public enum SessionActivity
+{
+    Idle,
+    Busy,
+    AwaitingUser
 }

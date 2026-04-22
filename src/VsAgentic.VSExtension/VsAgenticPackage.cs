@@ -308,7 +308,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                     // Link the view model to its session entry so cost updates flow back to the list
                     viewModel.SessionInfo = session;
 
-                    // Sync generated title back to session list and window caption
+                    // Sync generated title back to session list (plain title)
+                    // and window caption (animated DisplayTitle with activity
+                    // indicator prefix).
                     viewModel.PropertyChanged += (_, e) =>
                     {
                         ThreadHelper.ThrowIfNotOnUIThread();
@@ -316,9 +318,12 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                         if (e.PropertyName == nameof(ChatSessionViewModel.SessionTitle))
                         {
                             session.Name = viewModel.SessionTitle;
+                        }
+                        else if (e.PropertyName == nameof(ChatSessionViewModel.DisplayTitle))
+                        {
                             if (window.Frame is IVsWindowFrame f)
                             {
-                                window.Caption = viewModel.SessionTitle;
+                                window.Caption = viewModel.DisplayTitle;
                             }
                         }
                     };

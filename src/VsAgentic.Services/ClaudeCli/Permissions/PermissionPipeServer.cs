@@ -129,16 +129,29 @@ internal sealed class PermissionPipeServer : IDisposable
                         continue;
                     }
 
-                    var request = new PermissionRequest(id, toolName, input);
+                    // AskUserQuestion is itself a user-facing prompt rendered as a
+                    // question card. Asking for permission first would show a confusing
+                    // Allow/Deny banner with the raw questions JSON.
                     PermissionDecision decision;
-                    try
+                    if (toolName == "AskUserQuestion")
                     {
-                        decision = await _broker.SubmitAsync(request, ct).ConfigureAwait(false);
+                        var inputJson = input.ValueKind == JsonValueKind.Undefined
+                            ? "{}"
+                            : input.GetRawText();
+                        decision = PermissionDecision.Allow(inputJson);
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        _logger.LogError(ex, "[PermissionPipeServer] broker.SubmitAsync threw");
-                        decision = PermissionDecision.Deny("Internal error");
+                        var request = new PermissionRequest(id, toolName, input);
+                        try
+                        {
+                            decision = await _broker.SubmitAsync(request, ct).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "[PermissionPipeServer] broker.SubmitAsync threw");
+                            decision = PermissionDecision.Deny("Internal error");
+                        }
                     }
 
                     var response = SerializeDecision(id, decision);

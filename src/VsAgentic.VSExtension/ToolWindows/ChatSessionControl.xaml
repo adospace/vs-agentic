@@ -62,6 +62,37 @@
                 </DataTrigger>
             </Style.Triggers>
         </Style>
+
+        <!-- ListBoxItem template used in the @-mention popup -->
+        <Style x:Key="MentionItemStyle" TargetType="ListBoxItem">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Padding" Value="6,3"/>
+            <Setter Property="Margin" Value="0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="border"
+                                CornerRadius="3"
+                                Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="border" Property="Background"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarSelectedKey}}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </UserControl.Resources>
 
     <DockPanel x:Name="RootPanel"
@@ -116,7 +147,59 @@
                                      MinHeight="36"
                                      MaxHeight="120"
                                      VerticalScrollBarVisibility="Auto"
-                                     KeyDown="InputTextBox_KeyDown"/>
+                                     KeyDown="InputTextBox_KeyDown"
+                                     PreviewKeyDown="InputTextBox_PreviewKeyDown"
+                                     TextChanged="InputTextBox_TextChanged"
+                                     SelectionChanged="InputTextBox_SelectionChanged"
+                                     LostKeyboardFocus="InputTextBox_LostKeyboardFocus"/>
+
+                            <!-- @-mention popup: anchored above the input box, holds a filtered file/folder list -->
+                            <Popup x:Name="MentionPopup"
+                                   PlacementTarget="{Binding ElementName=InputTextBox}"
+                                   Placement="Top"
+                                   StaysOpen="True"
+                                   AllowsTransparency="True"
+                                   PopupAnimation="Fade"
+                                   Focusable="False">
+                                <Border Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
+                                        BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        MinWidth="260"
+                                        MaxWidth="520"
+                                        SnapsToDevicePixels="True">
+                                    <ListBox x:Name="MentionList"
+                                             MaxHeight="220"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             Focusable="False"
+                                             ItemContainerStyle="{StaticResource MentionItemStyle}"
+                                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                             PreviewMouseLeftButtonDown="MentionList_PreviewMouseLeftButtonDown">
+                                        <ListBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <imaging:CrispImage Grid.Column="0"
+                                                                        Width="14" Height="14"
+                                                                        VerticalAlignment="Center"
+                                                                        Margin="0,0,6,0"
+                                                                        Moniker="{Binding Moniker}"/>
+                                                    <TextBlock Grid.Column="1"
+                                                               VerticalAlignment="Center"
+                                                               Text="{Binding RelativePath}"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               FontSize="12"
+                                                               Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListBox.ItemTemplate>
+                                    </ListBox>
+                                </Border>
+                            </Popup>
                             <TextBlock Text="Type your message, CTRL+Enter to send"
                                        Margin="11,8,0,0"
                                        VerticalAlignment="Top"
@@ -142,12 +225,25 @@
                                 BorderThickness="0,1,0,0">
                             <Grid>
                                 <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
 
+                                <!-- @-mention attach button: opens the file/folder picker popup -->
+                                <Button Grid.Column="0"
+                                        x:Name="AtMentionButton"
+                                        Style="{StaticResource IconButtonStyle}"
+                                        Click="AtMentionButton_Click"
+                                        ToolTip="Insert file or folder reference (@)">
+                                    <TextBlock Text="@"
+                                               FontSize="13"
+                                               FontWeight="Bold"
+                                               Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                                </Button>
+
                                 <!-- Status info area (reserved for future) -->
-                                <TextBlock Grid.Column="0"
+                                <TextBlock Grid.Column="1"
                                            x:Name="StatusInfoText"
                                            VerticalAlignment="Center"
                                            Margin="10,0"
@@ -156,7 +252,7 @@
                                            TextTrimming="CharacterEllipsis"/>
 
                                 <!-- Send / Stop buttons -->
-                                <Grid Grid.Column="1" Margin="2">
+                                <Grid Grid.Column="2" Margin="2">
                                     <Button Style="{StaticResource SendButtonStyle}"
                                             Command="{Binding SendCommand}"
                                             ToolTip="Send (Ctrl+Enter)">

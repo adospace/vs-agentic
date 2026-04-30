@@ -2,13 +2,51 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vs="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
+             xmlns:imaging="clr-namespace:Microsoft.VisualStudio.Imaging;assembly=Microsoft.VisualStudio.Imaging"
+             xmlns:catalog="clr-namespace:Microsoft.VisualStudio.Imaging;assembly=Microsoft.VisualStudio.ImageCatalog"
              xmlns:controls="clr-namespace:VsAgentic.UI.Controls;assembly=VsAgentic.UI" >
 
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
 
-        <Style x:Key="SendWhenIdleStyle" TargetType="Button"
-               BasedOn="{StaticResource {x:Static vs:VsResourceKeys.ButtonStyleKey}}">
+        <!-- Borderless icon button used inside the input status bar -->
+        <Style x:Key="IconButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="6,4"/>
+            <Setter Property="Margin" Value="2,0,0,0"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Focusable" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Background"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseDownBackgroundGradientKey}}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SendButtonStyle" TargetType="Button" BasedOn="{StaticResource IconButtonStyle}">
             <Style.Triggers>
                 <DataTrigger Binding="{Binding IsBusy}" Value="True">
                     <Setter Property="Visibility" Value="Collapsed"/>
@@ -16,8 +54,7 @@
             </Style.Triggers>
         </Style>
 
-        <Style x:Key="StopWhenBusyStyle" TargetType="Button"
-               BasedOn="{StaticResource {x:Static vs:VsResourceKeys.ButtonStyleKey}}">
+        <Style x:Key="StopButtonStyle" TargetType="Button" BasedOn="{StaticResource IconButtonStyle}">
             <Setter Property="Visibility" Value="Collapsed"/>
             <Style.Triggers>
                 <DataTrigger Binding="{Binding IsBusy}" Value="True">
@@ -27,52 +64,117 @@
         </Style>
     </UserControl.Resources>
 
-    <DockPanel Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}">
-        <!-- Header -->
-        <Border DockPanel.Dock="Top"
-                Background="{DynamicResource {x:Static vs:VsBrushes.CommandBarGradientBeginKey}}"
-                Padding="16,8"
-                BorderBrush="{DynamicResource {x:Static vs:VsBrushes.CommandBarBorderKey}}"
-                BorderThickness="0,0,0,1">
-            <DockPanel>
-                <StackPanel VerticalAlignment="Center">
-                    <TextBlock Text="VsAgentic Chat"
-                               Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"
-                               FontSize="14" FontWeight="SemiBold"/>
-                    <TextBlock Text="{Binding WorkingDirectory}"
-                               Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
-                               FontSize="11" TextTrimming="CharacterEllipsis"/>
-                </StackPanel>
-            </DockPanel>
-        </Border>
+    <DockPanel x:Name="RootPanel"
+               Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}">
 
         <!-- Input Area -->
         <Border DockPanel.Dock="Bottom"
-                Background="{DynamicResource {x:Static vs:VsBrushes.CommandBarGradientBeginKey}}"
-                Padding="12,8"
-                BorderBrush="{DynamicResource {x:Static vs:VsBrushes.CommandBarBorderKey}}"
-                BorderThickness="0,1,0,0">
-            <DockPanel>
-                <Grid DockPanel.Dock="Right" VerticalAlignment="Bottom" Margin="8,0,0,0">
-                    <Button Content="Send"
-                            Command="{Binding SendCommand}"
-                            Style="{StaticResource SendWhenIdleStyle}"
-                            Padding="16,6"/>
-                    <Button Content="&#9632; Stop"
-                            ToolTip="Stop processing"
-                            Command="{Binding StopCommand}"
-                            Style="{StaticResource StopWhenBusyStyle}"
-                            Padding="16,6"/>
-                </Grid>
-                <TextBox x:Name="InputTextBox"
-                         Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
-                         Style="{StaticResource {x:Static vs:VsResourceKeys.TextBoxStyleKey}}"
-                         Padding="8,6" FontSize="13"
-                         AcceptsReturn="True" TextWrapping="Wrap"
-                         MinHeight="36" MaxHeight="120"
-                         VerticalScrollBarVisibility="Auto"
-                         KeyDown="InputTextBox_KeyDown"/>
-            </DockPanel>
+                Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}"
+                Padding="6,2,6,6">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- Resize grip: thin transparent strip the user can drag up/down -->
+                <Border x:Name="ResizeGrip"
+                        Grid.Row="0"
+                        Height="6"
+                        Background="Transparent"
+                        Cursor="SizeNS"
+                        MouseLeftButtonDown="ResizeGrip_MouseLeftButtonDown"
+                        MouseMove="ResizeGrip_MouseMove"
+                        MouseLeftButtonUp="ResizeGrip_MouseLeftButtonUp"
+                        ToolTip="Drag to resize input"/>
+
+                <!-- Rounded input container holding the textbox + status bar -->
+                <Border Grid.Row="1"
+                        CornerRadius="4"
+                        Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
+                        BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                        BorderThickness="1"
+                        SnapsToDevicePixels="True">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- Text input + placeholder overlay -->
+                        <Grid Grid.Row="0">
+                            <TextBox x:Name="InputTextBox"
+                                     Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
+                                     Background="Transparent"
+                                     Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"
+                                     CaretBrush="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"
+                                     BorderThickness="0"
+                                     Padding="8,6"
+                                     FontSize="13"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     MinHeight="36"
+                                     MaxHeight="120"
+                                     VerticalScrollBarVisibility="Auto"
+                                     KeyDown="InputTextBox_KeyDown"/>
+                            <TextBlock Text="Type your message, CTRL+Enter to send"
+                                       Margin="11,8,0,0"
+                                       VerticalAlignment="Top"
+                                       IsHitTestVisible="False"
+                                       FontSize="13"
+                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Text, ElementName=InputTextBox}" Value="">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Grid>
+
+                        <!-- Status bar (separated from textbox by a top line) -->
+                        <Border Grid.Row="1"
+                                BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                                BorderThickness="0,1,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Status info area (reserved for future) -->
+                                <TextBlock Grid.Column="0"
+                                           x:Name="StatusInfoText"
+                                           VerticalAlignment="Center"
+                                           Margin="10,0"
+                                           FontSize="11"
+                                           Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
+                                           TextTrimming="CharacterEllipsis"/>
+
+                                <!-- Send / Stop buttons -->
+                                <Grid Grid.Column="1" Margin="2">
+                                    <Button Style="{StaticResource SendButtonStyle}"
+                                            Command="{Binding SendCommand}"
+                                            ToolTip="Send (Ctrl+Enter)">
+                                        <imaging:CrispImage Width="16" Height="16"
+                                                            Moniker="{x:Static catalog:KnownMonikers.Send}"/>
+                                    </Button>
+                                    <Button Style="{StaticResource StopButtonStyle}"
+                                            Command="{Binding StopCommand}"
+                                            ToolTip="Stop processing">
+                                        <imaging:CrispImage Width="16" Height="16"
+                                                            Moniker="{x:Static catalog:KnownMonikers.Stop}"/>
+                                    </Button>
+                                </Grid>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </Border>
+            </Grid>
         </Border>
 
         <!-- Busy indicator -->

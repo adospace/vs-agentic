@@ -1,3 +1,4 @@
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -10,6 +11,12 @@ namespace VsAgentic.VSExtension.ToolWindows;
 
 public partial class ChatSessionControl : UserControl
 {
+    private const double InputMinHeight = 36;
+
+    private bool _isResizing;
+    private double _resizeStartScreenY;
+    private double _resizeStartHeight;
+
     public ChatSessionControl()
     {
         InitializeComponent();
@@ -115,8 +122,7 @@ public partial class ChatSessionControl : UserControl
     private void InputTextBox_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Enter &&
-            !Keyboard.IsKeyDown(Key.LeftShift) &&
-            !Keyboard.IsKeyDown(Key.RightShift))
+            (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
         {
             if (DataContext is ChatSessionViewModel vm && vm.SendCommand.CanExecute(null))
             {
@@ -124,5 +130,52 @@ public partial class ChatSessionControl : UserControl
                 e.Handled = true;
             }
         }
+    }
+
+    private void ResizeGrip_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not IInputElement grip) return;
+
+        _isResizing = true;
+        // Use screen-space coordinates so we are not affected by the textbox
+        // resizing under us during drag (which would change positions in
+        // the local coordinate system).
+        _resizeStartScreenY = PointToScreen(e.GetPosition(this)).Y;
+        _resizeStartHeight = InputTextBox.ActualHeight > 0
+            ? InputTextBox.ActualHeight
+            : InputTextBox.MinHeight;
+
+        Mouse.Capture(grip);
+        e.Handled = true;
+    }
+
+    private void ResizeGrip_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_isResizing) return;
+
+        var currentScreenY = PointToScreen(e.GetPosition(this)).Y;
+        // Dragging upward decreases Y, which should grow the input box.
+        var delta = _resizeStartScreenY - currentScreenY;
+        var requested = _resizeStartHeight + delta;
+
+        var maxHeight = Math.Max(InputMinHeight, RootPanel.ActualHeight / 2);
+        var newHeight = Math.Max(InputMinHeight, Math.Min(requested, maxHeight));
+
+        // Pin the textbox to the dragged height so it neither grows with
+        // content nor shrinks below the user's chosen size.
+        InputTextBox.MinHeight = newHeight;
+        InputTextBox.MaxHeight = newHeight;
+    }
+
+    private void ResizeGrip_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_isResizing) return;
+
+        _isResizing = false;
+        if (Mouse.Captured is IInputElement captured && ReferenceEquals(captured, sender))
+        {
+            Mouse.Capture(null);
+        }
+        e.Handled = true;
     }
 }

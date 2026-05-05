@@ -9,6 +9,8 @@ using VsAgentic.Services.ClaudeCli.Questions;
 using VsAgentic.Services.Configuration;
 using VsAgentic.Services.Models;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace VsAgentic.UI.ViewModels;
 
@@ -135,6 +137,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     private readonly IPermissionBroker? _permissionBroker;
     private readonly IUserQuestionBroker? _questionBroker;
+    private readonly ILogger _logger;
 
     /// <summary>
     /// Standalone constructor for use without a chat service (e.g. before service is wired up).
@@ -142,10 +145,11 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     public ChatSessionViewModel(string workingDirectory = "")
     {
         WorkingDirectory = workingDirectory;
+        _logger = NullLogger.Instance;
     }
 
     public ChatSessionViewModel(IChatService chatService, OutputListener outputListener, IOptions<VsAgenticOptions> options)
-        : this(chatService, outputListener, options, permissionBroker: null, questionBroker: null)
+        : this(chatService, outputListener, options, permissionBroker: null, questionBroker: null, logger: null)
     {
     }
 
@@ -154,10 +158,12 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         OutputListener outputListener,
         IOptions<VsAgenticOptions> options,
         IPermissionBroker? permissionBroker,
-        IUserQuestionBroker? questionBroker)
+        IUserQuestionBroker? questionBroker,
+        ILogger<ChatSessionViewModel>? logger = null)
     {
         _chatService = chatService;
         WorkingDirectory = options.Value.WorkingDirectory;
+        _logger = (ILogger?)logger ?? NullLogger.Instance;
 
         outputListener.StepStarted += OnStepStarted;
         outputListener.StepUpdated += OnStepUpdated;
@@ -190,17 +196,34 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         // Re-raise on the UI dispatcher so the host can mount the banner safely.
         Dispatch(() =>
         {
-            _pendingUserPrompts++;
-            UpdateActivityIndicator();
-            PermissionPromptRequested?.Invoke(request, decision =>
+            try
             {
-                Dispatch(() =>
+                _pendingUserPrompts++;
+                UpdateActivityIndicator();
+                var subscribers = PermissionPromptRequested?.GetInvocationList()?.Length ?? 0;
+                _logger.LogInformation(
+                    "[VM] PermissionPromptRequested dispatched (id={Id}, tool={Tool}, subscribers={Subs})",
+                    request.Id, request.ToolName, subscribers);
+                PermissionPromptRequested?.Invoke(request, decision =>
                 {
-                    if (_pendingUserPrompts > 0) _pendingUserPrompts--;
-                    UpdateActivityIndicator();
+                    Dispatch(() =>
+                    {
+                        if (_pendingUserPrompts > 0) _pendingUserPrompts--;
+                        UpdateActivityIndicator();
+                    });
+                    _permissionBroker?.Resolve(request.Id, decision);
                 });
-                _permissionBroker?.Resolve(request.Id, decision);
-            });
+            }
+            catch (Exception ex)
+            {
+                // Without this guard the throw escapes Dispatcher.BeginInvoke,
+                // tears down the dispatcher loop, and leaves the chat hung.
+                _logger.LogError(ex, "[VM] PermissionPromptRequested handler crashed (id={Id})", request.Id);
+                if (_pendingUserPrompts > 0) _pendingUserPrompts--;
+                UpdateActivityIndicator();
+                try { _permissionBroker?.Resolve(request.Id, PermissionDecision.Deny("Banner failed to display")); }
+                catch (Exception ex2) { _logger.LogError(ex2, "[VM] PermissionBroker.Resolve also failed"); }
+            }
         });
     }
 
@@ -208,17 +231,45 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         Dispatch(() =>
         {
-            _pendingUserPrompts++;
-            UpdateActivityIndicator();
-            UserQuestionRequested?.Invoke(request, answers =>
+            try
             {
-                Dispatch(() =>
+                _pendingUserPrompts++;
+                UpdateActivityIndicator();
+                var subscribers = UserQuestionRequested?.GetInvocationList()?.Length ?? 0;
+                _logger.LogInformation(
+                    "[VM] UserQuestionRequested dispatched (toolUseId={Id}, questions={Count}, subscribers={Subs})",
+                    request.ToolUseId, request.Questions.Count, subscribers);
+                if (subscribers == 0)
                 {
+                    // No host wired the event yet — banner cannot be shown.
+                    // Resolve with empty answers so the dispatcher loop unblocks
+                    // instead of leaving the chat stuck in "thinking".
+                    _logger.LogWarning(
+                        "[VM] UserQuestionRequested has no subscribers; resolving with empty answers (toolUseId={Id})",
+                        request.ToolUseId);
                     if (_pendingUserPrompts > 0) _pendingUserPrompts--;
                     UpdateActivityIndicator();
+                    _questionBroker?.Resolve(request.ToolUseId, new Dictionary<string, string>());
+                    return;
+                }
+                UserQuestionRequested?.Invoke(request, answers =>
+                {
+                    Dispatch(() =>
+                    {
+                        if (_pendingUserPrompts > 0) _pendingUserPrompts--;
+                        UpdateActivityIndicator();
+                    });
+                    _questionBroker?.Resolve(request.ToolUseId, answers);
                 });
-                _questionBroker?.Resolve(request.ToolUseId, answers);
-            });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[VM] UserQuestionRequested handler crashed (toolUseId={Id})", request.ToolUseId);
+                if (_pendingUserPrompts > 0) _pendingUserPrompts--;
+                UpdateActivityIndicator();
+                try { _questionBroker?.Resolve(request.ToolUseId, new Dictionary<string, string>()); }
+                catch (Exception ex2) { _logger.LogError(ex2, "[VM] QuestionBroker.Resolve also failed"); }
+            }
         });
     }
 
@@ -445,14 +496,18 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanStop))]
     private void Stop()
     {
-        try
-        {
-            _sendCts?.Cancel();
-        }
-        catch
-        {
-            // Best effort — token may already be disposed
-        }
+        try { _sendCts?.Cancel(); }
+        catch { /* best effort — token may already be disposed */ }
+
+        // The dispatcher loop blocks on the broker's TCS while a permission /
+        // question banner is open. SendAsync's cancellation token doesn't reach
+        // those TCSs (they're created with CancellationToken.None), so without
+        // explicitly resolving them here a stuck banner leaves the chat hung
+        // even after the user clicks Stop.
+        try { _questionBroker?.CancelAllPending(); }
+        catch (Exception ex) { _logger.LogError(ex, "[VM] Stop: questionBroker.CancelAllPending failed"); }
+        try { _permissionBroker?.CancelAllPending(); }
+        catch (Exception ex) { _logger.LogError(ex, "[VM] Stop: permissionBroker.CancelAllPending failed"); }
     }
 
     [RelayCommand]

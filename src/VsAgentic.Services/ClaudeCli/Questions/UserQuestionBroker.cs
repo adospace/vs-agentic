@@ -62,4 +62,17 @@ public sealed class UserQuestionBroker : IUserQuestionBroker
             _logger.LogWarning("[UserQuestionBroker] Resolve for unknown tool_use id {Id}", toolUseId);
         }
     }
+
+    public void CancelAllPending()
+    {
+        var empty = new Dictionary<string, string>();
+        foreach (var key in _pending.Keys)
+        {
+            if (_pending.TryRemove(key, out var tcs))
+            {
+                _logger.LogInformation("[UserQuestionBroker] CancelAllPending resolving {Id} with empty answers", key);
+                tcs.TrySetResult(empty);
+            }
+        }
+    }
 }

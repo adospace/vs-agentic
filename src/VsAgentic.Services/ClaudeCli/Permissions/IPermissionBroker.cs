@@ -29,4 +29,10 @@ public interface IPermissionBroker
 
     /// <summary>Called by the UI to deliver the user's decision.</summary>
     void Resolve(string requestId, PermissionDecision decision);
+
+    /// <summary>
+    /// Denies every in-flight permission request. Used by the chat Stop button
+    /// so the dispatcher loop can unblock when a permission banner is stuck.
+    /// </summary>
+    void CancelAllPending();
 }

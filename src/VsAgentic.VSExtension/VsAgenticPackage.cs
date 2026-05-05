@@ -169,8 +169,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         var optionsAccessor = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<VsAgentic.Services.Configuration.VsAgenticOptions>>();
         var permissionBroker = provider.GetRequiredService<VsAgentic.Services.ClaudeCli.Permissions.IPermissionBroker>();
         var questionBroker = provider.GetRequiredService<VsAgentic.Services.ClaudeCli.Questions.IUserQuestionBroker>();
+        var vmLogger = provider.GetService<Microsoft.Extensions.Logging.ILogger<ChatSessionViewModel>>();
 
-        var vm = new ChatSessionViewModel(chatService, outputListener, optionsAccessor, permissionBroker, questionBroker);
+        var vm = new ChatSessionViewModel(chatService, outputListener, optionsAccessor, permissionBroker, questionBroker, vmLogger);
         vm.SetServiceScope(provider);
         return vm;
     }

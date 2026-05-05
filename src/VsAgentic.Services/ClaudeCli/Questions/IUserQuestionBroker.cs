@@ -22,4 +22,11 @@ public interface IUserQuestionBroker
         CancellationToken cancellationToken);
 
     void Resolve(string toolUseId, IReadOnlyDictionary<string, string> answers);
+
+    /// <summary>
+    /// Resolves every in-flight question with an empty answer dictionary.
+    /// Used by the chat Stop button so the dispatcher loop can unblock when
+    /// a question banner is stuck (e.g. banner failed to display).
+    /// </summary>
+    void CancelAllPending();
 }

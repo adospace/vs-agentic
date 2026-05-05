@@ -59,4 +59,17 @@ public sealed class PermissionBroker : IPermissionBroker
             _logger.LogWarning("[PermissionBroker] Resolve for unknown request id {Id}", requestId);
         }
     }
+
+    public void CancelAllPending()
+    {
+        var deny = PermissionDecision.Deny("Cancelled by user");
+        foreach (var key in _pending.Keys)
+        {
+            if (_pending.TryRemove(key, out var tcs))
+            {
+                _logger.LogInformation("[PermissionBroker] CancelAllPending denying {Id}", key);
+                tcs.TrySetResult(deny);
+            }
+        }
+    }
 }

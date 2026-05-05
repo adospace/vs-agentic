@@ -79,6 +79,72 @@ internal static class ChatBannerBuilder
         return root;
     }
 
+    public static FrameworkElement BuildLoginBanner(
+        string? errorMessage,
+        Action onLoginClicked)
+    {
+        var theme = BannerTheme.Current;
+
+        var stack = new StackPanel
+        {
+            Background = Brushes.Transparent,
+            Margin = new Thickness(0),
+        };
+
+        stack.Children.Add(new TextBlock
+        {
+            Text = "Sign in to Claude",
+            FontWeight = FontWeights.SemiBold,
+            FontSize = 13,
+            Foreground = theme.Foreground,
+            Margin = new Thickness(12, 10, 12, 4),
+        });
+
+        var detail = string.IsNullOrWhiteSpace(errorMessage)
+            ? "The Claude CLI is not authenticated. Sign in to continue."
+            : errorMessage!;
+        stack.Children.Add(new TextBlock
+        {
+            Text = detail,
+            FontSize = 12,
+            Foreground = theme.Muted,
+            Margin = new Thickness(12, 0, 12, 4),
+            TextWrapping = TextWrapping.Wrap,
+        });
+
+        stack.Children.Add(new TextBlock
+        {
+            Text = "A console window will open. Complete the sign-in there, then close the window and resend your message.",
+            FontSize = 11,
+            Foreground = theme.Muted,
+            Margin = new Thickness(12, 0, 12, 8),
+            TextWrapping = TextWrapping.Wrap,
+        });
+
+        var buttonRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(8, 0, 12, 10),
+        };
+
+        var loginBtn = MakeButton("Sign in with Claude", theme.Accent, theme.AccentForeground);
+        loginBtn.Click += (_, __) => onLoginClicked();
+        buttonRow.Children.Add(loginBtn);
+        stack.Children.Add(buttonRow);
+
+        return new Border
+        {
+            Background = theme.InputBackground,
+            BorderBrush = theme.Border,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(2),
+            Margin = new Thickness(8, 8, 8, 8),
+            SnapsToDevicePixels = true,
+            Child = stack,
+        };
+    }
+
     public static FrameworkElement BuildQuestionCard(
         UserQuestionRequest request,
         Action<IReadOnlyDictionary<string, string>> onSubmitted)

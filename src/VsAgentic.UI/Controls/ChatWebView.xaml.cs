@@ -221,6 +221,26 @@ public partial class ChatWebView : UserControl
     }
 
     /// <summary>
+    /// Show the Claude CLI login banner. Invoked when the CLI returned a
+    /// documented authentication error (e.g. "Please run /login"). The callback
+    /// is fired when the user clicks the Sign in button.
+    /// </summary>
+    public void ShowLoginBanner(string? errorMessage, Action onLoginClicked)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            var element = ChatBannerBuilder.BuildLoginBanner(errorMessage, () =>
+            {
+                HideBanner();
+                onLoginClicked();
+            });
+            ApplyBannerHostChrome();
+            BannerHost.Child = element;
+            BannerHost.Visibility = Visibility.Visible;
+        });
+    }
+
+    /// <summary>
     /// Show the AskUserQuestion card. Callback receives the answer dictionary
     /// (question text → selected label or free-text) on Submit.
     /// </summary>

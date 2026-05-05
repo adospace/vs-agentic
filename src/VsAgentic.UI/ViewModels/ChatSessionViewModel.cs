@@ -125,6 +125,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     public event Action<PermissionRequest, Action<PermissionDecision>>? PermissionPromptRequested;
     public event Action<UserQuestionRequest, Action<IReadOnlyDictionary<string, string>>>? UserQuestionRequested;
 
+    /// <summary>
+    /// Raised when the underlying Claude CLI returned a documented
+    /// authentication error and the user needs to sign in. The string is the
+    /// original CLI error text. The host shows a banner; the callback launches
+    /// the interactive login flow.
+    /// </summary>
+    public event Action<string?, Action>? LoginRequiredRequested;
+
     private readonly IPermissionBroker? _permissionBroker;
     private readonly IUserQuestionBroker? _questionBroker;
 
@@ -162,6 +170,19 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             _permissionBroker.PermissionRequested += OnPermissionBrokerRequested;
         if (_questionBroker is not null)
             _questionBroker.QuestionRequested += OnQuestionBrokerRequested;
+
+        chatService.LoginRequired += OnChatServiceLoginRequired;
+    }
+
+    private void OnChatServiceLoginRequired(string? errorMessage)
+    {
+        Dispatch(() =>
+        {
+            LoginRequiredRequested?.Invoke(errorMessage, () =>
+            {
+                _chatService?.LaunchLogin();
+            });
+        });
     }
 
     private void OnPermissionBrokerRequested(PermissionRequest request)

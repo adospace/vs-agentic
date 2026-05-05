@@ -477,16 +477,29 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             var resultText = evt.TryGetProperty("result", out var rp) ? rp.GetString() : null;
             _logger.LogWarning("[ClaudeCli] CLI returned error result: {Result}", resultText);
 
-            var errorItem = new OutputItem
+            // Surface authentication failures via the LoginRequired event
+            // (rendered as a banner) instead of the in-chat error step. The
+            // patterns below are taken from Anthropic's published error
+            // reference at https://code.claude.com/docs/en/errors and are part
+            // of their public contract.
+            if (LooksLikeAuthError(resultText))
             {
-                Id = Guid.NewGuid().ToString("N"),
-                ToolName = "ClaudeCli",
-                Title = "Error",
-                Status = OutputItemStatus.Error,
-                Body = resultText ?? "Unknown CLI error"
-            };
-            _outputListener.OnStepStarted(errorItem);
-            _outputListener.OnStepCompleted(errorItem);
+                try { LoginRequired?.Invoke(resultText); }
+                catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] LoginRequired handler threw"); }
+            }
+            else
+            {
+                var errorItem = new OutputItem
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    ToolName = "ClaudeCli",
+                    Title = "Error",
+                    Status = OutputItemStatus.Error,
+                    Body = resultText ?? "Unknown CLI error"
+                };
+                _outputListener.OnStepStarted(errorItem);
+                _outputListener.OnStepCompleted(errorItem);
+            }
         }
         else
         {
@@ -805,6 +818,58 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         {
             _logger.LogDebug("[ClaudeCli] Could not restore history (not a CLI session)");
         }
+    }
+
+    public event Action<string?>? LoginRequired;
+
+    public void LaunchLogin()
+    {
+        // Tear down the long-running CLI process so the next SendMessageAsync
+        // call starts a fresh process that picks up the new credentials.
+        try
+        {
+            _host.Stop();
+            lock (_dispatcherLock) { _dispatcherTask = null; }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[ClaudeCli] Failed to stop host before launching login");
+        }
+
+        // Open an interactive console window running the Claude CLI so the user
+        // can complete /login. Passing /login as the first argument matches the
+        // hint Anthropic prints in the error message ("Please run /login").
+        try
+        {
+            var quotedPath = $"\"{_options.ClaudeCliPath}\"";
+            var psi = new ProcessStartInfo
+            {
+                FileName = "cmd.exe",
+                Arguments = $"/K {quotedPath} /login",
+                WorkingDirectory = _options.WorkingDirectory,
+                UseShellExecute = true,
+            };
+            Process.Start(psi);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[ClaudeCli] Failed to launch login console");
+        }
+    }
+
+    private static bool LooksLikeAuthError(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+        var t = text!.ToLowerInvariant();
+        // Phrases pulled verbatim from the documented messages at
+        // https://code.claude.com/docs/en/errors (Authentication errors section).
+        return t.Contains("please run /login")
+            || t.Contains("not logged in")
+            || t.Contains("invalid api key")
+            || t.Contains("oauth token")
+            || t.Contains("does not meet scope requirement")
+            || t.Contains("disabled organization")
+            || t.Contains("api error: 401");
     }
 
     public void Dispose() => _host.Dispose();

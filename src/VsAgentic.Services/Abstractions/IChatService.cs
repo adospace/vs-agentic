@@ -21,4 +21,20 @@ public interface IChatService
     /// Returns null when no messages have been sent yet.
     /// </summary>
     decimal? GetSessionCost();
+
+    /// <summary>
+    /// Raised when the underlying CLI returned an authentication / login-required
+    /// error. The string argument is the original error text from the CLI so the
+    /// host can surface it to the user. Hosts should respond by showing a login
+    /// banner and calling <see cref="LaunchLogin"/> when the user opts in.
+    /// </summary>
+    event Action<string?>? LoginRequired;
+
+    /// <summary>
+    /// Launches an interactive Claude CLI window so the user can complete the
+    /// OAuth / login flow, and tears down the current long-running CLI process
+    /// so the next <see cref="SendMessageAsync"/> call starts fresh against the
+    /// new credentials.
+    /// </summary>
+    void LaunchLogin();
 }

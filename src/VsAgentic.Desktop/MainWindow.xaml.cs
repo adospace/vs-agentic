@@ -53,6 +53,9 @@ public partial class MainWindow : Window
         viewModel.UserQuestionRequested += (request, submit) =>
             ChatWebView.ShowQuestionCard(request, submit);
 
+        viewModel.LoginRequiredRequested += (errorMessage, onLoginClicked) =>
+            ChatWebView.ShowLoginBanner(errorMessage, onLoginClicked);
+
         Loaded += (_, _) => InputTextBox.Focus();
     }
 

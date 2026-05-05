@@ -60,6 +60,9 @@ public partial class ChatSessionControl : UserControl
         viewModel.UserQuestionRequested += (request, submit) =>
             ChatWebView.ShowQuestionCard(request, submit);
 
+        viewModel.LoginRequiredRequested += (errorMessage, onLoginClicked) =>
+            ChatWebView.ShowLoginBanner(errorMessage, onLoginClicked);
+
         // Apply VS theme colors to the WebView
         ApplyThemeColors();
 

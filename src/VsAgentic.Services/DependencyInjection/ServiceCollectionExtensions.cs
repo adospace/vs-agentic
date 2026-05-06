@@ -35,7 +35,6 @@ public static class ServiceCollectionExtensions
             new ClaudeCliChatService(
                 sp.GetRequiredService<IOptions<VsAgenticOptions>>(),
                 sp.GetRequiredService<IOutputListener>(),
-                sp.GetRequiredService<IUserQuestionBroker>(),
                 sp.GetRequiredService<ClaudeCliProcessHost>(),
                 sp.GetRequiredService<ILogger<ClaudeCliChatService>>()));
 

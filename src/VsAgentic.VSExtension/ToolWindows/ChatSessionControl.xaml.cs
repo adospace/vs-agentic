@@ -27,6 +27,25 @@ public partial class ChatSessionControl : UserControl
     public ChatSessionControl()
     {
         InitializeComponent();
+
+        // Register VS theme resource keys for the WPF banners. ChatBannerBuilder
+        // wires each surface with SetResourceReference (DynamicResource
+        // equivalent) when its key is non-null; otherwise it falls back to a
+        // static brush from BannerTheme.Current. The brushes behind these keys
+        // are updated by VS in place on theme switches, so any banner already
+        // on screen re-tints automatically — no rebuild, no manual mutation.
+        BannerThemeKeys.Background       = VsBrushes.ComboBoxBackgroundKey;
+        BannerThemeKeys.Border           = VsBrushes.ToolWindowBorderKey;
+        BannerThemeKeys.IndicatorBorder  = VsBrushes.ComboBoxBorderKey;
+        BannerThemeKeys.Foreground       = VsBrushes.ToolWindowTextKey;
+        BannerThemeKeys.Muted            = VsBrushes.CommandBarTextInactiveKey;
+        BannerThemeKeys.InputBackground  = VsBrushes.ComboBoxBackgroundKey;
+        // Use the OS highlight (Win11 user accent) for primary actions —
+        // VsBrushes' command-bar "selected" colours are too subtle for a
+        // Submit/Allow/SignIn button. SystemColors keys are standard WPF
+        // resource keys, always present, and theme-track via DynamicResource.
+        BannerThemeKeys.Accent           = SystemColors.HighlightBrushKey;
+        BannerThemeKeys.AccentForeground = SystemColors.HighlightTextBrushKey;
     }
 
     public void Initialize(ChatSessionViewModel viewModel)

@@ -14,7 +14,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.ClaudeCli.Permissions;
-using VsAgentic.Services.ClaudeCli.Questions;
 using VsAgentic.Services.Configuration;
 
 namespace VsAgentic.Services.ClaudeCli;
@@ -28,16 +27,17 @@ namespace VsAgentic.Services.ClaudeCli;
 ///  - Each <see cref="SendMessageAsync"/> call writes one user message line
 ///    and consumes events until the matching <c>result</c> event arrives.
 ///  - Tool permission requests are intercepted via an in-process MCP server
-///    and surfaced through <see cref="IPermissionBroker"/>.
-///  - <c>AskUserQuestion</c> tool calls are surfaced through
-///    <see cref="IUserQuestionBroker"/>; the answers are returned to the CLI
-///    as a tool_result block on the next stdin write.
+///    and surfaced through <see cref="IPermissionBroker"/>. The same MCP
+///    server also intercepts <c>AskUserQuestion</c> calls and answers them via
+///    the permission "allow" decision's <c>updatedInput</c> ({ questions, answers })
+///    — the documented Anthropic flow — so the model receives the answers as
+///    part of the natural tool execution rather than via a side-channel
+///    tool_result write.
 /// </summary>
 public sealed class ClaudeCliChatService : IChatService, IDisposable
 {
     private readonly VsAgenticOptions _options;
     private readonly IOutputListener _outputListener;
-    private readonly IUserQuestionBroker _questionBroker;
     private readonly ClaudeCliProcessHost _host;
     private readonly ILogger _logger;
 
@@ -56,13 +56,11 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     public ClaudeCliChatService(
         IOptions<VsAgenticOptions> options,
         IOutputListener outputListener,
-        IUserQuestionBroker questionBroker,
         ClaudeCliProcessHost host,
         ILogger<ClaudeCliChatService> logger)
     {
         _options = options.Value;
         _outputListener = outputListener;
-        _questionBroker = questionBroker;
         _host = host;
         _logger = logger;
 
@@ -331,21 +329,23 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         turn.TextDeltas.Writer.TryWrite(text);
     }
 
-    private async Task HandleToolUseBlockAsync(TurnState turn, JsonElement block)
+    private Task HandleToolUseBlockAsync(TurnState turn, JsonElement block)
     {
         var toolName = block.TryGetProperty("name", out var np) ? np.GetString() ?? "tool" : "tool";
         var toolId = block.TryGetProperty("id", out var ip) ? ip.GetString() ?? "" : "";
 
         // The MCP permission tool call is internal plumbing — hide from the UI.
         if (toolName == "mcp__vsagentic__approval_prompt")
-            return;
+            return Task.CompletedTask;
 
-        // AskUserQuestion is rendered separately as a question card, not as a tool step.
+        // AskUserQuestion is gathered up-front via the permission pipe (the
+        // host returns answers in updatedInput). Both the tool_use and the
+        // CLI-emitted tool_result are noise in the UI step list — skip them.
         if (toolName == "AskUserQuestion")
         {
-            _logger.LogInformation("[ClaudeCli] AskUserQuestion tool_use received (id={Id})", toolId);
-            await HandleAskUserQuestionAsync(toolId, block).ConfigureAwait(false);
-            return;
+            _logger.LogInformation("[ClaudeCli] AskUserQuestion tool_use received (id={Id}); answers were injected via permission updatedInput", toolId);
+            turn.SuppressedToolUseIds.Add(toolId);
+            return Task.CompletedTask;
         }
 
         FinalizeThinkingItem(turn);
@@ -370,10 +370,17 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             Body = toolBody
         };
         _outputListener.OnStepStarted(turn.ToolItem);
+        return Task.CompletedTask;
     }
 
     private void HandleToolResultBlock(TurnState turn, JsonElement block)
     {
+        // The matching tool_use for AskUserQuestion was suppressed from the UI;
+        // drop its tool_result too so it doesn't leak in as a stray step.
+        var toolUseId = block.TryGetProperty("tool_use_id", out var tp) ? tp.GetString() ?? "" : "";
+        if (!string.IsNullOrEmpty(toolUseId) && turn.SuppressedToolUseIds.Remove(toolUseId))
+            return;
+
         if (turn.ToolItem == null) return;
         var content = block.TryGetProperty("content", out var cp) ? ExtractToolResultText(cp) : "";
         turn.ToolItem.Status = OutputItemStatus.Success;
@@ -383,84 +390,6 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         turn.ToolItem.Delta = null;
         _outputListener.OnStepCompleted(turn.ToolItem);
         turn.ToolItem = null;
-    }
-
-    private async Task HandleAskUserQuestionAsync(string toolUseId, JsonElement block)
-    {
-        if (!block.TryGetProperty("input", out var input))
-            return;
-
-        var questions = ParseQuestions(input);
-        var request = new UserQuestionRequest(toolUseId, questions, input.Clone());
-
-        IReadOnlyDictionary<string, string> answers;
-        try
-        {
-            answers = await _questionBroker.SubmitAsync(request, CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[ClaudeCli] AskUserQuestion broker threw");
-            answers = new Dictionary<string, string>();
-        }
-
-        // Build the tool_result content as the JSON shape the AskUserQuestion
-        // tool expects: { "questions": [...], "answers": { question: label, ... } }
-        var resultJson = BuildAskUserQuestionResult(input, answers);
-        var line = StreamJsonProtocol.BuildToolResultMessage(toolUseId, resultJson);
-        try
-        {
-            await _host.WriteLineAsync(line, CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "[ClaudeCli] Failed to write AskUserQuestion answer");
-        }
-    }
-
-    private static IReadOnlyList<UserQuestion> ParseQuestions(JsonElement input)
-    {
-        var list = new List<UserQuestion>();
-        if (!input.TryGetProperty("questions", out var qs) || qs.ValueKind != JsonValueKind.Array)
-            return list;
-
-        foreach (var q in qs.EnumerateArray())
-        {
-            var uq = new UserQuestion
-            {
-                Question = q.TryGetProperty("question", out var qt) ? qt.GetString() ?? "" : "",
-                Header = q.TryGetProperty("header", out var hd) ? hd.GetString() ?? "" : "",
-                MultiSelect = q.TryGetProperty("multiSelect", out var ms) && ms.ValueKind == JsonValueKind.True,
-            };
-            if (q.TryGetProperty("options", out var opts) && opts.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var o in opts.EnumerateArray())
-                {
-                    uq.Options.Add(new UserQuestionOption
-                    {
-                        Label = o.TryGetProperty("label", out var lb) ? lb.GetString() ?? "" : "",
-                        Description = o.TryGetProperty("description", out var dp) ? dp.GetString() ?? "" : "",
-                    });
-                }
-            }
-            list.Add(uq);
-        }
-        return list;
-    }
-
-    private static string BuildAskUserQuestionResult(JsonElement input, IReadOnlyDictionary<string, string> answers)
-    {
-        // Re-emit the original questions array verbatim plus the answers map.
-        var sb = new StringBuilder();
-        sb.Append("{\"questions\":");
-        if (input.TryGetProperty("questions", out var qs))
-            sb.Append(qs.GetRawText());
-        else
-            sb.Append("[]");
-        sb.Append(",\"answers\":");
-        sb.Append(JsonSerializer.Serialize(answers));
-        sb.Append("}");
-        return sb.ToString();
     }
 
     private void HandleResultEvent(JsonElement evt)
@@ -885,6 +814,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         public StringBuilder ResponseBuilder = new StringBuilder();
 
         public OutputItem? ToolItem;
+
+        // tool_use ids whose tool_result should be skipped (e.g. AskUserQuestion,
+        // which we hide from the UI step list).
+        public HashSet<string> SuppressedToolUseIds { get; } = new HashSet<string>(StringComparer.Ordinal);
 
         public Channel<string> TextDeltas { get; } = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
         {

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
 using System.Text;
@@ -6,6 +7,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using VsAgentic.Services.ClaudeCli.Questions;
 
 namespace VsAgentic.Services.ClaudeCli.Permissions;
 
@@ -26,6 +28,7 @@ namespace VsAgentic.Services.ClaudeCli.Permissions;
 internal sealed class PermissionPipeServer : IDisposable
 {
     private readonly IPermissionBroker _broker;
+    private readonly IUserQuestionBroker _questionBroker;
     private readonly ILogger _logger;
     private readonly string _pipeName;
     private readonly string _secret;
@@ -35,9 +38,10 @@ internal sealed class PermissionPipeServer : IDisposable
     public string PipeName => _pipeName;
     public string Secret => _secret;
 
-    public PermissionPipeServer(IPermissionBroker broker, ILogger logger)
+    public PermissionPipeServer(IPermissionBroker broker, IUserQuestionBroker questionBroker, ILogger logger)
     {
         _broker = broker;
+        _questionBroker = questionBroker;
         _logger = logger;
         _pipeName = $"vsagentic-perm-{Guid.NewGuid():N}";
         _secret = Guid.NewGuid().ToString("N");
@@ -129,16 +133,17 @@ internal sealed class PermissionPipeServer : IDisposable
                         continue;
                     }
 
-                    // AskUserQuestion is itself a user-facing prompt rendered as a
-                    // question card. Asking for permission first would show a confusing
-                    // Allow/Deny banner with the raw questions JSON.
+                    // AskUserQuestion is the documented Anthropic flow for clarifying
+                    // questions: the host gathers answers and returns them via the
+                    // permission "allow" decision's updatedInput { questions, answers }.
+                    // The CLI then runs the tool with that injected input and the model
+                    // sees the answers in the resulting tool_result. Returning a plain
+                    // "allow" with the raw input — or trying to write our own tool_result
+                    // afterwards — leaves the model with empty answers.
                     PermissionDecision decision;
                     if (toolName == "AskUserQuestion")
                     {
-                        var inputJson = input.ValueKind == JsonValueKind.Undefined
-                            ? "{}"
-                            : input.GetRawText();
-                        decision = PermissionDecision.Allow(inputJson);
+                        decision = await HandleAskUserQuestionAsync(id, input, ct).ConfigureAwait(false);
                     }
                     else
                     {
@@ -163,6 +168,85 @@ internal sealed class PermissionPipeServer : IDisposable
         {
             _logger.LogError(ex, "[PermissionPipeServer] connection handler crashed");
         }
+    }
+
+    private async Task<PermissionDecision> HandleAskUserQuestionAsync(
+        string id, JsonElement input, CancellationToken ct)
+    {
+        var questions = ParseQuestions(input);
+        var request = new UserQuestionRequest(id, questions, input);
+
+        IReadOnlyDictionary<string, string> answers;
+        try
+        {
+            answers = await _questionBroker.SubmitAsync(request, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[PermissionPipeServer] question broker threw");
+            answers = new Dictionary<string, string>();
+        }
+
+        var updatedInputJson = BuildUpdatedInputJson(input, answers);
+        _logger.LogInformation(
+            "[PermissionPipeServer] AskUserQuestion answered (id={Id}) -> {Json}",
+            id, updatedInputJson);
+        return PermissionDecision.Allow(updatedInputJson);
+    }
+
+    private static IReadOnlyList<UserQuestion> ParseQuestions(JsonElement input)
+    {
+        var list = new List<UserQuestion>();
+        if (input.ValueKind != JsonValueKind.Object) return list;
+        if (!input.TryGetProperty("questions", out var qs) || qs.ValueKind != JsonValueKind.Array)
+            return list;
+
+        foreach (var q in qs.EnumerateArray())
+        {
+            var uq = new UserQuestion
+            {
+                Question = q.TryGetProperty("question", out var qt) ? qt.GetString() ?? "" : "",
+                Header = q.TryGetProperty("header", out var hd) ? hd.GetString() ?? "" : "",
+                MultiSelect = q.TryGetProperty("multiSelect", out var ms) && ms.ValueKind == JsonValueKind.True,
+            };
+            if (q.TryGetProperty("options", out var opts) && opts.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var o in opts.EnumerateArray())
+                {
+                    uq.Options.Add(new UserQuestionOption
+                    {
+                        Label = o.TryGetProperty("label", out var lb) ? lb.GetString() ?? "" : "",
+                        Description = o.TryGetProperty("description", out var dp) ? dp.GetString() ?? "" : "",
+                    });
+                }
+            }
+            list.Add(uq);
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// Build the <c>updatedInput</c> shape Anthropic's docs prescribe for the
+    /// AskUserQuestion permission "allow" reply: original questions array passed
+    /// through verbatim, plus an answers map keyed by each question's text and
+    /// valued with the chosen option's label (or comma-joined labels for
+    /// multi-select, or the user's free-text answer).
+    /// </summary>
+    private static string BuildUpdatedInputJson(
+        JsonElement input,
+        IReadOnlyDictionary<string, string> answers)
+    {
+        var sb = new StringBuilder();
+        sb.Append("{\"questions\":");
+        if (input.ValueKind == JsonValueKind.Object &&
+            input.TryGetProperty("questions", out var qs))
+            sb.Append(qs.GetRawText());
+        else
+            sb.Append("[]");
+        sb.Append(",\"answers\":");
+        sb.Append(JsonSerializer.Serialize(answers));
+        sb.Append("}");
+        return sb.ToString();
     }
 
     private static string SerializeDecision(string id, PermissionDecision decision)

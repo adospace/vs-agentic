@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VsAgentic.Services.ClaudeCli.Permissions;
+using VsAgentic.Services.ClaudeCli.Questions;
 using VsAgentic.Services.Configuration;
 
 namespace VsAgentic.Services.ClaudeCli;
@@ -34,6 +35,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
 {
     private readonly VsAgenticOptions _options;
     private readonly IPermissionBroker _permissionBroker;
+    private readonly IUserQuestionBroker _questionBroker;
     private readonly ILogger _logger;
 
     private Process? _process;
@@ -52,10 +54,12 @@ public sealed class ClaudeCliProcessHost : IDisposable
     public ClaudeCliProcessHost(
         IOptions<VsAgenticOptions> options,
         IPermissionBroker permissionBroker,
+        IUserQuestionBroker questionBroker,
         ILogger<ClaudeCliProcessHost> logger)
     {
         _options = options.Value;
         _permissionBroker = permissionBroker;
+        _questionBroker = questionBroker;
         _logger = logger;
     }
 
@@ -95,7 +99,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
 
         // Start the in-process pipe server before launching the CLI so the
         // MCP helper can connect immediately.
-        _pipeServer = new PermissionPipeServer(_permissionBroker, _logger);
+        _pipeServer = new PermissionPipeServer(_permissionBroker, _questionBroker, _logger);
         _pipeServer.Start();
 
         var helperExePath = ResolveHelperExePath();
@@ -244,23 +248,20 @@ public sealed class ClaudeCliProcessHost : IDisposable
     {
         // The helper's entire bin folder (exe + its net472 dependencies like
         // System.Text.Json, Microsoft.Bcl.AsyncInterfaces, ...) is embedded in
-        // this assembly as a zip so VSIX packaging can't lose it. Extract to
-        // %LOCALAPPDATA%\VsAgentic\helpers. A sentinel file named .extracted
-        // stores the SHA-256 of the embedded zip; on launch we compare against
-        // the current zip's hash and re-extract if they differ. This means a
-        // new VSIX with updated helper bits automatically refreshes the
-        // on-disk copy even when the containing assembly version doesn't
-        // change. The sentinel also makes partial/stale extractions recover
-        // on the next run.
+        // this assembly as a zip so VSIX packaging can't lose it. We extract
+        // into a per-content-hash subdirectory of %LOCALAPPDATA%\VsAgentic\helpers
+        // so that two IDE instances running DIFFERENT extension versions don't
+        // fight over the same DLLs (the running helper.exe holds file locks on
+        // them). This matters during dev when an Experimental Instance loads a
+        // new build while a normal instance is still using the prior one.
+        // A .extracted marker per hash dir confirms a complete extraction.
         const string ResourceName = "vsagentic-mcp-permissions.zip";
         const string HelperFileName = "vsagentic-mcp-permissions.exe";
         const string MarkerFileName = ".extracted";
         var asm = typeof(ClaudeCliProcessHost).Assembly;
-        var helperDir = Path.Combine(
+        var helpersRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "VsAgentic", "helpers");
-        var helperPath = Path.Combine(helperDir, HelperFileName);
-        var markerPath = Path.Combine(helperDir, MarkerFileName);
 
         byte[] zipBytes;
         using (var src = asm.GetManifestResourceStream(ResourceName)
@@ -281,17 +282,18 @@ public sealed class ClaudeCliProcessHost : IDisposable
             expectedHash = sb.ToString();
         }
 
-        string? existingHash = null;
-        if (File.Exists(markerPath))
-        {
-            try { existingHash = File.ReadAllText(markerPath).Trim(); } catch { }
-        }
+        var hashSuffix = expectedHash.Substring(0, 16);
+        var helperDir = Path.Combine(helpersRoot, hashSuffix);
+        var helperPath = Path.Combine(helperDir, HelperFileName);
+        var markerPath = Path.Combine(helperDir, MarkerFileName);
 
-        if (!File.Exists(helperPath) || existingHash != expectedHash)
+        if (File.Exists(markerPath) && File.Exists(helperPath))
+            return helperPath;
+
+        Directory.CreateDirectory(helperDir);
+        using (var zipStream = new MemoryStream(zipBytes, writable: false))
+        using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Read, leaveOpen: false))
         {
-            Directory.CreateDirectory(helperDir);
-            using var zipStream = new MemoryStream(zipBytes, writable: false);
-            using var archive = new ZipArchive(zipStream, ZipArchiveMode.Read, leaveOpen: false);
             foreach (var entry in archive.Entries)
             {
                 if (string.IsNullOrEmpty(entry.Name)) continue; // skip directory entries
@@ -302,10 +304,10 @@ public sealed class ClaudeCliProcessHost : IDisposable
                 using var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None);
                 entryStream.CopyTo(fs);
             }
-            File.WriteAllText(markerPath, expectedHash);
-            _logger.LogInformation("[ClaudeCli] Extracted permission helper to: {Path} (hash {Hash})",
-                helperPath, expectedHash.Substring(0, 12));
         }
+        File.WriteAllText(markerPath, expectedHash);
+        _logger.LogInformation("[ClaudeCli] Extracted permission helper to: {Path} (hash {Hash})",
+            helperPath, expectedHash.Substring(0, 12));
 
         return helperPath;
     }

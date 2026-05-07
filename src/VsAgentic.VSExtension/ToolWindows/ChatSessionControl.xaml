@@ -213,7 +213,7 @@
                                     </ListBox>
                                 </Border>
                             </Popup>
-                            <TextBlock Text="Type your message, CTRL+Enter to send, @ to enter"
+                            <TextBlock Text="Type your message, CTRL+Enter to send, @ to insert"
                                        Margin="11,6,0,0"
                                        VerticalAlignment="Top"
                                        IsHitTestVisible="False"

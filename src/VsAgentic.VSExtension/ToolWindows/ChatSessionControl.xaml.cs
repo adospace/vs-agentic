@@ -27,25 +27,6 @@ public partial class ChatSessionControl : UserControl
     public ChatSessionControl()
     {
         InitializeComponent();
-
-        // Register VS theme resource keys for the WPF banners. ChatBannerBuilder
-        // wires each surface with SetResourceReference (DynamicResource
-        // equivalent) when its key is non-null; otherwise it falls back to a
-        // static brush from BannerTheme.Current. The brushes behind these keys
-        // are updated by VS in place on theme switches, so any banner already
-        // on screen re-tints automatically — no rebuild, no manual mutation.
-        BannerThemeKeys.Background       = VsBrushes.ComboBoxBackgroundKey;
-        BannerThemeKeys.Border           = VsBrushes.ToolWindowBorderKey;
-        BannerThemeKeys.IndicatorBorder  = VsBrushes.ComboBoxBorderKey;
-        BannerThemeKeys.Foreground       = VsBrushes.ToolWindowTextKey;
-        BannerThemeKeys.Muted            = VsBrushes.CommandBarTextInactiveKey;
-        BannerThemeKeys.InputBackground  = VsBrushes.ComboBoxBackgroundKey;
-        // Use the OS highlight (Win11 user accent) for primary actions —
-        // VsBrushes' command-bar "selected" colours are too subtle for a
-        // Submit/Allow/SignIn button. SystemColors keys are standard WPF
-        // resource keys, always present, and theme-track via DynamicResource.
-        BannerThemeKeys.Accent           = SystemColors.HighlightBrushKey;
-        BannerThemeKeys.AccentForeground = SystemColors.HighlightTextBrushKey;
     }
 
     public void Initialize(ChatSessionViewModel viewModel)
@@ -73,14 +54,9 @@ public partial class ChatSessionControl : UserControl
         viewModel.MessagesRestored += (messages) =>
             _ = ChatWebView.LoadMessagesAsync(messages);
 
-        viewModel.PermissionPromptRequested += (request, resolve) =>
-            ChatWebView.ShowPermissionBanner(request, resolve);
-
-        viewModel.UserQuestionRequested += (request, submit) =>
-            ChatWebView.ShowQuestionCard(request, submit);
-
-        viewModel.LoginRequiredRequested += (errorMessage, onLoginClicked) =>
-            ChatWebView.ShowLoginBanner(errorMessage, onLoginClicked);
+        // Banner mounting is now driven by the ActiveBanner property on the VM —
+        // the BannerHost ContentControl in XAML binds to it and DataTemplates
+        // pick the right UserControl by VM type.
 
         // Apply VS theme colors to the WebView
         ApplyThemeColors();
@@ -126,26 +102,6 @@ public partial class ChatSessionControl : UserControl
         colors["--scrollbar-thumb-hover"] = $"rgba({grayHover.R}, {grayHover.G}, {grayHover.B}, 0.8)";
 
         _ = ChatWebView.SetThemeColorsAsync(colors);
-
-        // Apply the same VS theme to the WPF banner controls. The banner is
-        // hosted in WPF (not the WebView), so it needs Brushes built from VS
-        // colors directly.
-        BannerTheme.Current = BannerTheme.FromColors(
-            background:        ToWpf(EnvironmentColors.ToolWindowBackgroundColorKey),
-            border:            ToWpf(EnvironmentColors.ToolWindowBorderColorKey),
-            foreground:        ToWpf(EnvironmentColors.ToolWindowTextColorKey),
-            muted:             ToWpf(EnvironmentColors.CommandBarTextInactiveColorKey),
-            inputBackground:   ToWpf(EnvironmentColors.ComboBoxBackgroundColorKey),
-            accent:            ToWpf(EnvironmentColors.SystemHighlightColorKey),
-            accentForeground:  ToWpf(EnvironmentColors.SystemHighlightTextColorKey),
-            danger:            Color.FromRgb(0xDC, 0x26, 0x26),
-            dangerForeground:  Colors.White);
-    }
-
-    private static Color ToWpf(ThemeResourceKey key)
-    {
-        var c = VSColorTheme.GetThemedColor(key);
-        return Color.FromArgb(c.A, c.R, c.G, c.B);
     }
 
     private void InputTextBox_KeyDown(object sender, KeyEventArgs e)

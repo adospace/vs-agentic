@@ -1,0 +1,43 @@
+<UserControl x:Class="VsAgentic.VSExtension.ToolWindows.Banners.PermissionBannerControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vs="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0">
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/VsAgentic.VSExtension;component/ToolWindows/Banners/BannerStyles.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <Border Style="{StaticResource BannerCardBorderStyle}">
+        <StackPanel>
+            <TextBlock Text="{Binding Header}"
+                       FontWeight="SemiBold"
+                       FontSize="13"
+                       Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                       Margin="12,10,12,4"
+                       TextWrapping="Wrap"/>
+
+            <TextBlock Text="{Binding BodyText}"
+                       Visibility="{Binding HasBodyText, Converter={StaticResource BoolToVis}}"
+                       FontFamily="Consolas, Cascadia Mono, Menlo"
+                       FontSize="12"
+                       Foreground="{DynamicResource {x:Static vs:VsBrushes.CommandBarTextInactiveKey}}"
+                       Margin="12,0,12,8"
+                       MaxHeight="160"
+                       TextWrapping="Wrap"/>
+
+            <StackPanel Orientation="Horizontal"
+                        HorizontalAlignment="Right"
+                        Margin="8,0,12,10">
+                <Button Content="Allow"
+                        Style="{StaticResource PrimaryButtonStyle}"
+                        Command="{Binding AllowCommand}"/>
+                <Button Content="Deny"
+                        Style="{StaticResource DangerButtonStyle}"
+                        Command="{Binding DenyCommand}"/>
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</UserControl>

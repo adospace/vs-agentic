@@ -8,6 +8,7 @@ using VsAgentic.Services.ClaudeCli.Permissions;
 using VsAgentic.Services.ClaudeCli.Questions;
 using VsAgentic.Services.Configuration;
 using VsAgentic.Services.Models;
+using VsAgentic.UI.ViewModels.Banners;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -121,19 +122,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     public event Action? AllCleared;
     public event Action<IEnumerable<ChatMessageData>>? MessagesRestored;
 
-    // Interactive prompts surfaced via the in-process MCP permission helper /
-    // AskUserQuestion tool. The host (ChatSessionControl / MainWindow) wires
-    // these to the chat banner controls.
-    public event Action<PermissionRequest, Action<PermissionDecision>>? PermissionPromptRequested;
-    public event Action<UserQuestionRequest, Action<IReadOnlyDictionary<string, string>>>? UserQuestionRequested;
-
     /// <summary>
-    /// Raised when the underlying Claude CLI returned a documented
-    /// authentication error and the user needs to sign in. The string is the
-    /// original CLI error text. The host shows a banner; the callback launches
-    /// the interactive login flow.
+    /// The banner currently shown above the input box (permission prompt,
+    /// AskUserQuestion card, or login prompt). The host's ContentControl
+    /// binds to this; concrete type is selected by DataTemplate. Null when
+    /// no banner is active.
     /// </summary>
-    public event Action<string?, Action>? LoginRequiredRequested;
+    [ObservableProperty]
+    private IBannerViewModel? _activeBanner;
 
     private readonly IPermissionBroker? _permissionBroker;
     private readonly IUserQuestionBroker? _questionBroker;
@@ -184,8 +180,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         Dispatch(() =>
         {
-            LoginRequiredRequested?.Invoke(errorMessage, () =>
+            ActiveBanner = new LoginBannerViewModel(errorMessage, () =>
             {
+                ActiveBanner = null;
                 _chatService?.LaunchLogin();
             });
         });
@@ -193,21 +190,20 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     private void OnPermissionBrokerRequested(PermissionRequest request)
     {
-        // Re-raise on the UI dispatcher so the host can mount the banner safely.
         Dispatch(() =>
         {
             try
             {
                 _pendingUserPrompts++;
                 UpdateActivityIndicator();
-                var subscribers = PermissionPromptRequested?.GetInvocationList()?.Length ?? 0;
                 _logger.LogInformation(
-                    "[VM] PermissionPromptRequested dispatched (id={Id}, tool={Tool}, subscribers={Subs})",
-                    request.Id, request.ToolName, subscribers);
-                PermissionPromptRequested?.Invoke(request, decision =>
+                    "[VM] Permission prompt requested (id={Id}, tool={Tool})",
+                    request.Id, request.ToolName);
+                ActiveBanner = new PermissionBannerViewModel(request, decision =>
                 {
                     Dispatch(() =>
                     {
+                        ActiveBanner = null;
                         if (_pendingUserPrompts > 0) _pendingUserPrompts--;
                         UpdateActivityIndicator();
                     });
@@ -218,7 +214,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             {
                 // Without this guard the throw escapes Dispatcher.BeginInvoke,
                 // tears down the dispatcher loop, and leaves the chat hung.
-                _logger.LogError(ex, "[VM] PermissionPromptRequested handler crashed (id={Id})", request.Id);
+                _logger.LogError(ex, "[VM] Permission prompt handler crashed (id={Id})", request.Id);
                 if (_pendingUserPrompts > 0) _pendingUserPrompts--;
                 UpdateActivityIndicator();
                 try { _permissionBroker?.Resolve(request.Id, PermissionDecision.Deny("Banner failed to display")); }
@@ -235,27 +231,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             {
                 _pendingUserPrompts++;
                 UpdateActivityIndicator();
-                var subscribers = UserQuestionRequested?.GetInvocationList()?.Length ?? 0;
                 _logger.LogInformation(
-                    "[VM] UserQuestionRequested dispatched (toolUseId={Id}, questions={Count}, subscribers={Subs})",
-                    request.ToolUseId, request.Questions.Count, subscribers);
-                if (subscribers == 0)
-                {
-                    // No host wired the event yet — banner cannot be shown.
-                    // Resolve with empty answers so the dispatcher loop unblocks
-                    // instead of leaving the chat stuck in "thinking".
-                    _logger.LogWarning(
-                        "[VM] UserQuestionRequested has no subscribers; resolving with empty answers (toolUseId={Id})",
-                        request.ToolUseId);
-                    if (_pendingUserPrompts > 0) _pendingUserPrompts--;
-                    UpdateActivityIndicator();
-                    _questionBroker?.Resolve(request.ToolUseId, new Dictionary<string, string>());
-                    return;
-                }
-                UserQuestionRequested?.Invoke(request, answers =>
+                    "[VM] User question requested (toolUseId={Id}, questions={Count})",
+                    request.ToolUseId, request.Questions.Count);
+                ActiveBanner = new QuestionCardViewModel(request, answers =>
                 {
                     Dispatch(() =>
                     {
+                        ActiveBanner = null;
                         if (_pendingUserPrompts > 0) _pendingUserPrompts--;
                         UpdateActivityIndicator();
                     });
@@ -264,7 +247,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "[VM] UserQuestionRequested handler crashed (toolUseId={Id})", request.ToolUseId);
+                _logger.LogError(ex, "[VM] User question handler crashed (toolUseId={Id})", request.ToolUseId);
                 if (_pendingUserPrompts > 0) _pendingUserPrompts--;
                 UpdateActivityIndicator();
                 try { _questionBroker?.Resolve(request.ToolUseId, new Dictionary<string, string>()); }

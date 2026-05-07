@@ -5,11 +5,8 @@ using System.Reflection;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Threading;
 using Microsoft.Web.WebView2.Core;
 using VsAgentic.Services.Abstractions;
-using VsAgentic.Services.ClaudeCli.Permissions;
-using VsAgentic.Services.ClaudeCli.Questions;
 using VsAgentic.UI.ViewModels;
 
 namespace VsAgentic.UI.Controls;
@@ -196,133 +193,5 @@ public partial class ChatWebView : UserControl
         {
             System.Diagnostics.Debug.WriteLine($"ChatWebView script failed: {ex.Message}");
         }
-    }
-
-    // ── Permission banner / question card mounting ───────────────────────
-
-    /// <summary>
-    /// Show the permission banner for a request from the Claude CLI. The
-    /// supplied callback is invoked once when the user clicks Allow or Deny.
-    /// Replaces any banner currently shown.
-    /// </summary>
-    public void ShowPermissionBanner(PermissionRequest request, Action<PermissionDecision> onResolved)
-    {
-        Dispatcher.Invoke(() =>
-        {
-            FrameworkElement? element = null;
-            element = ChatBannerBuilder.BuildPermissionBanner(request, decision =>
-            {
-                HideBanner();
-                onResolved(decision);
-            });
-            MountBanner(element);
-        });
-    }
-
-    /// <summary>
-    /// Show the Claude CLI login banner. Invoked when the CLI returned a
-    /// documented authentication error (e.g. "Please run /login"). The callback
-    /// is fired when the user clicks the Sign in button.
-    /// </summary>
-    public void ShowLoginBanner(string? errorMessage, Action onLoginClicked)
-    {
-        Dispatcher.Invoke(() =>
-        {
-            var element = ChatBannerBuilder.BuildLoginBanner(errorMessage, () =>
-            {
-                HideBanner();
-                onLoginClicked();
-            });
-            MountBanner(element);
-        });
-    }
-
-    /// <summary>
-    /// Show the AskUserQuestion card. Callback receives the answer dictionary
-    /// (question text → selected label or free-text) on Submit.
-    /// </summary>
-    public void ShowQuestionCard(UserQuestionRequest request, Action<IReadOnlyDictionary<string, string>> onSubmitted)
-    {
-        Dispatcher.Invoke(() =>
-        {
-            try
-            {
-                System.Diagnostics.Trace.WriteLine(
-                    $"[ChatWebView] ShowQuestionCard begin (toolUseId={request.ToolUseId}, questions={request.Questions.Count})");
-                var element = ChatBannerBuilder.BuildQuestionCard(request, answers =>
-                {
-                    HideBanner();
-                    onSubmitted(answers);
-                });
-                MountBanner(element);
-                System.Diagnostics.Trace.WriteLine(
-                    $"[ChatWebView] ShowQuestionCard mounted (toolUseId={request.ToolUseId})");
-            }
-            catch (Exception ex)
-            {
-                // Without this guard the throw escapes Dispatcher.Invoke at a
-                // point where nothing logs it, leaving the chat hung.
-                System.Diagnostics.Trace.WriteLine($"[ChatWebView] ShowQuestionCard failed: {ex}");
-                System.Diagnostics.Debug.WriteLine($"[ChatWebView] ShowQuestionCard failed: {ex}");
-                // Best-effort fallback: complete the broker with empty answers
-                // so the dispatcher loop unblocks instead of hanging forever.
-                try { onSubmitted(new Dictionary<string, string>()); } catch { }
-            }
-        });
-    }
-
-    /// <summary>
-    /// Pull the BannerHost border + background from the current BannerTheme so
-    /// the host chrome matches the IDE/OS theme. Called each time a banner is
-    /// shown so theme changes apply on the next prompt.
-    /// </summary>
-    private void ApplyBannerHostChrome()
-    {
-        var theme = BannerTheme.Current;
-        BannerHost.BorderBrush = theme.Border;
-        BannerHost.Background = theme.Background;
-    }
-
-    /// <summary>
-    /// Mount the supplied element into <c>BannerHost</c> and force a layout
-    /// pass + render-priority kick.
-    ///
-    /// The reason for the manual invalidation: when WebView2 occupies the
-    /// chat area and is actively rendering, transitioning the BannerHost row
-    /// from <c>Collapsed</c> (0px) to <c>Visible</c> (Auto) does not always
-    /// retrigger the parent Grid's measure pass — the banner ends up in the
-    /// visual tree at zero height, invisible until the user moves or resizes
-    /// the window (which forces an unrelated relayout). Reproducible during
-    /// AskUserQuestion / permission prompts on the VS extension's tool window.
-    /// Walking up to the parent and calling InvalidateMeasure + UpdateLayout
-    /// resolves it; the deferred Render-priority follow-up is a belt-and-
-    /// braces measure for slow layout cycles.
-    /// </summary>
-    private void MountBanner(FrameworkElement banner)
-    {
-        ApplyBannerHostChrome();
-        BannerHost.Child = banner;
-        BannerHost.Visibility = Visibility.Visible;
-
-        BannerHost.InvalidateMeasure();
-        if (BannerHost.Parent is UIElement bannerParent)
-            bannerParent.InvalidateMeasure();
-        UpdateLayout();
-
-        Dispatcher.BeginInvoke(new Action(() =>
-        {
-            BannerHost.UpdateLayout();
-            BannerHost.InvalidateVisual();
-            if (BannerHost.Parent is UIElement p) p.InvalidateVisual();
-        }), DispatcherPriority.Render);
-    }
-
-    public void HideBanner()
-    {
-        Dispatcher.Invoke(() =>
-        {
-            BannerHost.Child = null;
-            BannerHost.Visibility = Visibility.Collapsed;
-        });
     }
 }

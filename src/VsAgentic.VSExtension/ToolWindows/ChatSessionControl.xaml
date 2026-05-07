@@ -4,10 +4,23 @@
              xmlns:vs="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
              xmlns:imaging="clr-namespace:Microsoft.VisualStudio.Imaging;assembly=Microsoft.VisualStudio.Imaging"
              xmlns:catalog="clr-namespace:Microsoft.VisualStudio.Imaging;assembly=Microsoft.VisualStudio.ImageCatalog"
-             xmlns:controls="clr-namespace:VsAgentic.UI.Controls;assembly=VsAgentic.UI" >
+             xmlns:controls="clr-namespace:VsAgentic.UI.Controls;assembly=VsAgentic.UI"
+             xmlns:bvm="clr-namespace:VsAgentic.UI.ViewModels.Banners;assembly=VsAgentic.UI"
+             xmlns:bv="clr-namespace:VsAgentic.VSExtension.ToolWindows.Banners" >
 
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+
+        <!-- Banner DataTemplates: ContentControl below picks the right view by VM type. -->
+        <DataTemplate DataType="{x:Type bvm:PermissionBannerViewModel}">
+            <bv:PermissionBannerControl/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type bvm:LoginBannerViewModel}">
+            <bv:LoginBannerControl/>
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type bvm:QuestionCardViewModel}">
+            <bv:QuestionCardControl/>
+        </DataTemplate>
 
         <!-- Borderless icon button used inside the input status bar -->
         <Style x:Key="IconButtonStyle" TargetType="Button">
@@ -200,8 +213,8 @@
                                     </ListBox>
                                 </Border>
                             </Popup>
-                            <TextBlock Text="Type your message, CTRL+Enter to send"
-                                       Margin="11,8,0,0"
+                            <TextBlock Text="Type your message, CTRL+Enter to send, @ to enter"
+                                       Margin="11,6,0,0"
                                        VerticalAlignment="Top"
                                        IsHitTestVisible="False"
                                        FontSize="13"
@@ -282,6 +295,25 @@
                        Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
                        FontSize="12" FontStyle="Italic"/>
         </Border>
+
+        <!-- Banner host: permission / question / login banner. The DataTemplates
+             above pick the matching UserControl by VM type. The host collapses
+             when ActiveBanner is null so it consumes no space when idle. -->
+        <ContentControl DockPanel.Dock="Bottom"
+                        x:Name="BannerHost"
+                        Content="{Binding ActiveBanner}"
+                        Focusable="False">
+            <ContentControl.Style>
+                <Style TargetType="ContentControl">
+                    <Setter Property="Visibility" Value="Visible"/>
+                    <Style.Triggers>
+                        <Trigger Property="Content" Value="{x:Null}">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                        </Trigger>
+                    </Style.Triggers>
+                </Style>
+            </ContentControl.Style>
+        </ContentControl>
 
         <!-- Chat Messages Area - single WebView -->
         <controls:ChatWebView x:Name="ChatWebView" />

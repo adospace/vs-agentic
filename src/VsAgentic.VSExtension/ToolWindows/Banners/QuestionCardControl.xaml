@@ -9,6 +9,76 @@
                 <ResourceDictionary Source="/VsAgentic.VSExtension;component/ToolWindows/Banners/BannerStyles.xaml"/>
             </ResourceDictionary.MergedDictionaries>
 
+            <!-- Per-option item templates. We can't keep both a radio and a
+                 check ItemsControl in the visual tree (one collapsed, one
+                 visible) bound to the same Options collection: the collapsed
+                 RadioButtons still participate in their GroupName-driven
+                 mutual-exclusion coordination, which clobbers the multi-select
+                 CheckBox state — every CheckBox click would deselect the
+                 previously-checked one as if they were radios. Instead, a
+                 single ItemsControl swaps its ItemTemplate based on
+                 MultiSelect, so only one control type is ever materialized. -->
+            <DataTemplate x:Key="RadioOptionTemplate" DataType="{x:Type bvm:OptionViewModel}">
+                <RadioButton Style="{StaticResource FluentRadioButtonStyle}"
+                             IsChecked="{Binding IsSelected, Mode=TwoWay}"
+                             GroupName="{Binding DataContext.GroupName, RelativeSource={RelativeSource AncestorType=ItemsControl}}">
+                    <StackPanel Orientation="Vertical">
+                        <TextBlock Text="{Binding Label}"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"/>
+                        <TextBlock Text="{Binding Description}"
+                                   Visibility="{Binding HasDescription, Converter={StaticResource BoolToVis}}"
+                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                                   Opacity="0.78"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
+                </RadioButton>
+            </DataTemplate>
+
+            <DataTemplate x:Key="CheckOptionTemplate" DataType="{x:Type bvm:OptionViewModel}">
+                <CheckBox Style="{StaticResource FluentCheckBoxStyle}"
+                          IsChecked="{Binding IsSelected, Mode=TwoWay}">
+                    <StackPanel Orientation="Vertical">
+                        <TextBlock Text="{Binding Label}"
+                                   FontWeight="SemiBold"
+                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"/>
+                        <TextBlock Text="{Binding Description}"
+                                   Visibility="{Binding HasDescription, Converter={StaticResource BoolToVis}}"
+                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                                   Opacity="0.78"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
+                </CheckBox>
+            </DataTemplate>
+
+            <!-- "Other:" toggle templates — same reason: a collapsed
+                 RadioButton with the question's GroupName still coordinates
+                 with the (also collapsed) per-option radios in multi-select
+                 mode, blanking selections. Swap a ContentControl's template
+                 instead so only one control exists at a time. -->
+            <DataTemplate x:Key="OtherRadioTemplate" DataType="{x:Type bvm:QuestionViewModel}">
+                <RadioButton Style="{StaticResource FluentRadioButtonStyle}"
+                             IsChecked="{Binding IsOtherSelected, Mode=TwoWay}"
+                             GroupName="{Binding GroupName}"
+                             VerticalAlignment="Center">
+                    <TextBlock Text="Other:"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                               VerticalAlignment="Center"/>
+                </RadioButton>
+            </DataTemplate>
+
+            <DataTemplate x:Key="OtherCheckTemplate" DataType="{x:Type bvm:QuestionViewModel}">
+                <CheckBox Style="{StaticResource FluentCheckBoxStyle}"
+                          IsChecked="{Binding IsOtherSelected, Mode=TwoWay}"
+                          VerticalAlignment="Center">
+                    <TextBlock Text="Other:"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                               VerticalAlignment="Center"/>
+                </CheckBox>
+            </DataTemplate>
+
             <!-- Inner template for a single QuestionViewModel — bound to the
                  ContentControl in row 2. Hosts the question text, the
                  option list (radio or check, depending on MultiSelect),
@@ -22,73 +92,18 @@
                                Margin="0,2,0,10"
                                TextWrapping="Wrap"/>
 
-                    <!-- Single-select: radios. WPF enforces exclusion via
-                         GroupName, which is bound to the question's GUID so
-                         each card has its own group. -->
                     <ItemsControl ItemsSource="{Binding Options}"
                                   Margin="8,0,0,4">
                         <ItemsControl.Style>
                             <Style TargetType="ItemsControl">
-                                <Setter Property="Visibility" Value="Visible"/>
+                                <Setter Property="ItemTemplate" Value="{StaticResource RadioOptionTemplate}"/>
                                 <Style.Triggers>
                                     <DataTrigger Binding="{Binding MultiSelect}" Value="True">
-                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Setter Property="ItemTemplate" Value="{StaticResource CheckOptionTemplate}"/>
                                     </DataTrigger>
                                 </Style.Triggers>
                             </Style>
                         </ItemsControl.Style>
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate DataType="{x:Type bvm:OptionViewModel}">
-                                <RadioButton Style="{StaticResource FluentRadioButtonStyle}"
-                                             IsChecked="{Binding IsSelected, Mode=TwoWay}"
-                                             GroupName="{Binding DataContext.GroupName, RelativeSource={RelativeSource AncestorType=ItemsControl}}">
-                                    <StackPanel Orientation="Vertical">
-                                        <TextBlock Text="{Binding Label}"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"/>
-                                        <TextBlock Text="{Binding Description}"
-                                                   Visibility="{Binding HasDescription, Converter={StaticResource BoolToVis}}"
-                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
-                                                   Opacity="0.78"
-                                                   FontSize="11"
-                                                   TextWrapping="Wrap"/>
-                                    </StackPanel>
-                                </RadioButton>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-
-                    <!-- Multi-select: checkboxes. -->
-                    <ItemsControl ItemsSource="{Binding Options}"
-                                  Margin="8,0,0,4">
-                        <ItemsControl.Style>
-                            <Style TargetType="ItemsControl">
-                                <Setter Property="Visibility" Value="Collapsed"/>
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding MultiSelect}" Value="True">
-                                        <Setter Property="Visibility" Value="Visible"/>
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </ItemsControl.Style>
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate DataType="{x:Type bvm:OptionViewModel}">
-                                <CheckBox Style="{StaticResource FluentCheckBoxStyle}"
-                                          IsChecked="{Binding IsSelected, Mode=TwoWay}">
-                                    <StackPanel Orientation="Vertical">
-                                        <TextBlock Text="{Binding Label}"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"/>
-                                        <TextBlock Text="{Binding Description}"
-                                                   Visibility="{Binding HasDescription, Converter={StaticResource BoolToVis}}"
-                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
-                                                   Opacity="0.78"
-                                                   FontSize="11"
-                                                   TextWrapping="Wrap"/>
-                                    </StackPanel>
-                                </CheckBox>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
                     </ItemsControl>
 
                     <!-- "Other:" row — radio (single-select) or check (multi-
@@ -100,44 +115,21 @@
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
 
-                        <RadioButton Grid.Column="0"
-                                     IsChecked="{Binding IsOtherSelected, Mode=TwoWay}"
-                                     GroupName="{Binding GroupName}"
-                                     Margin="0,0,8,0"
-                                     VerticalAlignment="Center">
-                            <RadioButton.Style>
-                                <Style TargetType="RadioButton" BasedOn="{StaticResource FluentRadioButtonStyle}">
-                                    <Setter Property="Visibility" Value="Visible"/>
+                        <ContentControl Grid.Column="0"
+                                        Content="{Binding}"
+                                        Margin="0,0,8,0"
+                                        VerticalAlignment="Center">
+                            <ContentControl.Style>
+                                <Style TargetType="ContentControl">
+                                    <Setter Property="ContentTemplate" Value="{StaticResource OtherRadioTemplate}"/>
                                     <Style.Triggers>
                                         <DataTrigger Binding="{Binding MultiSelect}" Value="True">
-                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Setter Property="ContentTemplate" Value="{StaticResource OtherCheckTemplate}"/>
                                         </DataTrigger>
                                     </Style.Triggers>
                                 </Style>
-                            </RadioButton.Style>
-                            <TextBlock Text="Other:"
-                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
-                                       VerticalAlignment="Center"/>
-                        </RadioButton>
-
-                        <CheckBox Grid.Column="0"
-                                  IsChecked="{Binding IsOtherSelected, Mode=TwoWay}"
-                                  Margin="0,0,8,0"
-                                  VerticalAlignment="Center">
-                            <CheckBox.Style>
-                                <Style TargetType="CheckBox" BasedOn="{StaticResource FluentCheckBoxStyle}">
-                                    <Setter Property="Visibility" Value="Collapsed"/>
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding MultiSelect}" Value="True">
-                                            <Setter Property="Visibility" Value="Visible"/>
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </CheckBox.Style>
-                            <TextBlock Text="Other:"
-                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
-                                       VerticalAlignment="Center"/>
-                        </CheckBox>
+                            </ContentControl.Style>
+                        </ContentControl>
 
                         <TextBox Grid.Column="1"
                                  x:Name="OtherTextBox"

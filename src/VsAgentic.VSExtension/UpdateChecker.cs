@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 using Microsoft.VisualStudio;
+using Microsoft.VisualStudio.Imaging;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
 
@@ -60,8 +61,28 @@ internal sealed class UpdateChecker : IVsInfoBarUIEvents
         Log("CheckAsync: start");
         try
         {
-            var localVersion = ReadInstalledVersion();
-            Log($"CheckAsync: localVersion = {localVersion?.ToString() ?? "<null>"}");
+            var (running, bestOnDisk) = ReadVersions();
+            Log($"CheckAsync: running = {running?.ToString() ?? "<null>"}, bestOnDisk = {bestOnDisk?.ToString() ?? "<null>"}");
+
+            // A newer version of the extension exists on disk (in a sibling Extensions
+            // folder with the same Identity Id), but VS picked an older folder at
+            // process start and is loading those assemblies instead. The user must
+            // fully restart VS — closing all devenv.exe instances — for the cleanup
+            // sweep to remove the stale folder and load the new one. This is a
+            // separate problem from "marketplace has a newer release," so surface it
+            // first and skip the marketplace check until it's resolved.
+            if (running is not null && bestOnDisk is not null && running < bestOnDisk)
+            {
+                Log($"CheckAsync: stale install detected ({running} loaded, {bestOnDisk} on disk)");
+                await _package.JoinableTaskFactory.SwitchToMainThreadAsync(ct);
+                ShowStaleInstallInfoBar(running, bestOnDisk);
+                return;
+            }
+
+            // Use bestOnDisk for the marketplace comparison: if anything newer is
+            // actually installed (even unloaded), we shouldn't pester the user about
+            // an "available update" they already have on disk.
+            var localVersion = bestOnDisk ?? running;
             if (localVersion is null) return;
 
             var latest = await FetchLatestVersionAsync(ct).ConfigureAwait(false);
@@ -91,63 +112,60 @@ internal sealed class UpdateChecker : IVsInfoBarUIEvents
     }
 
     /// <summary>
-    /// Reads the version from extension.vsixmanifest (deployed next to this assembly).
-    /// The VSIX manifest is the source of truth for the published version — the assembly
-    /// version is independent and typically left at 1.0.0.0. Falls back to the assembly
-    /// version if the manifest can't be located or parsed.
+    /// Returns two versions: the one currently loaded (manifest next to the running
+    /// assembly) and the highest version found across all sibling extension folders
+    /// that share our Identity Id. When VS leaves a stale folder behind after an
+    /// update, the two diverge — the older one keeps loading because its files were
+    /// locked at cleanup time.
     /// </summary>
-    private static Version? ReadInstalledVersion()
+    private static (Version? running, Version? bestOnDisk) ReadVersions()
     {
+        Version? running = null;
+        Version? best = null;
+
         try
         {
             var asmDir = Path.GetDirectoryName(typeof(UpdateChecker).Assembly.Location);
-            Log($"ReadInstalledVersion: asmDir = {asmDir ?? "<null>"}");
+            Log($"ReadVersions: asmDir = {asmDir ?? "<null>"}");
+            if (string.IsNullOrEmpty(asmDir)) return (null, null);
 
-            // VS may keep stale extension directories after an update, and the running
-            // assembly can still be loaded from an old directory.  Scan ALL sibling
-            // directories under the parent Extensions folder for manifests that match
-            // our extension Id, and return the highest version found.
-            if (!string.IsNullOrEmpty(asmDir))
+            var ownManifest = Path.Combine(asmDir, "extension.vsixmanifest");
+            if (File.Exists(ownManifest))
             {
-                var extensionsRoot = Path.GetDirectoryName(asmDir);
-                if (!string.IsNullOrEmpty(extensionsRoot))
-                {
-                    Version? best = null;
-                    foreach (var dir in Directory.EnumerateDirectories(extensionsRoot))
-                    {
-                        var candidate = Path.Combine(dir, "extension.vsixmanifest");
-                        if (!File.Exists(candidate)) continue;
-                        var version = TryReadVersionFromManifest(candidate, ExtensionId);
-                        if (version is not null && (best is null || version > best))
-                            best = version;
-                    }
+                running = TryReadVersionFromManifest(ownManifest, extensionId: null);
+                Log($"ReadVersions: running (own manifest) = {running?.ToString() ?? "<null>"}");
+            }
 
-                    if (best is not null)
-                    {
-                        Log($"ReadInstalledVersion: best version across Extensions = {best}");
-                        return best;
-                    }
-                }
-
-                // Fallback: read just the manifest next to the running assembly.
-                var manifestPath = Path.Combine(asmDir, "extension.vsixmanifest");
-                Log($"ReadInstalledVersion: fallback manifestPath = {manifestPath}, exists = {File.Exists(manifestPath)}");
-                if (File.Exists(manifestPath))
+            var extensionsRoot = Path.GetDirectoryName(asmDir);
+            if (!string.IsNullOrEmpty(extensionsRoot))
+            {
+                foreach (var dir in Directory.EnumerateDirectories(extensionsRoot))
                 {
-                    var v = TryReadVersionFromManifest(manifestPath, extensionId: null);
-                    if (v is not null) return v;
+                    var candidate = Path.Combine(dir, "extension.vsixmanifest");
+                    if (!File.Exists(candidate)) continue;
+                    var v = TryReadVersionFromManifest(candidate, ExtensionId);
+                    if (v is not null && (best is null || v > best))
+                        best = v;
                 }
+                Log($"ReadVersions: bestOnDisk = {best?.ToString() ?? "<null>"}");
             }
         }
         catch (Exception ex)
         {
-            Log($"ReadInstalledVersion: exception {ex}");
+            Log($"ReadVersions: exception {ex}");
             Debug.WriteLine($"VsAgentic UpdateChecker: failed to read vsixmanifest: {ex.Message}");
         }
 
-        var asmVersion = Assembly.GetExecutingAssembly().GetName().Version;
-        Log($"ReadInstalledVersion: falling back to assembly version = {asmVersion?.ToString() ?? "<null>"}");
-        return asmVersion;
+        if (running is null)
+        {
+            // Last-resort fallback. The assembly version doesn't track the VSIX version
+            // (typically left at 1.0.0.0), so this is mostly to keep the marketplace
+            // check alive when the manifest can't be read at all.
+            running = Assembly.GetExecutingAssembly().GetName().Version;
+            Log($"ReadVersions: fallback running = assembly version = {running?.ToString() ?? "<null>"}");
+        }
+
+        return (running, best);
     }
 
     /// <summary>
@@ -217,15 +235,7 @@ internal sealed class UpdateChecker : IVsInfoBarUIEvents
     {
         ThreadHelper.ThrowIfNotOnUIThread();
 
-        if (Package.GetGlobalService(typeof(SVsShell)) is not IVsShell shell) return;
-
-        if (ErrorHandler.Failed(shell.GetProperty((int)__VSSPROPID7.VSSPROPID_MainWindowInfoBarHost, out object hostObj))
-            || hostObj is not IVsInfoBarHost host)
-        {
-            return;
-        }
-
-        if (Package.GetGlobalService(typeof(SVsInfoBarUIFactory)) is not IVsInfoBarUIFactory factory) return;
+        if (!TryGetInfoBarHost(out var host, out var factory)) return;
 
         var model = new InfoBarModel(
             textSpans: new[]
@@ -243,6 +253,53 @@ internal sealed class UpdateChecker : IVsInfoBarUIEvents
         var element = factory.CreateInfoBar(model);
         element.Advise(this, out _eventCookie);
         host.AddInfoBar(element);
+    }
+
+    private void ShowStaleInstallInfoBar(Version running, Version onDisk)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        if (!TryGetInfoBarHost(out var host, out var factory)) return;
+
+        // No persistent dismissal. The user can close the banner for this session
+        // via the X button, but on the next VS launch the check runs again and the
+        // banner reappears as long as the stale folder is still on disk. That's the
+        // whole point — silent stale-loads are exactly the failure mode we're
+        // guarding against.
+        var model = new InfoBarModel(
+            textSpans: new[]
+            {
+                new InfoBarTextSpan(
+                    $"VsAgentic {onDisk} is installed but Visual Studio is currently running {running}. "
+                    + "Close all Visual Studio windows and reopen to load the latest version."),
+            },
+            image: KnownMonikers.StatusWarning,
+            isCloseButtonVisible: true);
+
+        var element = factory.CreateInfoBar(model);
+        element.Advise(this, out _eventCookie);
+        host.AddInfoBar(element);
+    }
+
+    private static bool TryGetInfoBarHost(out IVsInfoBarHost host, out IVsInfoBarUIFactory factory)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        host = null!;
+        factory = null!;
+
+        if (Package.GetGlobalService(typeof(SVsShell)) is not IVsShell shell) return false;
+
+        if (ErrorHandler.Failed(shell.GetProperty((int)__VSSPROPID7.VSSPROPID_MainWindowInfoBarHost, out object hostObj))
+            || hostObj is not IVsInfoBarHost h)
+        {
+            return false;
+        }
+
+        if (Package.GetGlobalService(typeof(SVsInfoBarUIFactory)) is not IVsInfoBarUIFactory f) return false;
+
+        host = h;
+        factory = f;
+        return true;
     }
 
     public void OnClosed(IVsInfoBarUIElement infoBarUIElement)

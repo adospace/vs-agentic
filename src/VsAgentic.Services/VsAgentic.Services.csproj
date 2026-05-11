@@ -13,13 +13,26 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.5" />
-    <PackageReference Include="System.Threading.Channels" Version="10.0.3" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.5" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.5" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.5" />
-    <PackageReference Include="Serilog" Version="4.3.1" />
-    <PackageReference Include="System.Text.Json" Version="10.0.3" />
+    <!--
+      Strict-pin to [10.0.0] — the .NET 10 GA floor. Every VS 2026 patch
+      ships 10.0.0.x with x >= 0, so compiling against the floor is
+      binary-safe across the whole VS 2026 lineup. AssemblyResolveBootstrap
+      (in VsAgentic.VSExtension) substitutes whatever's on disk at runtime.
+      See that file and the host csproj for the full rationale.
+    -->
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="[10.0.0]" />
+    <PackageReference Include="System.Threading.Channels" Version="[10.0.0]" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="[10.0.0]" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="[10.0.0]" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="[10.0.0]" />
+    <!--
+      Pinned to 4.2.0 — VsAgentic.VSExtension transitively pulls in
+      Serilog.Extensions.Logging 10.0.0 and Serilog.Sinks.File 7.0.0, both
+      of which were built against exactly Serilog 4.2.0.0. Strict
+      strong-name binding in .NET Framework rejects any other patch.
+    -->
+    <PackageReference Include="Serilog" Version="4.2.0" />
+    <PackageReference Include="System.Text.Json" Version="[10.0.0]" />
     <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />
   </ItemGroup>
 

@@ -15,9 +15,14 @@
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3240.44" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.5" />
+    <!--
+      Strict-pin to [10.0.0] — the .NET 10 GA floor. See
+      VsAgentic.VSExtension.csproj and AssemblyResolveBootstrap.cs for
+      the full rationale.
+    -->
+    <PackageReference Include="Microsoft.Extensions.Options" Version="[10.0.0]" />
     <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />
-    <PackageReference Include="System.Text.Json" Version="10.0.3" />
+    <PackageReference Include="System.Text.Json" Version="[10.0.0]" />
   </ItemGroup>
 
   <ItemGroup>

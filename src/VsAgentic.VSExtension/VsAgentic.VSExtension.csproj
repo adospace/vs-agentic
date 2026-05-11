@@ -10,11 +10,6 @@
     <VssdkCompatibleExtension>true</VssdkCompatibleExtension>
     <GeneratePkgDefFile>true</GeneratePkgDefFile>
 
-    <!-- Auto-generate binding redirects for all referenced assemblies -->
-    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
-    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
-
-    <!-- Include all dependency assemblies in VSIX (override VSSDK deny-list) -->
     <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
     <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
     <IncludeDebugSymbolsInLocalVSIXDeployment>true</IncludeDebugSymbolsInLocalVSIXDeployment>
@@ -39,34 +34,65 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.14.40265" ExcludeAssets="runtime" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.5" />
-    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.5" />
-    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.5" />
-    <PackageReference Include="Serilog" Version="4.3.1" />
+
+    <!--
+      VS-provided BCL shims: compile against these but do NOT ship the
+      runtime DLLs. VS bundles its own copies in Common7\IDE\PublicAssemblies
+      and PrivateAssemblies; AssemblyResolveBootstrap.cs substitutes them at
+      runtime regardless of version drift. See that file for the full
+      rationale and the allow-list it probes against.
+
+      Every name that appears in VS's Common7\IDE\PublicAssemblies\ MUST be
+      listed here (not just in VsAgentic.Services / VsAgentic.UI) because
+      transitive packages from ProjectReferences don't inherit ExcludeAssets
+      — they get re-resolved by the consuming project's NuGet graph and
+      re-deposited into the host's bin folder. Only an explicit
+      PackageReference at the host level overrides that.
+
+      If a transitive graph pulls in a new VS-bundled dep in the future, add
+      it here AND add its simple name to AllowList in
+      AssemblyResolveBootstrap.cs.
+    -->
+    <!--
+      Strict-pin every version to [10.0.0] — the .NET 10 GA floor. Every
+      VS 2026 patch ships an assembly version 10.0.0.x with x >= 0, so
+      compiling against the floor guarantees we only ever call APIs that
+      exist on every supported VS install. AssemblyResolveBootstrap
+      substitutes whatever 10.0.0.x DLL VS actually has on disk at
+      runtime, and a 10.0.0 compile is binary-compatible with any later
+      patch because the M.E.* API surface is additive across patches.
+
+      The brackets are required to stop NuGet from silently upgrading on
+      a restore. See AssemblyResolveBootstrap.cs for the runtime side of
+      the contract.
+    -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="[10.0.0]" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="[10.0.0]" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="[10.0.0]" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="[10.0.0]" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="[10.0.0]" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.Extensions.Primitives" Version="[10.0.0]" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="[10.0.0]" ExcludeAssets="runtime" />
+    <PackageReference Include="System.Text.Json" Version="[10.0.0]" ExcludeAssets="runtime" />
+    <PackageReference Include="System.Text.Encodings.Web" Version="[10.0.0]" ExcludeAssets="runtime" />
+    <PackageReference Include="System.Threading.Channels" Version="[10.0.0]" ExcludeAssets="runtime" />
+    <PackageReference Include="System.Diagnostics.DiagnosticSource" Version="[10.0.0]" ExcludeAssets="runtime" />
+    <PackageReference Include="System.IO.Pipelines" Version="[10.0.0]" ExcludeAssets="runtime" />
+
+    <!--
+      Not in VS — ship these. Serilog pinned to 4.2.0 because
+      Serilog.Extensions.Logging 10.0.0 and Serilog.Sinks.File 7.0.0 were
+      both compiled against exactly Serilog 4.2.0.0. Strict strong-name
+      binding in .NET Framework rejects any other patch. Same pin used in
+      VsAgentic.Services (transitively brought in from there as well).
+    -->
+    <PackageReference Include="Serilog" Version="4.2.0" />
     <PackageReference Include="Serilog.Extensions.Logging" Version="10.0.0" />
     <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
   </ItemGroup>
 
   <ItemGroup>
     <None Include="source.extension.vsixmanifest" SubType="Designer" />
-    <Content Include="VsAgentic.VSExtension.BindingRedirects.pkgdef">
-      <IncludeInVSIX>true</IncludeInVSIX>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </Content>
   </ItemGroup>
-
-  <!--
-    Force-include ALL output DLLs into the VSIX.
-    VSSDK build tools deny-list many BCL shim packages (AsyncInterfaces, DI.Abstractions, etc.)
-    assuming VS provides them, but VS runs on net472 and doesn't have the 10.x versions.
-    The MCP permission helper exe is embedded as a resource in
-    VsAgentic.Services.dll (see VsAgentic.Services.csproj) and extracted at
-    runtime, so it no longer needs to ship as a loose file.
-  -->
-  <Target Name="IncludeAllDllsInVsix" BeforeTargets="GetVsixSourceItems">
-    <ItemGroup>
-      <VSIXSourceItem Include="$(OutputPath)*.dll" />
-    </ItemGroup>
-  </Target>
 
 </Project>

@@ -36,6 +36,7 @@ html, body {
 
 #chat-container {
     overflow-y: auto;
+    overflow-x: hidden;
     height: 100%;
     padding: 8px 0;
 }
@@ -276,6 +277,10 @@ html, body {
 @keyframes blink { 50% { opacity: 0; } }
 
 /* Markdown content styles */
+/* min-width:0 lets this flex/grid item shrink below its content width,
+   so wide <pre> blocks scroll inside themselves instead of pushing the
+   whole webview wider and triggering a chat-level horizontal scrollbar. */
+.md-content { min-width: 0; }
 .md-content h1 { font-size: 1.6em; margin: 0.4em 0; color: var(--text-heading); border-bottom: 1px solid var(--border); padding-bottom: 0.2em; }
 .md-content h2 { font-size: 1.4em; margin: 0.4em 0; color: var(--text-heading); }
 .md-content h3 { font-size: 1.2em; margin: 0.3em 0; color: var(--text-heading); }
@@ -334,6 +339,19 @@ var converter = new showdown.Converter({
     simplifiedAutoLink: true,
     literalMidWordUnderscores: true,
     openLinksInNewWindow: true
+});
+
+// User-typed messages: preserve single newlines as <br> so multi-line
+// chat input renders the way the user typed it.
+var userConverter = new showdown.Converter({
+    tables: true,
+    tasklists: true,
+    strikethrough: true,
+    ghCodeBlocks: true,
+    simplifiedAutoLink: true,
+    literalMidWordUnderscores: true,
+    openLinksInNewWindow: true,
+    simpleLineBreaks: true
 });
 
 var _userScrolledUp = false;
@@ -417,6 +435,11 @@ function renderMd(text) {
     return converter.makeHtml(text);
 }
 
+function renderUserMd(text) {
+    if (!text) return '';
+    return userConverter.makeHtml(text);
+}
+
 function isNearBottom() {
     if (!_container) return true;
     return _container.scrollHeight - _container.scrollTop - _container.clientHeight < 50;
@@ -450,7 +473,7 @@ function addMessage(id, type, dataJson) {
         label.textContent = 'You';
         var content = document.createElement('div');
         content.className = 'md-content msg-content';
-        content.innerHTML = renderMd(data.Content || '');
+        content.innerHTML = renderUserMd(data.Content || '');
         linkifyFilePaths(content);
         div.appendChild(label);
         div.appendChild(content);
@@ -602,7 +625,7 @@ function updateContent(id, contentMarkdown) {
         if (type === 'User' || type === 'Assistant') {
             var mc = el.querySelector('.msg-content');
             if (mc) {
-                mc.innerHTML = renderMd(contentMarkdown);
+                mc.innerHTML = type === 'User' ? renderUserMd(contentMarkdown) : renderMd(contentMarkdown);
                 linkifyFilePaths(mc);
             }
         } else if (type === 'ToolStep' || type === 'Thinking') {

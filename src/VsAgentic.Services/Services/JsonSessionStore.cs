@@ -168,6 +168,20 @@ public class JsonSessionStore : ISessionStore
         }
     }
 
+    public async Task DeleteSessionsOlderThanAsync(string folderPath, int days)
+    {
+        if (days <= 0) return;
+
+        var cutoffUtc = DateTime.UtcNow.AddDays(-days);
+        var index = await GetSessionIndexAsync(folderPath);
+
+        foreach (var entry in index)
+        {
+            if (entry.LastActivityUtc < cutoffUtc)
+                await DeleteSessionAsync(folderPath, entry.Id);
+        }
+    }
+
     // --- Messages ---
 
     public async Task<IReadOnlyList<PersistedMessage>> GetMessagesAsync(string folderPath, int sessionId)

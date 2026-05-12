@@ -230,8 +230,8 @@
                                        TextTrimming="CharacterEllipsis" />
                             <TextBlock FontSize="11" Opacity="0.7"
                                        TextTrimming="CharacterEllipsis">
-                                <Run Text="Last activity: " />
-                                <Run Text="{Binding LastActivity, Mode=OneWay, StringFormat='{}{0:g}'}" />
+                                <Run Text="Last activity " />
+                                <Run Text="{Binding LastActivityDisplay, Mode=OneWay}" />
                             </TextBlock>
                         </StackPanel>
 

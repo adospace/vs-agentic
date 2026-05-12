@@ -115,12 +115,29 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         try
         {
             await _sessionStore.EnsureWorkspaceAsync(_solutionDirectory);
+            await PurgeOldSessionsAsync();
             _sessionListViewModel.Initialize(_sessionStore, _solutionDirectory);
             await _sessionListViewModel.LoadSessionsAsync();
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"VsAgentic: Failed to initialize session persistence: {ex}");
+        }
+    }
+
+    private async Task PurgeOldSessionsAsync()
+    {
+        if (_sessionStore is null || _solutionDirectory is null) return;
+
+        try
+        {
+            var optionsPage = (VsAgenticOptionsPage?)GetDialogPage(typeof(VsAgenticOptionsPage));
+            var keepDays = optionsPage?.KeepActivityDays ?? 30;
+            await _sessionStore.DeleteSessionsOlderThanAsync(_solutionDirectory, keepDays);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"VsAgentic: Failed to purge old sessions: {ex}");
         }
     }
 

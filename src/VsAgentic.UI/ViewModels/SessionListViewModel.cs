@@ -23,6 +23,39 @@ public partial class SessionInfo : ObservableObject
     [ObservableProperty]
     private DateTime _lastActivity = DateTime.Now;
 
+    /// <summary>
+    /// Friendly relative representation of <see cref="LastActivity"/>
+    /// (e.g. "today at 12:45", "yesterday", "3 days ago", "2 months ago").
+    /// </summary>
+    public string LastActivityDisplay => FormatLastActivity(LastActivity);
+
+    private static string FormatLastActivity(DateTime when)
+    {
+        var now = DateTime.Now;
+        var days = (now.Date - when.Date).Days;
+
+        if (days <= 0)
+            return $"today at {when.ToString("t", System.Globalization.CultureInfo.CurrentCulture)}";
+        if (days == 1)
+            return "yesterday";
+        if (days < 7)
+            return $"{days} days ago";
+        if (days < 14)
+            return "1 week ago";
+        if (days < 30)
+            return $"{days / 7} weeks ago";
+        if (days < 60)
+            return "1 month ago";
+        if (days < 365)
+            return $"{days / 30} months ago";
+        if (days < 730)
+            return "1 year ago";
+        return $"{days / 365} years ago";
+    }
+
+    partial void OnLastActivityChanged(DateTime value)
+        => OnPropertyChanged(nameof(LastActivityDisplay));
+
     [ObservableProperty]
     private bool _isActive;
 

@@ -24,4 +24,10 @@ public class VsAgenticOptionsPage : DialogPage
     [Description("Controls how the CLI handles tool permissions. Default: every gated tool call surfaces an Allow/Deny banner in the chat (safest). AcceptEdits: file edits (Edit, Write, NotebookEdit) auto-accept; everything else still prompts. BypassPermissions: auto-accept every tool call without prompting (use only in trusted environments).")]
     [DefaultValue(CliPermissionMode.Default)]
     public CliPermissionMode CliPermissionMode { get; set; } = CliPermissionMode.Default;
+
+    [Category("Sessions")]
+    [DisplayName("Keep days of activity")]
+    [Description("When the extension starts, sessions whose last activity is older than this many days are deleted. Default: 30. Set to 0 to disable cleanup.")]
+    [DefaultValue(30)]
+    public int KeepActivityDays { get; set; } = 30;
 }

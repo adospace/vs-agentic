@@ -14,6 +14,7 @@ public interface ISessionStore
     Task<SessionEntry> CreateSessionAsync(string folderPath, string title);
     Task UpdateSessionAsync(string folderPath, SessionEntry entry);
     Task DeleteSessionAsync(string folderPath, int sessionId);
+    Task DeleteSessionsOlderThanAsync(string folderPath, int days);
 
     // Messages
     Task<IReadOnlyList<PersistedMessage>> GetMessagesAsync(string folderPath, int sessionId);

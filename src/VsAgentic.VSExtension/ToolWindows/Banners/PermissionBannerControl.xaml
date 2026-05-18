@@ -23,20 +23,56 @@
                        Visibility="{Binding HasBodyText, Converter={StaticResource BoolToVis}}"
                        FontFamily="Consolas, Cascadia Mono, Menlo"
                        FontSize="12"
-                       Foreground="{DynamicResource {x:Static vs:VsBrushes.CommandBarTextInactiveKey}}"
+                       Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                       Opacity="0.7"
                        Margin="12,0,12,8"
                        MaxHeight="160"
                        TextWrapping="Wrap"/>
 
+            <!-- Initial state: Allow / Deny / Other... in a single row.
+                 Clicking Allow or Deny dispatches immediately; Other...
+                 swaps the row out for the alternative-input row below. -->
             <StackPanel Orientation="Horizontal"
-                        HorizontalAlignment="Right"
-                        Margin="8,0,12,10">
+                        HorizontalAlignment="Left"
+                        Margin="6,2,12,10"
+                        Visibility="{Binding IsInitialMode, Converter={StaticResource BoolToVis}}">
                 <Button Content="Allow"
                         Style="{StaticResource PrimaryButtonStyle}"
                         Command="{Binding AllowCommand}"/>
                 <Button Content="Deny"
                         Style="{StaticResource DangerButtonStyle}"
                         Command="{Binding DenyCommand}"/>
+                <Button Content="Other..."
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        Command="{Binding OtherCommand}"/>
+            </StackPanel>
+
+            <!-- Other... state: textbox for alternative instructions, Submit
+                 sends them as a wrapped deny, the small icon button to the
+                 right of Submit returns to the initial state. -->
+            <StackPanel Margin="12,2,12,10"
+                        Visibility="{Binding IsOtherMode, Converter={StaticResource BoolToVis}}">
+                <TextBox Style="{StaticResource BannerInputTextBoxStyle}"
+                         Text="{Binding AlternativeText, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="Tell Claude what to do instead"/>
+
+                <StackPanel Orientation="Horizontal"
+                            HorizontalAlignment="Right"
+                            Margin="0,6,0,0">
+                    <Button Content="Submit"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            Command="{Binding SubmitCommand}"/>
+                    <Button Style="{StaticResource ChevronButtonStyle}"
+                            Command="{Binding BackCommand}"
+                            ToolTip="Back to Allow / Deny"
+                            Margin="6,0,0,0">
+                        <TextBlock Text="&#xE112;"
+                                   FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                   FontSize="12"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+                    </Button>
+                </StackPanel>
             </StackPanel>
         </StackPanel>
     </Border>

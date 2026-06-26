@@ -668,8 +668,14 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             using var process = new Process { StartInfo = psi };
             process.Start();
 
-            await process.StandardInput.WriteAsync(prompt).ConfigureAwait(false);
-            process.StandardInput.Close();
+            // Wrap stdin in a BOM-less UTF-8 writer. On net472 there is no
+            // StandardInputEncoding property, so the default writer uses the system
+            // ANSI code page and corrupts non-ASCII (e.g. Cyrillic) to '?'. Force
+            // UTF-8 so the prompt reaches the CLI intact.
+            var stdin = new StreamWriter(process.StandardInput.BaseStream, new UTF8Encoding(false));
+            await stdin.WriteAsync(prompt).ConfigureAwait(false);
+            await stdin.FlushAsync().ConfigureAwait(false);
+            stdin.Close();
 
             var result = await process.StandardOutput.ReadToEndAsync().ConfigureAwait(false);
             await Task.Run(() => process.WaitForExit(), cancellationToken).ConfigureAwait(false);

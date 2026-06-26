@@ -325,8 +325,17 @@ public sealed class ClaudeCliProcessHost : IDisposable
     {
         try
         {
-            var stdin = _process!.StandardInput;
-            stdin.NewLine = "\n";
+            // Wrap the raw stdin pipe in a BOM-less UTF-8 writer. On net472 the
+            // ProcessStartInfo has no StandardInputEncoding property, so the default
+            // StandardInput writer encodes with the system ANSI code page — which
+            // mangles any non-ASCII (e.g. Cyrillic) to '?' unless the OS "Use Unicode
+            // UTF-8" beta is on. Our JSON lines carry raw non-ASCII (the serializer
+            // uses UnsafeRelaxedJsonEscaping), so we must force UTF-8 here.
+            var stdin = new StreamWriter(_process!.StandardInput.BaseStream, new UTF8Encoding(false))
+            {
+                AutoFlush = false,
+                NewLine = "\n",
+            };
             var reader = _stdinChannel!.Reader;
             while (await reader.WaitToReadAsync(ct).ConfigureAwait(false))
             {

@@ -95,6 +95,11 @@ public sealed class ClaudeCliProcessHost : IDisposable
         // Tear down anything stale from a prior crashed run.
         TearDownLocked();
 
+        // A fresh CLI process is a fresh session from Claude's point of view,
+        // so any "allow for the rest of the session" grants the user made
+        // against the previous process no longer apply.
+        _permissionBroker.ClearRememberedAllows();
+
         _runCts = new CancellationTokenSource();
 
         // Start the in-process pipe server before launching the CLI so the

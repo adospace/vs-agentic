@@ -1,3 +1,5 @@
+using System;
+using System.IO;
 using System.Text.Json;
 
 namespace VsAgentic.Services.ClaudeCli.Permissions;
@@ -12,11 +14,43 @@ public sealed class PermissionRequest
     public string ToolName { get; }
     public JsonElement Input { get; }
 
+    /// <summary>
+    /// Identity of this request for "allow for the rest of the session"
+    /// purposes, or <c>null</c> when the request has no stable identity worth
+    /// remembering.
+    ///
+    /// Only tools whose input carries a <c>file_path</c> get a key — Edit,
+    /// Write, NotebookEdit and friends. Bash deliberately does not: its
+    /// <c>command</c> differs on every call, so the only rule we could form
+    /// would be "allow all Bash", which is far broader than the user agreed to.
+    /// </summary>
+    public string? SessionAllowKey { get; }
+
     public PermissionRequest(string id, string toolName, JsonElement input)
     {
         Id = id;
         ToolName = toolName;
         Input = input;
+        SessionAllowKey = BuildSessionAllowKey(toolName, input);
+    }
+
+    private static string? BuildSessionAllowKey(string toolName, JsonElement input)
+    {
+        if (string.IsNullOrEmpty(toolName)) return null;
+        if (input.ValueKind != JsonValueKind.Object) return null;
+        if (!input.TryGetProperty("file_path", out var fp)) return null;
+        if (fp.ValueKind != JsonValueKind.String) return null;
+
+        var path = fp.GetString();
+        if (string.IsNullOrWhiteSpace(path)) return null;
+
+        // Normalise so "src\a.cs" and "src/a.cs" collapse to one rule. An
+        // unnormalisable path still gets a key — worst case the user is asked
+        // once more for a spelling we couldn't canonicalise.
+        try { path = Path.GetFullPath(path); }
+        catch (Exception) { }
+
+        return toolName + "\0" + path;
     }
 }
 

@@ -2,6 +2,11 @@
   <Folder Name="/Solution Items/">
     <File Path="../.github/workflows/publish-vsix.yml" />
     <File Path="../README.md" />
+    <File Path="../CONTRIBUTING.md" />
+    <File Path="CLAUDE.md" />
+  </Folder>
+  <Folder Name="/scripts/">
+    <File Path="../scripts/install-local.ps1" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="VsAgentic.Services/VsAgentic.Services.csproj" />

@@ -31,6 +31,23 @@ public interface IPermissionBroker
     void Resolve(string requestId, PermissionDecision decision);
 
     /// <summary>
+    /// Auto-allow later requests matching <paramref name="request"/> for the
+    /// rest of the session, without surfacing a banner. No-op when the request
+    /// has no <see cref="PermissionRequest.SessionAllowKey"/>.
+    ///
+    /// This is extension-side state only: the CLI still sees an ordinary
+    /// "allow" on the wire, so nothing is persisted to the user's settings.
+    /// </summary>
+    void RememberAllow(PermissionRequest request);
+
+    /// <summary>
+    /// Drops every remembered allow. Called when the chat session changes and
+    /// when the CLI subprocess (re)starts — either makes the rules stale, and
+    /// the broker is a singleton that outlives both.
+    /// </summary>
+    void ClearRememberedAllows();
+
+    /// <summary>
     /// Denies every in-flight permission request. Used by the chat Stop button
     /// so the dispatcher loop can unblock when a permission banner is stuck.
     /// </summary>

@@ -42,6 +42,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     private readonly ILogger _logger;
 
     private string? _cliSessionId;
+    private string? _currentModel;
     private decimal _cumulativeCostUsd;
     private Task? _dispatcherTask;
     private readonly object _dispatcherLock = new object();
@@ -138,6 +139,13 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         ClearActiveTurn(turn);
     }
 
+    private void MarkTurnActivity()
+    {
+        TurnState? turn;
+        lock (_activeTurnLock) { turn = _activeTurn; }
+        if (turn != null) turn.LastActivityUtc = DateTime.UtcNow;
+    }
+
     private void ClearActiveTurn(TurnState turn)
     {
         lock (_activeTurnLock)
@@ -206,7 +214,11 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 return;
 
             case "user":
-                // The CLI echoes user messages and tool_results; nothing to do here.
+                // The CLI echoes user messages and tool_results; nothing to render.
+                // The echo is still worth timestamping: a tool_result coming back is
+                // the moment control returns to the model, which is where the next
+                // thinking block's clock should start.
+                MarkTurnActivity();
                 return;
 
             case "result":
@@ -218,11 +230,31 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     private void HandleSystemEvent(JsonElement evt)
     {
         var subtype = evt.TryGetProperty("subtype", out var s) ? s.GetString() : null;
+
+        if (subtype == "thinking_tokens")
+        {
+            HandleThinkingTokensEvent(evt);
+            return;
+        }
+
         if (subtype != "init") return;
         if (evt.TryGetProperty("session_id", out var sid))
         {
             _cliSessionId = sid.GetString();
             _logger.LogDebug("[ClaudeCli] Session started: {SessionId}", _cliSessionId);
+        }
+        // The model the CLI actually resolved for this session — surfaced in the
+        // input bar's status strip. It can differ between process starts (user
+        // changed their default, a fallback kicked in), so raise on every change.
+        if (evt.TryGetProperty("model", out var modelProp) && modelProp.ValueKind == JsonValueKind.String)
+        {
+            var model = modelProp.GetString();
+            if (!string.Equals(model, _currentModel, StringComparison.Ordinal))
+            {
+                _currentModel = model;
+                _logger.LogInformation("[ClaudeCli] Session model: {Model}", model);
+                try { ModelChanged?.Invoke(model); } catch { }
+            }
         }
         // Diagnostic: dump the available tool names so we can verify whether
         // AskUserQuestion is registered in headless mode.
@@ -273,17 +305,73 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         }
     }
 
+    /// <summary>
+    /// The CLI reports thinking progress as <c>system</c>/<c>thinking_tokens</c> events
+    /// while the model is still thinking. This is the only live signal we get: the
+    /// assistant message's thinking block arrives afterwards with its text redacted to
+    /// a bare signature (see <see cref="HandleThinkingBlock"/>), so it can neither open
+    /// the item nor time it.
+    /// </summary>
+    private void HandleThinkingTokensEvent(JsonElement evt)
+    {
+        TurnState? turn;
+        lock (_activeTurnLock) { turn = _activeTurn; }
+        if (turn == null) return;
+
+        if (evt.TryGetProperty("estimated_tokens", out var tp) && tp.ValueKind == JsonValueKind.Number)
+            turn.ThinkingTokens = tp.GetInt32();
+
+        if (turn.ThinkingItem == null)
+        {
+            turn.ThinkingStartTime = turn.LastActivityUtc;
+            turn.ThinkingItem = new OutputItem
+            {
+                Id = Guid.NewGuid().ToString("N"),
+                ToolName = "Thinking",
+                Title = "Thinking...",
+                Status = OutputItemStatus.Pending
+            };
+            _outputListener.OnStepStarted(turn.ThinkingItem);
+        }
+
+        turn.ThinkingLastUpdateUtc = DateTime.UtcNow;
+        turn.ThinkingItem.Title = FormatThinkingProgress(turn);
+        _outputListener.OnStepUpdated(turn.ThinkingItem);
+    }
+
+    private static int ThinkingElapsedSeconds(TurnState turn, DateTime end)
+        => turn.ThinkingStartTime.HasValue
+            ? (int)(end - turn.ThinkingStartTime.Value).TotalSeconds
+            : 0;
+
+    private static string FormatThinkingProgress(TurnState turn)
+    {
+        var elapsed = ThinkingElapsedSeconds(turn, DateTime.UtcNow);
+        var tokens = turn.ThinkingTokens > 0 ? $" ({turn.ThinkingTokens:N0} tokens)" : "";
+        return elapsed > 0 ? $"Thinking for {elapsed}s{tokens}" : $"Thinking...{tokens}";
+    }
+
     private void HandleThinkingBlock(TurnState turn, JsonElement block)
     {
         FinalizeResponseItem(turn);
         FinalizeToolItem(turn);
 
+        // Redacted thinking: the CLI ships the block with an empty "thinking" and a
+        // bare signature, so there is no text to render. The thinking_tokens events
+        // have already opened the item — leave it for the following text/tool block
+        // to finalize rather than tearing it down here.
         var thinking = block.TryGetProperty("thinking", out var tp) ? tp.GetString() ?? "" : "";
         if (string.IsNullOrEmpty(thinking)) return;
 
         if (turn.ThinkingItem == null)
         {
-            turn.ThinkingStartTime = DateTime.UtcNow;
+            // Thinking blocks arrive fully formed — the CLI is not run with
+            // --include-partial-messages, so by the time we see one the model has
+            // already finished thinking and DateTime.UtcNow would always yield 0s.
+            // Measure from the last thing we observed instead (turn start, the
+            // previous block, or a tool handing control back), which brackets the
+            // wall time the model spent producing this block.
+            turn.ThinkingStartTime = turn.LastActivityUtc;
             turn.ThinkingItem = new OutputItem
             {
                 Id = Guid.NewGuid().ToString("N"),
@@ -295,10 +383,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         }
 
         turn.ThinkingBuilder.Append(thinking);
-        var elapsed = (int)(DateTime.UtcNow - turn.ThinkingStartTime!.Value).TotalSeconds;
+        turn.ThinkingLastUpdateUtc = DateTime.UtcNow;
         turn.ThinkingItem.Delta = thinking;
         turn.ThinkingItem.Body = turn.ThinkingBuilder.ToString();
-        turn.ThinkingItem.Title = elapsed > 0 ? $"Thought for {elapsed}s" : "Thinking...";
+        turn.ThinkingItem.Title = FormatThinkingProgress(turn);
         _outputListener.OnStepUpdated(turn.ThinkingItem);
     }
 
@@ -327,6 +415,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         turn.ResponseItem.Body = turn.ResponseBuilder.ToString();
         _outputListener.OnStepUpdated(turn.ResponseItem);
         turn.TextDeltas.Writer.TryWrite(text);
+        turn.LastActivityUtc = DateTime.UtcNow;
     }
 
     private Task HandleToolUseBlockAsync(TurnState turn, JsonElement block)
@@ -370,6 +459,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             Body = toolBody
         };
         _outputListener.OnStepStarted(turn.ToolItem);
+        turn.LastActivityUtc = DateTime.UtcNow;
         return Task.CompletedTask;
     }
 
@@ -390,6 +480,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         turn.ToolItem.Delta = null;
         _outputListener.OnStepCompleted(turn.ToolItem);
         turn.ToolItem = null;
+        turn.LastActivityUtc = DateTime.UtcNow;
     }
 
     private void HandleResultEvent(JsonElement evt)
@@ -445,13 +536,21 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     private void FinalizeThinkingItem(TurnState turn)
     {
         if (turn.ThinkingItem == null) return;
-        var elapsed = turn.ThinkingStartTime.HasValue ? (int)(DateTime.UtcNow - turn.ThinkingStartTime.Value).TotalSeconds : 0;
+        // End at the last sign of thinking, not at finalize time: the item is closed by
+        // the block that follows it, and the wait for that block is response latency
+        // rather than thinking.
+        var elapsed = ThinkingElapsedSeconds(turn, turn.ThinkingLastUpdateUtc ?? DateTime.UtcNow);
+        var tokens = turn.ThinkingTokens > 0 ? $" ({turn.ThinkingTokens:N0} tokens)" : "";
         turn.ThinkingItem.Status = OutputItemStatus.Success;
-        turn.ThinkingItem.Title = $"Thought for {elapsed}s";
+        turn.ThinkingItem.Title = $"Thought for {elapsed}s{tokens}";
         turn.ThinkingItem.Delta = null;
         _outputListener.OnStepCompleted(turn.ThinkingItem);
         turn.ThinkingItem = null;
+        turn.ThinkingStartTime = null;
+        turn.ThinkingLastUpdateUtc = null;
+        turn.ThinkingTokens = 0;
         turn.ThinkingBuilder.Clear();
+        turn.LastActivityUtc = DateTime.UtcNow;
     }
 
     private void FinalizeResponseItem(TurnState turn)
@@ -724,10 +823,21 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     public decimal? GetSessionCost() => _cumulativeCostUsd > 0 ? _cumulativeCostUsd : null;
 
+    public string? CurrentModel => _currentModel;
+
+    public string? CliSessionId => _cliSessionId;
+
+    public event Action<string?>? ModelChanged;
+
     public void ClearHistory()
     {
         _cliSessionId = null;
         _cumulativeCostUsd = 0;
+        if (_currentModel != null)
+        {
+            _currentModel = null;
+            try { ModelChanged?.Invoke(null); } catch { }
+        }
         _host.Stop();
         lock (_dispatcherLock) { _dispatcherTask = null; }
         _logger.LogInformation("[ClaudeCli] Session cleared (process killed)");
@@ -735,7 +845,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     public string SerializeHistory()
     {
-        return JsonSerializer.Serialize(new { cliSessionId = _cliSessionId });
+        // The model is persisted alongside the session id because --resume keeps a
+        // session on the model it was created with, so the *current* configured
+        // default is not a valid stand-in when this session is reopened later.
+        return JsonSerializer.Serialize(new { cliSessionId = _cliSessionId, model = _currentModel });
     }
 
     public void RestoreHistory(string serializedHistory)
@@ -747,6 +860,20 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             {
                 _cliSessionId = sid.GetString();
                 _logger.LogInformation("[ClaudeCli] Restored session: {SessionId}", _cliSessionId);
+            }
+
+            // Sessions saved before this field existed simply won't have it; the
+            // host then falls back to reading the CLI's transcript.
+            if (doc.RootElement.TryGetProperty("model", out var m)
+                && m.ValueKind == JsonValueKind.String)
+            {
+                var model = m.GetString();
+                if (!string.IsNullOrWhiteSpace(model) && !string.Equals(model, _currentModel, StringComparison.Ordinal))
+                {
+                    _currentModel = model;
+                    _logger.LogDebug("[ClaudeCli] Restored session model: {Model}", model);
+                    try { ModelChanged?.Invoke(model); } catch { }
+                }
             }
         }
         catch (JsonException)
@@ -815,6 +942,19 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         public OutputItem? ThinkingItem;
         public StringBuilder ThinkingBuilder = new StringBuilder();
         public DateTime? ThinkingStartTime;
+
+        /// <summary>Latest <c>estimated_tokens</c> from the CLI's thinking_tokens events.</summary>
+        public int ThinkingTokens;
+
+        /// <summary>When thinking last showed signs of life; the end point for the duration.</summary>
+        public DateTime? ThinkingLastUpdateUtc;
+
+        /// <summary>
+        /// When we last saw output from the CLI for this turn — turn start, a
+        /// completed block, or a tool result handing control back to the model.
+        /// Used as the start point for thinking-duration measurement.
+        /// </summary>
+        public DateTime LastActivityUtc = DateTime.UtcNow;
 
         public OutputItem? ResponseItem;
         public StringBuilder ResponseBuilder = new StringBuilder();

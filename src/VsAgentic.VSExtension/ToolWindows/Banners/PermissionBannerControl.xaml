@@ -39,6 +39,11 @@
                 <Button Content="Allow"
                         Style="{StaticResource PrimaryButtonStyle}"
                         Command="{Binding AllowCommand}"/>
+                <Button Content="Allow for session"
+                        Style="{StaticResource PrimaryButtonStyle}"
+                        Command="{Binding AllowForSessionCommand}"
+                        Visibility="{Binding CanAllowForSession, Converter={StaticResource BoolToVis}}"
+                        ToolTip="Allow this tool for this file without asking again until the session ends"/>
                 <Button Content="Deny"
                         Style="{StaticResource DangerButtonStyle}"
                         Command="{Binding DenyCommand}"/>

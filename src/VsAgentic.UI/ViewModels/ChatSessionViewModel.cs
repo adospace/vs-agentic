@@ -4,6 +4,7 @@ using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.ClaudeCli;
 using VsAgentic.Services.ClaudeCli.Permissions;
 using VsAgentic.Services.ClaudeCli.Questions;
 using VsAgentic.Services.Configuration;
@@ -39,14 +40,24 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     private string _sessionTitle = "New Session";
 
     // Realtime activity indicator: a braille spinner prefix while the AI is
-    // working, a steady "? " prefix while awaiting user input (permission /
+    // working, a blinking hand while awaiting user input (permission /
     // question banner), and no prefix while idle. Host bindings (e.g. the VS
     // tool window caption) should use DisplayTitle; SessionTitle stays plain
     // for the session list entry so the sidebar doesn't flicker.
     private static readonly string SpinnerFrames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-    private const string AwaitingPrefix = "? ";
+    // Two hand glyphs rather than a hand alternating with blank: the caption is
+    // a plain string with no way to hide a glyph, so anything but an equal-width
+    // pair shifts the title text on every frame. The trailing U+FE0F on the
+    // raised hand forces emoji presentation — its text-presentation fallback is
+    // narrower, which would reintroduce the shift.
+    private static readonly string[] AwaitingFrames = { "👋 ", "✋️ " };
+    // The timer runs at spinner speed, which would strobe the hand, so the hand
+    // advances only every Nth tick (~0.5s). The tick counter wraps at the LCM of
+    // both cycles (10 spinner frames, 2 x 4 hand ticks) so neither jumps on rollover.
+    private const int AwaitingTicksPerFrame = 4;
+    private const int AnimationTickCycle = 40;
     private int _pendingUserPrompts;
-    private int _spinnerFrame;
+    private int _animationTick;
     private System.Windows.Threading.DispatcherTimer? _activityTimer;
 
     [ObservableProperty]
@@ -63,7 +74,11 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     private void UpdateActivityIndicator()
     {
-        if (Activity == SessionActivity.Busy)
+        // Activity is computed, so it has to be notified by hand for the
+        // status-bar triggers in ChatSessionControl.xaml to see the change.
+        OnPropertyChanged(nameof(Activity));
+
+        if (Activity is SessionActivity.Busy or SessionActivity.AwaitingUser)
         {
             EnsureActivityTimer();
             if (!_activityTimer!.IsEnabled) _activityTimer.Start();
@@ -71,6 +86,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         else
         {
             _activityTimer?.Stop();
+            _animationTick = 0;
         }
         UpdateDisplayTitle();
     }
@@ -87,7 +103,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         };
         _activityTimer.Tick += (_, _) =>
         {
-            _spinnerFrame = (_spinnerFrame + 1) % SpinnerFrames.Length;
+            _animationTick = (_animationTick + 1) % AnimationTickCycle;
             UpdateDisplayTitle();
         };
     }
@@ -96,8 +112,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         var prefix = Activity switch
         {
-            SessionActivity.Busy => SpinnerFrames[_spinnerFrame] + " ",
-            SessionActivity.AwaitingUser => AwaitingPrefix,
+            SessionActivity.Busy => SpinnerFrames[_animationTick % SpinnerFrames.Length] + " ",
+            SessionActivity.AwaitingUser =>
+                AwaitingFrames[(_animationTick / AwaitingTicksPerFrame) % AwaitingFrames.Length],
             _ => ""
         };
         DisplayTitle = prefix + SessionTitle;
@@ -174,7 +191,120 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             _questionBroker.QuestionRequested += OnQuestionBrokerRequested;
 
         chatService.LoginRequired += OnChatServiceLoginRequired;
+        chatService.ModelChanged += OnChatServiceModelChanged;
+        StatusInfo = FormatModelName(chatService.CurrentModel);
+        StartModelProbe();
     }
+
+    private void OnChatServiceModelChanged(string? model)
+        => Dispatch(() => StatusInfo = FormatModelName(model));
+
+    private int _modelProbeGeneration;
+
+    /// <summary>
+    /// Fills the status strip with this session's model at window load, since the
+    /// CLI's authoritative <c>system/init</c> value doesn't arrive until the first
+    /// message is sent.
+    ///
+    /// Which source is correct depends on whether the session is new: <c>--resume</c>
+    /// keeps a session on the model it was created with, so the configured default
+    /// is only valid for a session that hasn't run yet. Called again after history
+    /// is restored, when the session id becomes known.
+    ///
+    /// Runs off the UI thread (it reads settings files and possibly a transcript).
+    /// </summary>
+    private void StartModelProbe()
+    {
+        var generation = Interlocked.Increment(ref _modelProbeGeneration);
+
+        Task.Run(() =>
+        {
+            string? probed;
+            try
+            {
+                // A known session id means this session has already run, so ask
+                // what it actually ran on. Only fall back to the configured
+                // default when there's no transcript to consult — without one the
+                // CLI can't carry a model forward either.
+                var sessionId = _chatService?.CliSessionId;
+                probed = ClaudeModelResolver.ResolveSessionModel(sessionId, _logger)
+                    ?? ClaudeModelResolver.ResolveConfiguredModel(WorkingDirectory, _logger);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "[ChatSession] Model probe failed");
+                return;
+            }
+
+            if (probed is null) return;
+
+            Dispatch(() =>
+            {
+                // Don't overwrite a better answer: the CLI's real value, or a
+                // later probe that had the session id this one lacked.
+                if (_chatService?.CurrentModel is not null) return;
+                if (Volatile.Read(ref _modelProbeGeneration) != generation) return;
+                StatusInfo = FormatModelName(probed);
+            });
+        });
+    }
+
+    /// <summary>
+    /// Turns the CLI's model id into something short enough for the status strip:
+    /// "claude-opus-5" → "Opus 5", "claude-3-5-haiku-20241022" → "Haiku 3.5".
+    /// Unrecognized ids are shown verbatim minus the "claude-" prefix, so a new
+    /// model still displays something sensible without a code change.
+    /// </summary>
+    internal static string FormatModelName(string? model)
+    {
+        if (string.IsNullOrWhiteSpace(model)) return "";
+
+        var id = model!.Trim();
+
+        // "claude-fable-5[1m]" — the 1M-context variant. Strip the marker so the
+        // version parsing below works, and re-attach it to the display name.
+        var suffix = "";
+        var bracket = id.IndexOf('[');
+        if (bracket > 0 && id.EndsWith("]", StringComparison.Ordinal))
+        {
+            suffix = " " + id.Substring(bracket + 1, id.Length - bracket - 2).ToUpperInvariant();
+            id = id.Substring(0, bracket);
+        }
+
+        if (id.StartsWith("claude-", StringComparison.OrdinalIgnoreCase))
+            id = id.Substring("claude-".Length);
+
+        // Drop a trailing yyyyMMdd date stamp ("haiku-4-5-20251001" → "haiku-4-5").
+        var parts = id.Split('-').ToList();
+        var last = parts[parts.Count - 1];
+        if (parts.Count > 1 && last.Length == 8 && last.All(char.IsDigit))
+            parts.RemoveAt(parts.Count - 1);
+
+        // Family name plus whatever version segments surround it, in either the
+        // "opus-5" or legacy "3-5-haiku" ordering.
+        var familyIndex = parts.FindIndex(p =>
+            p.Equals("opus", StringComparison.OrdinalIgnoreCase) ||
+            p.Equals("sonnet", StringComparison.OrdinalIgnoreCase) ||
+            p.Equals("haiku", StringComparison.OrdinalIgnoreCase) ||
+            p.Equals("fable", StringComparison.OrdinalIgnoreCase));
+        if (familyIndex < 0)
+            return "Model: " + model;
+
+        var family = parts[familyIndex];
+        family = char.ToUpperInvariant(family[0]) + family.Substring(1).ToLowerInvariant();
+
+        var version = string.Join(".", parts.Where((p, i) => i != familyIndex && p.All(char.IsDigit)));
+        return string.IsNullOrEmpty(version)
+            ? "Model: " + family + suffix
+            : "Model: " + family + " " + version + suffix;
+    }
+
+    /// <summary>
+    /// Text shown in the status strip beside the @-mention button. Currently the
+    /// active model; plan/usage details are intended to join it here.
+    /// </summary>
+    [ObservableProperty]
+    private string _statusInfo = "";
 
     private void OnChatServiceLoginRequired(string? errorMessage)
     {
@@ -208,7 +338,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                         UpdateActivityIndicator();
                     });
                     _permissionBroker?.Resolve(request.Id, decision);
-                });
+                },
+                onRememberAllow: remembered => _permissionBroker?.RememberAllow(remembered));
             }
             catch (Exception ex)
             {
@@ -271,6 +402,12 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     private void SetPersistence(ISessionStore store, string folder, int id)
     {
+        // The broker is a singleton spanning the whole extension lifetime, so
+        // "allow for the rest of the session" grants have to be dropped
+        // explicitly when we move to a different chat session.
+        if (_sessionId != id)
+            _permissionBroker?.ClearRememberedAllows();
+
         _sessionStore = store;
         _folderPath = folder;
         _sessionId = id;
@@ -332,6 +469,12 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             if (historyJson is not null && _chatService is not null)
             {
                 _chatService.RestoreHistory(historyJson);
+
+                // The session id is only known now. Re-probe so a restored session
+                // shows the model it actually ran on rather than the current
+                // default — unless RestoreHistory already supplied one.
+                if (_chatService.CurrentModel is null)
+                    StartModelProbe();
             }
         }
         catch
@@ -544,7 +687,12 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     private void OnStepUpdated(OutputItem item)
     {
-        if (string.IsNullOrEmpty(item.Delta))
+        var isThinking = item.ToolName == "Thinking";
+
+        // Thinking updates are driven by the CLI's thinking_tokens events, which carry
+        // a live title but no text (the thinking block itself comes back redacted), so
+        // they must not be gated on Delta.
+        if (string.IsNullOrEmpty(item.Delta) && !isThinking)
             return;
 
         Dispatch(() =>
@@ -553,13 +701,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             {
                 vm.Content += item.Delta;
 
-                if (item.ToolName == "Thinking")
+                if (isThinking)
                 {
                     vm.ExpanderTitle = item.Title;
                     MessageStatusUpdated?.Invoke(item.Id, vm.Status, item.Title);
                 }
 
-                MessageContentUpdated?.Invoke(item.Id, vm.Content);
+                if (!string.IsNullOrEmpty(item.Delta))
+                    MessageContentUpdated?.Invoke(item.Id, vm.Content);
 
                 var index = Items.IndexOf(vm);
                 if (index >= 0 && index < Items.Count - 1)
@@ -708,6 +857,11 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         try { _activityTimer?.Stop(); } catch { }
+        if (_chatService is not null)
+        {
+            _chatService.LoginRequired -= OnChatServiceLoginRequired;
+            _chatService.ModelChanged -= OnChatServiceModelChanged;
+        }
         try { (_chatService as IDisposable)?.Dispose(); } catch { }
         try { _serviceScope?.Dispose(); } catch { }
     }

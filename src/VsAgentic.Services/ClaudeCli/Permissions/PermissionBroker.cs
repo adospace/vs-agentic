@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -11,6 +12,14 @@ public sealed class PermissionBroker : IPermissionBroker
     private readonly ILogger<PermissionBroker> _logger;
     private readonly ConcurrentDictionary<string, TaskCompletionSource<PermissionDecision>> _pending = new();
 
+    /// <summary>
+    /// <see cref="PermissionRequest.SessionAllowKey"/> values the user chose to
+    /// stop being asked about. Used as a set; the value is ignored. Paths are
+    /// compared case-insensitively to match Windows filesystem semantics.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, byte> _rememberedAllows =
+        new(StringComparer.OrdinalIgnoreCase);
+
     public PermissionBroker(ILogger<PermissionBroker> logger)
     {
         _logger = logger;
@@ -20,6 +29,17 @@ public sealed class PermissionBroker : IPermissionBroker
 
     public Task<PermissionDecision> SubmitAsync(PermissionRequest request, CancellationToken cancellationToken)
     {
+        // Short-circuit before registering anything in _pending: the user
+        // already approved this file for the session, so no banner is raised
+        // and there is no pending entry for the UI to resolve.
+        if (request.SessionAllowKey is { } key && _rememberedAllows.ContainsKey(key))
+        {
+            _logger.LogInformation(
+                "[PermissionBroker] Auto-allowing {Tool} (remembered for this session)",
+                request.ToolName);
+            return Task.FromResult(PermissionDecision.Allow(RawInputJson(request)));
+        }
+
         var tcs = new TaskCompletionSource<PermissionDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!_pending.TryAdd(request.Id, tcs))
         {
@@ -59,6 +79,30 @@ public sealed class PermissionBroker : IPermissionBroker
             _logger.LogWarning("[PermissionBroker] Resolve for unknown request id {Id}", requestId);
         }
     }
+
+    public void RememberAllow(PermissionRequest request)
+    {
+        if (request.SessionAllowKey is not { } key) return;
+        if (_rememberedAllows.TryAdd(key, 0))
+        {
+            _logger.LogInformation(
+                "[PermissionBroker] Remembering allow for {Tool} for the rest of the session",
+                request.ToolName);
+        }
+    }
+
+    public void ClearRememberedAllows()
+    {
+        if (_rememberedAllows.IsEmpty) return;
+        var count = _rememberedAllows.Count;
+        _rememberedAllows.Clear();
+        _logger.LogInformation("[PermissionBroker] Cleared {Count} remembered allow(s)", count);
+    }
+
+    private static string RawInputJson(PermissionRequest request) =>
+        request.Input.ValueKind == JsonValueKind.Undefined
+            ? "{}"
+            : request.Input.GetRawText();
 
     public void CancelAllPending()
     {

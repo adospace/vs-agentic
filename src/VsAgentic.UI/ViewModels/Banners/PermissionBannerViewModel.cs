@@ -10,11 +10,19 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
 {
     private readonly PermissionRequest _request;
     private readonly Action<PermissionDecision> _onResolved;
+    private readonly Action<PermissionRequest>? _onRememberAllow;
 
     public string ToolName => _request.ToolName;
     public string Header => $"Claude wants to use {_request.ToolName}";
     public string BodyText { get; }
     public bool HasBodyText => !string.IsNullOrEmpty(BodyText);
+
+    /// <summary>Shows the "Allow for session" button only for requests that
+    /// have a stable identity to remember — see
+    /// <see cref="PermissionRequest.SessionAllowKey"/>. Bash prompts don't, so
+    /// the button would silently do nothing there.</summary>
+    public bool CanAllowForSession =>
+        _onRememberAllow is not null && _request.SessionAllowKey is not null;
 
     /// <summary>Toggles the banner between the initial Allow/Deny/Other... row
     /// and the alternative-instructions input row.</summary>
@@ -26,10 +34,14 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     [ObservableProperty]
     private string _alternativeText = "";
 
-    public PermissionBannerViewModel(PermissionRequest request, Action<PermissionDecision> onResolved)
+    public PermissionBannerViewModel(
+        PermissionRequest request,
+        Action<PermissionDecision> onResolved,
+        Action<PermissionRequest>? onRememberAllow = null)
     {
         _request = request;
         _onResolved = onResolved;
+        _onRememberAllow = onRememberAllow;
         BodyText = FormatBody(request);
     }
 
@@ -48,6 +60,17 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
             ? "{}"
             : _request.Input.GetRawText();
         _onResolved(PermissionDecision.Allow(inputJson));
+    }
+
+    /// <summary>Allows this call and suppresses the banner for later calls
+    /// against the same tool and file until the session ends. The wire-level
+    /// decision is an ordinary allow — the "remember" half is extension-side
+    /// state held by the broker, so nothing is written to the user's settings.</summary>
+    [RelayCommand]
+    private void AllowForSession()
+    {
+        _onRememberAllow?.Invoke(_request);
+        Allow();
     }
 
     [RelayCommand]

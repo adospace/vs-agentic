@@ -10,6 +10,27 @@
     <VssdkCompatibleExtension>true</VssdkCompatibleExtension>
     <GeneratePkgDefFile>true</GeneratePkgDefFile>
 
+    <!--
+      F5 deployment to the Experimental Instance.
+
+      Microsoft.VisualStudio.Extensibility.Build.targets defaults
+      DeployExtension to FALSE, and it is imported after
+      Microsoft.VsSDK.targets (which defaults it to true) — so in a hybrid
+      VSSDK + VisualStudio.Extensibility extension like this one the
+      out-of-proc default wins and DeployVsixExtensionFiles silently never
+      runs. The result is that F5 builds the VSIX and then launches a clean
+      Experimental Instance with nothing installed in it.
+
+      Setting it here in the project body beats both package defaults
+      (their conditions only fire when the property is still empty).
+
+      Scoped to full-framework MSBuild on purpose: Microsoft.VsSDK.targets
+      hard-errors with "VSIX deployment is not supported with 'dotnet build'"
+      when MSBuildRuntimeType is Core, which would break the
+      `dotnet build src/VsAgentic.slnx` used by CI and by the docs.
+    -->
+    <DeployExtension Condition="'$(MSBuildRuntimeType)' != 'Core'">true</DeployExtension>
+
     <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
     <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
     <IncludeDebugSymbolsInLocalVSIXDeployment>true</IncludeDebugSymbolsInLocalVSIXDeployment>
@@ -94,5 +115,30 @@
   <ItemGroup>
     <None Include="source.extension.vsixmanifest" SubType="Designer" />
   </ItemGroup>
+
+  <!--
+    Force the intermediate manifest to be regenerated when the source one changes.
+
+    DetokenizeVsixManifestSource (Microsoft.VSSDK.BuildTools 17.14.2120) writes
+    $(IntermediateOutputPath)extension.vsixmanifest only when that file does not
+    already exist — it reports the write in FileWrites either way, so the build
+    log gives no hint. Every edit to source.extension.vsixmanifest is therefore
+    silently ignored on an incremental build: the version, DisplayName,
+    Description, Prerequisites and Assets are all frozen at whatever they were
+    when obj was last clean, and the packed .vsix keeps carrying the stale copy.
+
+    Version is the one that bites hardest, because VSIXInstaller keys on it —
+    a bumped manifest produces a .vsix still stamped with the old version, which
+    then silently fails to install over itself.
+
+    Inputs/Outputs make this a no-op once the intermediate is current, so the
+    delete only happens on the builds that actually need it.
+  -->
+  <Target Name="ForceRefreshIntermediateVsixManifest"
+          BeforeTargets="DetokenizeVsixManifestFile"
+          Inputs="source.extension.vsixmanifest"
+          Outputs="$(IntermediateOutputPath)extension.vsixmanifest">
+    <Delete Files="$(IntermediateOutputPath)extension.vsixmanifest" />
+  </Target>
 
 </Project>

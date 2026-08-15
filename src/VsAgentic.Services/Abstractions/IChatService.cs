@@ -23,6 +23,27 @@ public interface IChatService
     decimal? GetSessionCost();
 
     /// <summary>
+    /// The model the CLI reported for the current session (e.g. "claude-opus-5"),
+    /// taken from the <c>system/init</c> event. Null until the CLI process has
+    /// started and emitted that event — i.e. before the first message is sent.
+    /// </summary>
+    string? CurrentModel { get; }
+
+    /// <summary>
+    /// The CLI's own session id, once one exists — either restored from persisted
+    /// history or assigned when the session started. Lets the host locate the
+    /// CLI's transcript for this session.
+    /// </summary>
+    string? CliSessionId { get; }
+
+    /// <summary>
+    /// Raised when <see cref="CurrentModel"/> changes — on session start and
+    /// again after a process restart, which can pick up a different model.
+    /// Raised on a background thread; hosts must marshal to the UI thread.
+    /// </summary>
+    event Action<string?>? ModelChanged;
+
+    /// <summary>
     /// Raised when the underlying CLI returned an authentication / login-required
     /// error. The string argument is the original error text from the CLI so the
     /// host can surface it to the user. Hosts should respond by showing a login

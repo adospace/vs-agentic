@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using System.Windows;
@@ -45,6 +47,7 @@ public partial class ChatWebView : UserControl
                 "VsAgentic", "WebView2");
             var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
             await WebView.EnsureCoreWebView2Async(env);
+            MapImageHost();
             WebView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             WebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
             WebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
@@ -59,6 +62,116 @@ public partial class ChatWebView : UserControl
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"ChatWebView init failed: {ex.Message}");
+        }
+    }
+
+    // Images are served to the WebView over a virtual host instead of being
+    // inlined as data URIs. A single screenshot runs to a megabyte or more, and
+    // ExecuteScriptAsync takes the whole script as one string — pushing that
+    // much base64 through it kills the WebView2 browser process outright, which
+    // blanks the pane with no exception on our side.
+    private const string ImageHost = "vsagentic-images";
+    private string? _imageFolder;
+
+    private void MapImageHost()
+    {
+        try
+        {
+            // Scoped to the process and cleared on start: this is a render cache,
+            // not storage. The session folder keeps the copies that matter.
+            _imageFolder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "VsAgentic", "WebView2Images", $"p{Process.GetCurrentProcess().Id}");
+
+            if (Directory.Exists(_imageFolder))
+                Directory.Delete(_imageFolder, recursive: true);
+            Directory.CreateDirectory(_imageFolder);
+
+            // DenyCors, not Deny: the page comes from NavigateToString, so its
+            // origin is not the virtual host and every <img> pointing at it is a
+            // cross-origin request. Deny blocks those outright and the thumbnail
+            // renders as a broken image. DenyCors lets subresources load while
+            // still refusing fetch/XHR against the folder.
+            WebView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                ImageHost, _imageFolder, CoreWebView2HostResourceAccessKind.DenyCors);
+        }
+        catch (Exception ex)
+        {
+            _imageFolder = null;
+            System.Diagnostics.Debug.WriteLine($"ChatWebView image host mapping failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Writes any data-URI images in the message to the mapped folder and
+    /// rewrites them to short virtual-host URLs, so the script that carries the
+    /// message stays small. Messages without images are returned unchanged.
+    /// </summary>
+    private ChatMessageData MaterializeImages(ChatMessageData data)
+    {
+        if (data.Images is not { Count: > 0 } || _imageFolder is null) return data;
+
+        var urls = new List<string>(data.Images.Count);
+        foreach (var image in data.Images)
+        {
+            urls.Add(WriteImage(image) ?? image);
+        }
+
+        return new ChatMessageData
+        {
+            Id = data.Id,
+            Type = data.Type,
+            Content = data.Content,
+            ToolName = data.ToolName,
+            Title = data.Title,
+            Status = data.Status,
+            ExpanderTitle = data.ExpanderTitle,
+            BodyMode = data.BodyMode,
+            Body = data.Body,
+            IsStreaming = data.IsStreaming,
+            Images = urls
+        };
+    }
+
+    private string? WriteImage(string dataUri)
+    {
+        try
+        {
+            // data:<media type>;base64,<payload>
+            var comma = dataUri.IndexOf(',');
+            if (!dataUri.StartsWith("data:", StringComparison.Ordinal) || comma < 0)
+                return null;
+
+            var mediaType = dataUri.Substring(5, dataUri.IndexOf(';') - 5);
+            var bytes = Convert.FromBase64String(dataUri.Substring(comma + 1));
+
+            var extension = mediaType switch
+            {
+                "image/png" => ".png",
+                "image/jpeg" => ".jpg",
+                "image/gif" => ".gif",
+                "image/webp" => ".webp",
+                _ => ".bin",
+            };
+
+            // Content-addressed, so the same image reused across messages is
+            // written once.
+            string name;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                name = BitConverter.ToString(sha.ComputeHash(bytes), 0, 8).Replace("-", "") + extension;
+            }
+
+            var path = Path.Combine(_imageFolder!, name);
+            if (!File.Exists(path))
+                File.WriteAllBytes(path, bytes);
+
+            return $"https://{ImageHost}/{name}";
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"ChatWebView image write failed: {ex.Message}");
+            return null;
         }
     }
 
@@ -121,7 +234,7 @@ public partial class ChatWebView : UserControl
 
     public Task AddMessageAsync(string id, ChatItemType type, ChatMessageData data)
     {
-        var dataJson = JsonSerializer.Serialize(data);
+        var dataJson = JsonSerializer.Serialize(MaterializeImages(data));
         return ExecuteOrQueueAsync(
             $"addMessage({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(type.ToString())}, {dataJson})");
     }
@@ -157,7 +270,7 @@ public partial class ChatWebView : UserControl
 
     public Task LoadMessagesAsync(IEnumerable<ChatMessageData> messages)
     {
-        var json = JsonSerializer.Serialize(messages);
+        var json = JsonSerializer.Serialize(messages.Select(MaterializeImages));
         return ExecuteOrQueueAsync($"loadMessages({json})");
     }
 

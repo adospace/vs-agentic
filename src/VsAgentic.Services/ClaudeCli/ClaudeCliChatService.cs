@@ -71,6 +71,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     public async IAsyncEnumerable<string> SendMessageAsync(
         string userMessage,
+        IReadOnlyList<ChatImageAttachment>? images = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         // Lazy start: bring the long-running process up if it's not running.
@@ -96,7 +97,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // Send the user message line.
         try
         {
-            var line = StreamJsonProtocol.BuildUserTextMessage(userMessage);
+            var line = images is { Count: > 0 }
+                ? StreamJsonProtocol.BuildUserMessageWithImages(userMessage, images)
+                : StreamJsonProtocol.BuildUserTextMessage(userMessage);
             await _host.WriteLineAsync(line, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)

@@ -228,6 +228,65 @@ public class JsonSessionStore : ISessionStore
 
     // --- AI Conversation History ---
 
+    public async Task<string> SaveImageAsync(string folderPath, int sessionId, ChatImageAttachment image)
+    {
+        var imagesDir = Path.Combine(GetSessionDir(folderPath, sessionId), "images");
+        Directory.CreateDirectory(imagesDir);
+
+        var fileName = $"{Guid.NewGuid():N}{image.Extension}";
+        using (var stream = new FileStream(
+                   Path.Combine(imagesDir, fileName),
+                   FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                   bufferSize: 64 * 1024, useAsync: true))
+        {
+            await stream.WriteAsync(image.Data, 0, image.Data.Length);
+        }
+
+        image.FileName = fileName;
+        return fileName;
+    }
+
+    public async Task<ChatImageAttachment?> GetImageAsync(string folderPath, int sessionId, string fileName)
+    {
+        // Guard against a crafted or corrupted messages.json walking out of the
+        // session folder.
+        if (fileName.IndexOfAny(new[] { '/', '\\', ':' }) >= 0 || fileName.Contains(".."))
+            return null;
+
+        var path = Path.Combine(GetSessionDir(folderPath, sessionId), "images", fileName);
+        if (!File.Exists(path))
+            return null;
+
+        byte[] data;
+        using (var stream = new FileStream(
+                   path, FileMode.Open, FileAccess.Read, FileShare.Read,
+                   bufferSize: 64 * 1024, useAsync: true))
+        {
+            data = new byte[stream.Length];
+            var read = 0;
+            while (read < data.Length)
+            {
+                var chunk = await stream.ReadAsync(data, read, data.Length - read);
+                if (chunk == 0) break;
+                read += chunk;
+            }
+        }
+
+        return new ChatImageAttachment(data, MediaTypeFromExtension(Path.GetExtension(fileName)))
+        {
+            FileName = fileName
+        };
+    }
+
+    private static string MediaTypeFromExtension(string extension) => extension.ToLowerInvariant() switch
+    {
+        ".png" => "image/png",
+        ".jpg" or ".jpeg" => "image/jpeg",
+        ".gif" => "image/gif",
+        ".webp" => "image/webp",
+        _ => "application/octet-stream",
+    };
+
     public async Task<string?> GetConversationHistoryAsync(string folderPath, int sessionId)
     {
         var historyPath = Path.Combine(GetSessionDir(folderPath, sessionId), "history.json");

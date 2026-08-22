@@ -129,6 +129,26 @@ html, body {
     border-radius: 4px;
     padding: 8px;
 }
+/* Attached images: thumbnails by default, click to see the whole thing. */
+.msg-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 4px 0 8px 0;
+}
+.msg-image {
+    max-height: 120px;
+    max-width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: zoom-in;
+    display: block;
+}
+.msg-image.expanded {
+    max-height: none;
+    cursor: zoom-out;
+}
+
 .msg-user .msg-label {
     font-weight: 600;
     font-size: 11px;
@@ -471,11 +491,28 @@ function addMessage(id, type, dataJson) {
         var label = document.createElement('div');
         label.className = 'msg-label';
         label.textContent = 'You';
+        div.appendChild(label);
+
+        if (data.Images && data.Images.length) {
+            var strip = document.createElement('div');
+            strip.className = 'msg-images';
+            for (var ii = 0; ii < data.Images.length; ii++) {
+                var thumb = document.createElement('img');
+                // Data URI built on the host side; never user-authored markup.
+                thumb.src = data.Images[ii];
+                thumb.className = 'msg-image';
+                thumb.addEventListener('click', function() {
+                    this.classList.toggle('expanded');
+                });
+                strip.appendChild(thumb);
+            }
+            div.appendChild(strip);
+        }
+
         var content = document.createElement('div');
         content.className = 'md-content msg-content';
         content.innerHTML = renderUserMd(data.Content || '');
         linkifyFilePaths(content);
-        div.appendChild(label);
         div.appendChild(content);
     }
     else if (type === 'Assistant') {

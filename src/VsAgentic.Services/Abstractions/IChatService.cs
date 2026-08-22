@@ -2,7 +2,16 @@ namespace VsAgentic.Services.Abstractions;
 
 public interface IChatService
 {
-    IAsyncEnumerable<string> SendMessageAsync(string userMessage, CancellationToken cancellationToken = default);
+    /// <param name="images">
+    /// Images to send alongside the text. They travel inline as base64 blocks,
+    /// so nothing is written to the project. Null or empty sends text only,
+    /// which keeps the wire format identical to what it was before images
+    /// existed.
+    /// </param>
+    IAsyncEnumerable<string> SendMessageAsync(
+        string userMessage,
+        IReadOnlyList<ChatImageAttachment>? images = null,
+        CancellationToken cancellationToken = default);
     Task<string> GenerateTitleAsync(string userMessage, CancellationToken cancellationToken = default);
     void ClearHistory();
 

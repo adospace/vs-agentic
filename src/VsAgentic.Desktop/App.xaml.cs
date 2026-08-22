@@ -52,6 +52,12 @@ public partial class App : Application
                 })
                 .Build();
 
+            // ChatWebView is instantiated by XAML, so it gets its logger handed
+            // to it rather than injected.
+            VsAgentic.UI.Controls.ChatWebView.Logger = _host.Services
+                .GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>()
+                .CreateLogger("VsAgentic.UI.Controls.ChatWebView");
+
             var mainWindow = _host.Services.GetRequiredService<MainWindow>();
             MainWindow = mainWindow;
             mainWindow.Show();

@@ -10,6 +10,27 @@
     <VssdkCompatibleExtension>true</VssdkCompatibleExtension>
     <GeneratePkgDefFile>true</GeneratePkgDefFile>
 
+    <!--
+      Microsoft.VisualStudio.Extensibility.Build.targets defaults
+      DeployExtension to false, which wins over the VSSDK default of true
+      because it is evaluated first. FindExistingDeploymentPath and
+      DeployVsixExtensionFiles are both gated on DeployExtension=='true', so
+      the build silently produces the .vsix without ever copying it into the
+      experimental hive — F5 then lands in a Visual Studio that has no
+      VsAgentic in it, with nothing in the build output to explain why.
+
+      Turn deployment back on for builds started from the IDE only.
+      Command-line builds — including `dotnet build` in publish-vsix.yml —
+      leave BuildingInsideVisualStudio unset and keep the packaging-only
+      behaviour, which is what a build agent with no experimental hive wants.
+
+      Note that the debug profile has to be the "Executable" one that launches
+      devenv.exe /RootSuffix Exp (see Properties\launchSettings.json). A VSIX
+      project is a class library, so VS refuses to start it directly and the
+      "Project" profile cannot be used.
+    -->
+    <DeployExtension Condition="'$(BuildingInsideVisualStudio)' == 'true'">true</DeployExtension>
+
     <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
     <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
     <IncludeDebugSymbolsInLocalVSIXDeployment>true</IncludeDebugSymbolsInLocalVSIXDeployment>

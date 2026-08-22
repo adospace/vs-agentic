@@ -10,6 +10,7 @@
 
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <controls:AttachmentPreviewConverter x:Key="AttachmentPreviewConverter"/>
 
         <!-- Banner DataTemplates: ContentControl below picks the right view by VM type. -->
         <DataTemplate DataType="{x:Type bvm:PermissionBannerViewModel}">
@@ -141,12 +142,58 @@
                         SnapsToDevicePixels="True">
                     <Grid>
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
+                        <!-- Pasted images waiting to go out with the next message -->
+                        <ItemsControl Grid.Row="0"
+                                      ItemsSource="{Binding PendingImages}"
+                                      Margin="8,6,8,0">
+                            <ItemsControl.Style>
+                                <Style TargetType="ItemsControl">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding PendingImages.Count}" Value="0">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ItemsControl.Style>
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel Orientation="Horizontal"/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Margin="0,0,6,6"
+                                            BorderThickness="1"
+                                            CornerRadius="3"
+                                            BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}">
+                                        <Grid>
+                                            <Image Source="{Binding Converter={StaticResource AttachmentPreviewConverter}}"
+                                                   Height="56"
+                                                   Stretch="Uniform"
+                                                   Margin="2"/>
+                                            <Button Content="&#xE10A;"
+                                                    FontFamily="Segoe MDL2 Assets"
+                                                    FontSize="9"
+                                                    Width="16" Height="16"
+                                                    Padding="0"
+                                                    HorizontalAlignment="Right"
+                                                    VerticalAlignment="Top"
+                                                    ToolTip="Remove image"
+                                                    Click="RemoveAttachment_Click"/>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
                         <!-- Text input + placeholder overlay -->
-                        <Grid Grid.Row="0">
+                        <Grid Grid.Row="1">
                             <TextBox x:Name="InputTextBox"
                                      Text="{Binding InputText, UpdateSourceTrigger=PropertyChanged}"
                                      Background="Transparent"
@@ -233,7 +280,7 @@
                         </Grid>
 
                         <!-- Status bar (separated from textbox by a top line) -->
-                        <Border Grid.Row="1"
+                        <Border Grid.Row="2"
                                 BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
                                 BorderThickness="0,1,0,0">
                             <Grid>

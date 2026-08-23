@@ -60,6 +60,41 @@ html, body {
     background: transparent;
 }
 
+/* Jump-to-latest button: only shown once the user has scrolled away from the
+   bottom, so reading back through a conversation is never interrupted by new
+   output arriving off-screen below. */
+#scroll-bottom-btn {
+    position: fixed;
+    /* Tucked into the very bottom-right corner: clear of the 8px scrollbar,
+       and low enough to sit below the text of the last message rather than
+       over it. */
+    right: 14px;
+    bottom: 4px;
+    width: 28px;
+    height: 28px;
+    border-radius: 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    z-index: 900;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+#scroll-bottom-btn.visible { display: flex; }
+#scroll-bottom-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-input);
+}
+/* Something arrived below the fold while the user was reading elsewhere. */
+#scroll-bottom-btn.has-new {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
 /* Copy button on hover */
 .msg {
     position: relative;
@@ -452,9 +487,42 @@ function scrollToBottom() {
 }
 
 function maybeScrollToBottom() {
-    if (!_userScrolledUp) {
+    if (_userScrolledUp) {
+        // Reading further up: don't yank the view, just light up the button.
+        _hasNewBelow = true;
+        updateScrollButton();
+    } else {
         scrollToBottom();
     }
+}
+
+// --- Jump-to-latest button ---
+
+var _scrollBtn;
+var _hasNewBelow = false;
+
+var ICON_ARROW_DOWN = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="2.5" x2="8" y2="12.5"/><polyline points="3.5 8.5 8 13 12.5 8.5"/></svg>';
+
+function updateScrollButton() {
+    if (!_scrollBtn) return;
+    if (!_userScrolledUp) _hasNewBelow = false;
+    _scrollBtn.classList.toggle('visible', _userScrolledUp);
+    _scrollBtn.classList.toggle('has-new', _userScrolledUp && _hasNewBelow);
+    _scrollBtn.title = _hasNewBelow ? 'New messages below' : 'Scroll to latest';
+}
+
+function createScrollButton() {
+    _scrollBtn = document.createElement('button');
+    _scrollBtn.id = 'scroll-bottom-btn';
+    _scrollBtn.title = 'Scroll to latest';
+    _scrollBtn.innerHTML = ICON_ARROW_DOWN;
+    _scrollBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        _userScrolledUp = false;
+        scrollToBottom();
+        updateScrollButton();
+    });
+    document.body.appendChild(_scrollBtn);
 }
 
 // --- Public API ---
@@ -610,7 +678,16 @@ function addMessage(id, type, dataJson) {
     }
 
     _container.appendChild(div);
-    maybeScrollToBottom();
+    if (type === 'User') {
+        // A prompt the user just sent themselves: take them to it no matter
+        // where they were reading. Only output that arrives on its own is
+        // allowed to stay below the fold.
+        _userScrolledUp = false;
+        scrollToBottom();
+        updateScrollButton();
+    } else {
+        maybeScrollToBottom();
+    }
 }
 
 var _rafPending = {};
@@ -709,6 +786,7 @@ function completeMessage(id) {
 function clearAll() {
     if (_container) _container.innerHTML = '';
     _userScrolledUp = false;
+    updateScrollButton();
 }
 
 function loadMessages(jsonArray) {
@@ -725,7 +803,9 @@ function loadMessages(jsonArray) {
             completeMessage(m.Id);
         }
     }
+    _userScrolledUp = false;
     scrollToBottom();
+    updateScrollButton();
 }
 
 function setThemeColors(colorsJson) {
@@ -870,7 +950,31 @@ document.addEventListener('DOMContentLoaded', function() {
     _container = document.getElementById('chat-container');
     _container.addEventListener('scroll', function() {
         _userScrolledUp = !isNearBottom();
+        updateScrollButton();
     });
+    createScrollButton();
+
+    // The webview shrinks whenever the host grows the area below it - the input
+    // box gaining a line as the user types, the "Thinking..." bar appearing, a
+    // banner opening, the resize grip being dragged. Scrolling happened against
+    // the old height, so without this the last message ends up clipped by the
+    // new bottom edge until the next chunk of output arrives.
+    if (window.ResizeObserver) {
+        var reanchor = new ResizeObserver(function() {
+            if (!_userScrolledUp) scrollToBottom();
+        });
+        reanchor.observe(_container);
+    } else {
+        window.addEventListener('resize', function() {
+            if (!_userScrolledUp) scrollToBottom();
+        });
+    }
+
+    // Images and fonts settle after their message is already in the DOM and
+    // push the content taller; re-pin so they don't shove the tail off-screen.
+    document.addEventListener('load', function(e) {
+        if (e.target && e.target.tagName === 'IMG' && !_userScrolledUp) scrollToBottom();
+    }, true);
 });
 </script>
 </head>

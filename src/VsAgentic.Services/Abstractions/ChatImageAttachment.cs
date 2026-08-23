@@ -5,7 +5,7 @@ namespace VsAgentic.Services.Abstractions;
 /// base64 content blocks over stream-json stdin, so nothing has to be written
 /// to the project first.
 /// </summary>
-public sealed class ChatImageAttachment
+public sealed class ChatImageAttachment : IChatAttachment
 {
     /// <summary>Raw encoded bytes, already in <see cref="MediaType"/> format.</summary>
     public byte[] Data { get; }
@@ -18,6 +18,12 @@ public sealed class ChatImageAttachment
     /// Empty until the store assigns one.
     /// </summary>
     public string FileName { get; set; } = "";
+
+    /// <summary>
+    /// Chips carry a thumbnail rather than a name, so this is only ever read as
+    /// a tooltip or by accessibility tools.
+    /// </summary>
+    public string DisplayName => string.IsNullOrEmpty(FileName) ? "Pasted image" : FileName;
 
     public ChatImageAttachment(byte[] data, string mediaType)
     {

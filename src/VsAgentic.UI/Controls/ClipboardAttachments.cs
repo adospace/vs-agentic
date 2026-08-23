@@ -6,9 +6,9 @@ using VsAgentic.Services.Abstractions;
 namespace VsAgentic.UI.Controls;
 
 /// <summary>
-/// Turns whatever the clipboard is holding into an attachment the CLI accepts.
+/// Turns whatever the clipboard is holding into attachments the CLI accepts.
 /// </summary>
-public static class ClipboardImage
+public static class ClipboardAttachments
 {
     /// <summary>
     /// Anthropic resizes anything larger than this before the model sees it, and
@@ -18,28 +18,34 @@ public static class ClipboardImage
     private const int MaxEdge = 1568;
 
     /// <summary>
-    /// Reads an image from the clipboard, or returns null when there is none.
-    /// Handles both a bitmap (a screenshot, or a copy out of an image editor)
-    /// and a copied image file.
+    /// Reads everything on the clipboard that can travel with a message, in the
+    /// order it was copied. Images come back decoded, so they can go inline;
+    /// everything else comes back as a path for the CLI to open itself. Empty
+    /// when there is nothing to attach.
+    ///
+    /// Handles a bitmap (a screenshot, or a copy out of an image editor) as well
+    /// as anything copied in File Explorer, one file or a whole selection.
     /// </summary>
-    public static ChatImageAttachment? TryRead()
+    public static IReadOnlyList<IChatAttachment> TryRead()
     {
         try
         {
             if (Clipboard.ContainsFileDropList())
             {
+                var attachments = new List<IChatAttachment>();
                 foreach (var path in Clipboard.GetFileDropList())
                 {
-                    var attachment = TryReadFile(path);
-                    if (attachment is not null) return attachment;
+                    var attachment = TryReadPath(path);
+                    if (attachment is not null) attachments.Add(attachment);
                 }
+                if (attachments.Count > 0) return attachments;
             }
 
             if (Clipboard.ContainsImage())
             {
                 var source = Clipboard.GetImage();
                 if (source is not null)
-                    return FromBitmapSource(source);
+                    return new IChatAttachment[] { FromBitmapSource(source) };
             }
         }
         catch
@@ -49,13 +55,35 @@ public static class ClipboardImage
             // nothing is the right answer.
         }
 
-        return null;
+        return Array.Empty<IChatAttachment>();
     }
 
-    private static ChatImageAttachment? TryReadFile(string? path)
+    private static IChatAttachment? TryReadPath(string? path)
     {
-        if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
+        if (string.IsNullOrEmpty(path)) return null;
+        if (Directory.Exists(path)) return new ChatFileAttachment(path!);
+        if (!File.Exists(path)) return null;
 
+        try
+        {
+            var image = TryReadImageFile(path!);
+            if (image is not null) return image;
+        }
+        catch
+        {
+            // A file that claims to be a PNG but will not decode is still worth
+            // attaching — the CLI can go and look at it on disk.
+        }
+
+        return new ChatFileAttachment(path!);
+    }
+
+    /// <summary>
+    /// Decodes a copied image file, or returns null when the extension is not one
+    /// the API takes inline — those go out as paths instead.
+    /// </summary>
+    private static ChatImageAttachment? TryReadImageFile(string path)
+    {
         var mediaType = Path.GetExtension(path).ToLowerInvariant() switch
         {
             ".png" => "image/png",
@@ -70,12 +98,12 @@ public static class ClipboardImage
         // passed through untouched: decoding keeps only the first frame, which
         // would silently drop the animation.
         if (mediaType == "image/gif")
-            return new ChatImageAttachment(File.ReadAllBytes(path!), mediaType);
+            return new ChatImageAttachment(File.ReadAllBytes(path), mediaType);
 
         var decoded = new BitmapImage();
         decoded.BeginInit();
         decoded.CacheOption = BitmapCacheOption.OnLoad;
-        decoded.UriSource = new Uri(path!);
+        decoded.UriSource = new Uri(path);
         decoded.EndInit();
         return FromBitmapSource(decoded);
     }

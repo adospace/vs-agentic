@@ -355,30 +355,58 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         }
     }
 
-    // An image on its own is a perfectly good prompt — "what is wrong here?" is
-    // often implicit — so text is only required when nothing is attached.
+    // An attachment on its own is a perfectly good prompt — "what is wrong
+    // here?" is often implicit — so text is only required when nothing is
+    // attached.
     private bool CanSend() =>
-        !IsBusy && (!string.IsNullOrWhiteSpace(InputText) || PendingImages.Count > 0);
+        !IsBusy && (!string.IsNullOrWhiteSpace(InputText) || PendingAttachments.Count > 0);
 
     /// <summary>
-    /// Images pasted into the input box, waiting to go out with the next message.
+    /// Images and files pasted into the input box, waiting to go out with the
+    /// next message. One list rather than two so the strip above the input keeps
+    /// them in the order they were pasted.
     /// </summary>
-    public ObservableCollection<ChatImageAttachment> PendingImages { get; } = new();
+    public ObservableCollection<IChatAttachment> PendingAttachments { get; } = new();
 
     /// <summary>
-    /// Attaches an image to the next message. Called by the host when the user
-    /// pastes one into the input box.
+    /// Attaches an image or a file to the next message. Called by the host when
+    /// the user pastes into the input box. Pasting the same file twice is a slip
+    /// rather than an intent, so those are dropped; images have no path to
+    /// compare and two identical screenshots are plausible enough to keep.
     /// </summary>
-    public void AttachImage(ChatImageAttachment image)
+    public void Attach(IChatAttachment attachment)
     {
-        PendingImages.Add(image);
+        if (attachment is ChatFileAttachment file &&
+            PendingAttachments.OfType<ChatFileAttachment>().Any(
+                f => string.Equals(f.FullPath, file.FullPath, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        PendingAttachments.Add(attachment);
         SendCommand.NotifyCanExecuteChanged();
     }
 
-    public void RemovePendingImage(ChatImageAttachment image)
+    public void RemoveAttachment(IChatAttachment attachment)
     {
-        PendingImages.Remove(image);
+        PendingAttachments.Remove(attachment);
         SendCommand.NotifyCanExecuteChanged();
+    }
+
+    /// <summary>
+    /// Puts the attached paths above the user's text, so the model knows what it
+    /// has been handed before it reads the question about it.
+    /// </summary>
+    private static string WithFileReferences(string text, IReadOnlyList<ChatFileAttachment> files)
+    {
+        // Backticks stop Markdown from eating the backslashes when the message is
+        // rendered back into the chat, and mark the path as literal for the CLI.
+        var list = string.Join("\n", files.Select(f => $"- `{f.FullPath}`"));
+        var header = files.Count == 1 ? "Attached file:" : "Attached files:";
+
+        return string.IsNullOrEmpty(text)
+            ? $"{header}\n{list}"
+            : $"{header}\n{list}\n\n{text}";
     }
 
     [RelayCommand(CanExecute = nameof(CanSend))]
@@ -387,11 +415,18 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         var message = InputText.Trim();
         InputText = "";
 
-        var sentImages = PendingImages.Count > 0
-            ? PendingImages.ToList()
-            : null;
-        PendingImages.Clear();
+        var images = PendingAttachments.OfType<ChatImageAttachment>().ToList();
+        var files = PendingAttachments.OfType<ChatFileAttachment>().ToList();
+        var sentImages = images.Count > 0 ? images : null;
+        PendingAttachments.Clear();
         SendCommand.NotifyCanExecuteChanged();
+
+        // Attached files are named in the prompt rather than uploaded: the CLI
+        // reads them off disk with the same tools it uses for the rest of the
+        // project. Listing them in the message itself also leaves a record in
+        // the transcript of what went out.
+        if (files.Count > 0)
+            message = WithFileReferences(message, files);
 
         // Written next to the session so reopening it shows the images again.
         var storedImageNames = sentImages is null

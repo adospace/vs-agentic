@@ -108,9 +108,9 @@ public partial class ChatSessionControl : UserControl
     private void RemoveAttachment_Click(object sender, RoutedEventArgs e)
     {
         if (DataContext is ChatSessionViewModel vm &&
-            sender is FrameworkElement { DataContext: ChatImageAttachment image })
+            sender is FrameworkElement { DataContext: IChatAttachment attachment })
         {
-            vm.RemovePendingImage(image);
+            vm.RemoveAttachment(attachment);
         }
     }
 
@@ -281,11 +281,11 @@ public partial class ChatSessionControl : UserControl
         {
             if (DataContext is ChatSessionViewModel vm)
             {
-                var image = ClipboardImage.TryRead();
-                if (image is not null)
+                var attachments = ClipboardAttachments.TryRead();
+                if (attachments.Count > 0)
                 {
-                    vm.AttachImage(image);
-                    // Otherwise a copied image file would also paste its path.
+                    foreach (var attachment in attachments) vm.Attach(attachment);
+                    // Otherwise a file copied in Explorer would also paste its path.
                     e.Handled = true;
                     return;
                 }

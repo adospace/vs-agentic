@@ -18,4 +18,10 @@ public class ChatMessageData
     public string BodyMode { get; init; } = "Markdown";
     public string? Body { get; init; }
     public bool IsStreaming { get; init; }
+
+    /// <summary>
+    /// Data URIs for images attached to a user message, rendered inside the
+    /// prompt block. Null when the message has none.
+    /// </summary>
+    public List<string>? Images { get; init; }
 }

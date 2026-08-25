@@ -25,7 +25,8 @@
                     <StackPanel Orientation="Vertical">
                         <TextBlock Text="{Binding Label}"
                                    FontWeight="SemiBold"
-                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"/>
+                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                                   TextWrapping="Wrap"/>
                         <TextBlock Text="{Binding Description}"
                                    Visibility="{Binding HasDescription, Converter={StaticResource BoolToVis}}"
                                    Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
@@ -42,7 +43,8 @@
                     <StackPanel Orientation="Vertical">
                         <TextBlock Text="{Binding Label}"
                                    FontWeight="SemiBold"
-                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"/>
+                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                                   TextWrapping="Wrap"/>
                         <TextBlock Text="{Binding Description}"
                                    Visibility="{Binding HasDescription, Converter={StaticResource BoolToVis}}"
                                    Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
@@ -136,7 +138,11 @@
                                  Style="{StaticResource BannerInputTextBoxStyle}"
                                  Text="{Binding OtherText, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="Type your own answer"
-                                 MinWidth="200"/>
+                                 TextWrapping="Wrap"
+                                 AcceptsReturn="False"
+                                 MaxHeight="90"
+                                 VerticalScrollBarVisibility="Auto"
+                                 MinWidth="80"/>
                     </Grid>
                 </StackPanel>
             </DataTemplate>

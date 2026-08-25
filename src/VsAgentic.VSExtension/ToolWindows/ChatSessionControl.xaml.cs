@@ -1,9 +1,9 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using Microsoft.VisualStudio.PlatformUI;
 using Microsoft.VisualStudio.Shell;
@@ -87,6 +87,10 @@ public partial class ChatSessionControl : UserControl
         VSColorTheme.ThemeChanged -= OnThemeChanged;
         ChatZoom.Changed -= OnZoomChanged;
         ChatWebView.ZoomChangeRequested -= OnZoomChangeRequested;
+
+        // A popup is its own window and would outlive the pane it belongs to.
+        _zoomToastTimer?.Stop();
+        ZoomToast.IsOpen = false;
     }
 
     private void OnThemeChanged(ThemeChangedEventArgs e)
@@ -133,7 +137,6 @@ public partial class ChatSessionControl : UserControl
     // ------------------------------------------------------------------
 
     private static readonly TimeSpan ZoomToastHold = TimeSpan.FromMilliseconds(900);
-    private static readonly Duration ZoomToastFade = new Duration(TimeSpan.FromMilliseconds(250));
 
     private DispatcherTimer? _zoomToastTimer;
 
@@ -172,7 +175,12 @@ public partial class ChatSessionControl : UserControl
     private void OnZoomChanged(double level)
     {
         ApplyZoom(level);
-        ShowZoomToast(level);
+
+        // Every open chat window follows the level, but only the one being
+        // looked at flashes the reading. A popup belongs to no pane in
+        // particular once it is open, so a background tab would put its pill
+        // on top of whatever the user is actually working in.
+        if (IsVisible) ShowZoomToast(level);
     }
 
     /// <summary>
@@ -199,18 +207,31 @@ public partial class ChatSessionControl : UserControl
     private void ShowZoomToast(double level)
     {
         ZoomToastText.Text = ZoomLevels.Format(level);
+        ZoomToast.CustomPopupPlacementCallback ??= PlaceZoomToast;
 
-        // Clear any fade still running from the previous step first — a local
-        // value loses to a live animation, so without this a quick run of
-        // notches leaves the reading stuck half-transparent.
-        ZoomToast.BeginAnimation(OpacityProperty, null);
-        ZoomToast.Opacity = 1;
-        ZoomToast.Visibility = Visibility.Visible;
+        // Reopening an already-open popup does not re-run placement, and the
+        // reading changes width between "90%" and "100%"; closing first keeps
+        // it pinned to the corner instead of drifting left as it grows.
+        ZoomToast.IsOpen = false;
+        ZoomToast.IsOpen = true;
 
         _zoomToastTimer ??= CreateZoomToastTimer();
         _zoomToastTimer.Stop();
         _zoomToastTimer.Start();
     }
+
+    /// <summary>
+    /// Pins the reading to the chat's top-right corner. A callback rather than
+    /// a fixed offset because only here are both sizes known, and the popup's
+    /// width moves with the number in it.
+    /// </summary>
+    private static CustomPopupPlacement[] PlaceZoomToast(Size popupSize, Size targetSize, Point offset) =>
+        new[]
+        {
+            new CustomPopupPlacement(
+                new Point(targetSize.Width - popupSize.Width - 12, 8),
+                PopupPrimaryAxis.None)
+        };
 
     private DispatcherTimer CreateZoomToastTimer()
     {
@@ -218,15 +239,9 @@ public partial class ChatSessionControl : UserControl
         timer.Tick += (_, _) =>
         {
             timer.Stop();
-
-            var fade = new DoubleAnimation(0, ZoomToastFade);
-            // A step landing in the same instant re-shows the toast; only
-            // collapse if this fade is still the one that finished.
-            fade.Completed += (_, _) =>
-            {
-                if (ZoomToast.Opacity == 0) ZoomToast.Visibility = Visibility.Collapsed;
-            };
-            ZoomToast.BeginAnimation(OpacityProperty, fade);
+            // PopupAnimation="Fade" carries the close, so there is no animation
+            // to run or unwind here.
+            ZoomToast.IsOpen = false;
         };
         return timer;
     }

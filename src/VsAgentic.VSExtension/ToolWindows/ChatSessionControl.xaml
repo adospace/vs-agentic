@@ -119,7 +119,6 @@
         </Style>
     </UserControl.Resources>
 
-    <Grid>
     <DockPanel x:Name="RootPanel"
                Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}">
 
@@ -331,30 +330,41 @@
         </ContentControl>
 
         <!-- Chat Messages Area - single WebView -->
-        <controls:ChatWebView x:Name="ChatWebView" />
-    </DockPanel>
+        <Grid>
+            <controls:ChatWebView x:Name="ChatWebView" />
 
-    <!-- Zoom reading, shown for a moment after each step and then faded out,
-         the way a browser does it. Deliberately outside the scaled chrome and
-         at a fixed size: it reports the zoom, so it must not be subject to it.
-         Not hit-testable, so it never swallows a click on whatever it happens
-         to be covering. -->
-    <Border x:Name="ZoomToast"
-            HorizontalAlignment="Right"
-            VerticalAlignment="Top"
-            Margin="0,8,12,0"
-            Padding="10,4"
-            CornerRadius="3"
-            Opacity="0"
-            Visibility="Collapsed"
-            IsHitTestVisible="False"
-            Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
-            BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
-            BorderThickness="1">
-        <TextBlock x:Name="ZoomToastText"
-                   FontSize="12"
-                   FontWeight="SemiBold"
-                   Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
-    </Border>
-    </Grid>
+            <!-- Zoom reading, shown in the corner of the chat for a moment
+                 after each step and then faded out, the way a browser does it.
+
+                 A Popup rather than a plain Border in this Grid, because the
+                 WebView2 control is an HwndHost: WPF cannot draw over a child
+                 HWND, so a Border laid on top would simply not appear where it
+                 overlapped the chat. A Popup gets its own top-level window and
+                 sits above it.
+
+                 Deliberately outside the scaled chrome and at a fixed size — it
+                 reports the zoom, so it must not be subject to it. -->
+            <Popup x:Name="ZoomToast"
+                   PlacementTarget="{Binding ElementName=ChatWebView}"
+                   Placement="Custom"
+                   StaysOpen="True"
+                   AllowsTransparency="True"
+                   PopupAnimation="Fade"
+                   Focusable="False"
+                   IsHitTestVisible="False">
+                <Border Padding="10,4"
+                        CornerRadius="3"
+                        IsHitTestVisible="False"
+                        Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
+                        BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                        BorderThickness="1"
+                        SnapsToDevicePixels="True">
+                    <TextBlock x:Name="ZoomToastText"
+                               FontSize="12"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                </Border>
+            </Popup>
+        </Grid>
+    </DockPanel>
 </UserControl>

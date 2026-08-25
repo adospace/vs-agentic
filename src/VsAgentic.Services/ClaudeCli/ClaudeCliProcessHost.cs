@@ -137,8 +137,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
             StandardErrorEncoding = Encoding.UTF8,
         };
 
-        // Strip any inherited API key so the CLI uses subscription auth.
-        psi.EnvironmentVariables["ANTHROPIC_API_KEY"] = "";
+        ClaudeCliChatService.UseSubscriptionAuth(psi);
 
         _stdinChannel = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
         {

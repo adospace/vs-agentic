@@ -23,6 +23,7 @@ public class ChatSessionToolWindow : ToolWindowPane
 
     protected override void OnClose()
     {
+        ChatControl.Shutdown();
         Closed?.Invoke();
         base.OnClose();
     }

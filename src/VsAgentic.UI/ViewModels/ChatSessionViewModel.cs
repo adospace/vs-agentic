@@ -174,6 +174,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             _questionBroker.QuestionRequested += OnQuestionBrokerRequested;
 
         chatService.LoginRequired += OnChatServiceLoginRequired;
+
+        InitializeUsage(chatService, options.Value);
     }
 
     private void OnChatServiceLoginRequired(string? errorMessage)
@@ -708,6 +710,12 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         try { _activityTimer?.Stop(); } catch { }
+        try
+        {
+            if (_chatService is not null)
+                _chatService.UsageChanged -= OnChatServiceUsageChanged;
+        }
+        catch { }
         try { (_chatService as IDisposable)?.Dispose(); } catch { }
         try { _serviceScope?.Dispose(); } catch { }
     }

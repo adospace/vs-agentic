@@ -23,6 +23,9 @@ Settings are available in the Visual Studio **Tools → Options → VsAgentic** 
 
 - **Claude CLI Path** — path to the `claude` executable (defaults to `claude` on PATH)
 - **CLI Permission Mode** — controls how the CLI handles tool permissions
+- **Model** / **Reasoning effort** — remembered from the dropdowns in the chat header
+- **Plan** — which subscription the usage meters are sized against (`Unlimited` hides them)
+- **5-hour / weekly token budget** — override the estimated limits behind those meters
 
 ### 🧰 Built-in Agentic Tools
 Claude Code comes with a full suite of agentic tools — file search, code search, file reading/editing, bash commands, web fetching, and sub-agent delegation. The CLI manages all tools natively; VsAgentic displays tool steps inline so you can follow every action.
@@ -32,6 +35,16 @@ Claude Code comes with a full suite of agentic tools — file search, code searc
 - Conversation history is fully restored when you reopen VS
 - Auto-generated session titles based on your first message
 - Manage sessions from the **VsAgentic Sessions** panel (open, rename, delete)
+
+### 📊 Usage Header
+Every chat window carries a header showing where your tokens are going:
+
+- **Context** — how full the model's context window is, so a compaction is never a surprise
+- **5h / 7d** — tokens spent in the trailing rate-limit windows, counted across every session on the machine and kept between restarts
+- **Session** — what this conversation has cost so far, broken down by input, output and cache in the tooltip
+- **Model / effort** dropdowns — switch either without leaving the chat; the conversation is resumed, not lost
+
+The rate-limit budgets are estimates — Anthropic does not publish the real limits — so the meters are a gauge, not an authority. Adjust them under **Tools → Options → VsAgentic** if you have measured your own.
 
 ### 🖼️ Rich Markdown Rendering
 Responses are rendered with full Markdown support — syntax-highlighted code blocks, tables, lists, and inline formatting — via an embedded WebView2 control.

@@ -6,10 +6,122 @@
              xmlns:catalog="clr-namespace:Microsoft.VisualStudio.Imaging;assembly=Microsoft.VisualStudio.ImageCatalog"
              xmlns:controls="clr-namespace:VsAgentic.UI.Controls;assembly=VsAgentic.UI"
              xmlns:bvm="clr-namespace:VsAgentic.UI.ViewModels.Banners;assembly=VsAgentic.UI"
-             xmlns:bv="clr-namespace:VsAgentic.VSExtension.ToolWindows.Banners" >
+             xmlns:bv="clr-namespace:VsAgentic.VSExtension.ToolWindows.Banners"
+             xmlns:local="clr-namespace:VsAgentic.VSExtension.ToolWindows" >
 
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <controls:MinWidthVisibilityConverter x:Key="MinWidth"/>
+
+        <!-- Header pickers. Fully retemplated rather than merely unbordered:
+             the stock ComboBox chrome draws its own border, background and
+             focus ring, none of which BorderThickness="0" removes. What is left
+             is the label plus a chevron, with a hover fill borrowed from the
+             command bar so it still reads as clickable. -->
+        <Style x:Key="HeaderComboStyle" TargetType="ComboBox">
+            <Setter Property="Margin" Value="4,0,0,0"/>
+            <Setter Property="Padding" Value="6,0"/>
+            <Setter Property="Height" Value="19"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground"
+                    Value="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <!-- Foreground is forwarded explicitly. ToggleButton's
+                                 own default style sets it to the system control
+                                 text colour, and a style setter beats an
+                                 inherited value, so without this local value the
+                                 label renders near-black on a dark theme no
+                                 matter what the ComboBox says. -->
+                            <ToggleButton x:Name="Toggle"
+                                          Focusable="False"
+                                          ClickMode="Press"
+                                          Foreground="{TemplateBinding Foreground}"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border x:Name="Chrome"
+                                                Background="Transparent"
+                                                CornerRadius="3"
+                                                SnapsToDevicePixels="True">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <ContentPresenter Grid.Column="0"
+                                                                  Margin="6,0,2,0"
+                                                                  VerticalAlignment="Center"
+                                                                  Content="{Binding SelectionBoxItem, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                                                  ContentTemplate="{Binding SelectionBoxItemTemplate, RelativeSource={RelativeSource AncestorType=ComboBox}}"/>
+                                                <Path Grid.Column="1"
+                                                      Margin="0,1,6,0"
+                                                      VerticalAlignment="Center"
+                                                      Data="M 0 0 L 3.5 3.5 L 7 0 Z"
+                                                      Fill="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                            </Grid>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Chrome" Property="Background"
+                                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}"/>
+                                            </Trigger>
+                                            <Trigger Property="IsChecked" Value="True">
+                                                <Setter TargetName="Chrome" Property="Background"
+                                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseDownBackgroundGradientKey}}"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+
+                            <Popup IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   Placement="Bottom"
+                                   AllowsTransparency="True"
+                                   PopupAnimation="Fade"
+                                   Focusable="False">
+                                <Border Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
+                                        BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                                        BorderThickness="1"
+                                        CornerRadius="3"
+                                        MinWidth="{TemplateBinding ActualWidth}"
+                                        SnapsToDevicePixels="True">
+                                    <ItemsPresenter/>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="HeaderComboItemStyle" TargetType="ComboBoxItem">
+            <Setter Property="Padding" Value="8,3"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Foreground"
+                    Value="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="ItemChrome"
+                                Background="Transparent"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="ItemChrome" Property="Background"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
 
         <!-- Banner DataTemplates: ContentControl below picks the right view by VM type. -->
         <DataTemplate DataType="{x:Type bvm:PermissionBannerViewModel}">
@@ -110,6 +222,88 @@
 
     <DockPanel x:Name="RootPanel"
                Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}">
+
+        <!-- Header: usage gauges and the model / effort pickers, right-aligned.
+             No title here on purpose — the tool window caption immediately above
+             already carries it, spinner and all, and repeating it would waste
+             the one row this strip is allowed. The empty left half is what lets
+             the gauges keep their place as the pane is resized.
+
+             Each gauge names the header width it needs and drops out below it,
+             so a narrowly docked window keeps the pickers rather than four
+             squeezed bars. -->
+        <Border DockPanel.Dock="Top"
+                x:Name="HeaderBar"
+                Background="{DynamicResource {x:Static vs:VsBrushes.CommandBarGradientBeginKey}}"
+                BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBorderKey}}"
+                BorderThickness="0,0,0,1"
+                Padding="8,3">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" MinWidth="0"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center">
+
+                    <!-- Weekly first in the markup but widest-gated, so the
+                         gauges disappear right-to-left as the window narrows.
+                         The thresholds are far lower than the captioned layout
+                         needed: the reading now sits inside the bar, so each
+                         gauge costs roughly its own text. -->
+                    <StackPanel Orientation="Horizontal"
+                                Visibility="{Binding HasWindowMeters, Converter={StaticResource BoolToVis}}">
+                        <local:UsageMeter ValueText="{Binding LongWindowDisplay}"
+                                          Fraction="{Binding Usage.LongWindowFraction}"
+                                          Level="{Binding Usage.LongWindowLevel}"
+                                          ToolTip="{Binding LongWindowTooltip}"
+                                          Visibility="{Binding ActualWidth, ElementName=HeaderBar,
+                                                       Converter={StaticResource MinWidth},
+                                                       ConverterParameter=470}"/>
+                        <local:UsageMeter ValueText="{Binding ShortWindowDisplay}"
+                                          Fraction="{Binding Usage.ShortWindowFraction}"
+                                          Level="{Binding Usage.ShortWindowLevel}"
+                                          ToolTip="{Binding ShortWindowTooltip}"
+                                          Visibility="{Binding ActualWidth, ElementName=HeaderBar,
+                                                       Converter={StaticResource MinWidth},
+                                                       ConverterParameter=340}"/>
+                    </StackPanel>
+
+                    <local:UsageMeter Caption="Session"
+                                      ValueText="{Binding SessionTokensDisplay}"
+                                      ShowBar="False"
+                                      ToolTip="{Binding SessionTokensTooltip}"
+                                      Visibility="{Binding ActualWidth, ElementName=HeaderBar,
+                                                   Converter={StaticResource MinWidth},
+                                                   ConverterParameter=600}"/>
+
+                    <local:UsageMeter ValueText="{Binding ContextDisplay}"
+                                      Fraction="{Binding Usage.ContextFraction}"
+                                      Level="{Binding Usage.ContextLevel}"
+                                      ToolTip="{Binding ContextTooltip}"
+                                      Visibility="{Binding ActualWidth, ElementName=HeaderBar,
+                                                   Converter={StaticResource MinWidth},
+                                                   ConverterParameter=210}"/>
+
+                    <!-- Changing either picker restarts the CLI process on the
+                         next message; the conversation is resumed, not lost. -->
+                    <ComboBox Style="{StaticResource HeaderComboStyle}"
+                              ItemContainerStyle="{StaticResource HeaderComboItemStyle}"
+                              ItemsSource="{Binding ModelOptions}"
+                              SelectedItem="{Binding SelectedModel}"
+                              DisplayMemberPath="DisplayName"
+                              ToolTip="{Binding ModelDisplay, StringFormat='Model: {0}&#x0a;Takes effect on the next message.'}"/>
+
+                    <ComboBox Style="{StaticResource HeaderComboStyle}"
+                              ItemContainerStyle="{StaticResource HeaderComboItemStyle}"
+                              ItemsSource="{Binding EffortOptions}"
+                              SelectedItem="{Binding SelectedEffort}"
+                              ToolTip="Reasoning effort.&#x0a;Takes effect on the next message."/>
+                </StackPanel>
+            </Grid>
+        </Border>
 
         <!-- Input Area -->
         <Border DockPanel.Dock="Bottom"

@@ -178,6 +178,11 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             {
                 options.ClaudeCliPath = optionsPage.ClaudeCliPath;
                 options.CliPermissionMode = optionsPage.CliPermissionMode;
+                options.Model = optionsPage.Model;
+                options.Effort = optionsPage.Effort;
+                options.UsagePlan = optionsPage.UsagePlan;
+                options.FiveHourTokenBudget = optionsPage.FiveHourTokenBudget;
+                options.WeeklyTokenBudget = optionsPage.WeeklyTokenBudget;
             }
         });
 
@@ -189,6 +194,27 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         var vmLogger = provider.GetService<Microsoft.Extensions.Logging.ILogger<ChatSessionViewModel>>();
 
         var vm = new ChatSessionViewModel(chatService, outputListener, optionsAccessor, permissionBroker, questionBroker, vmLogger);
+
+        // The header pickers only change this session; persisting the choice so
+        // the next one starts the same way is the host's side of the deal.
+        if (optionsPage is not null)
+        {
+            vm.ModelEffortChanged += (alias, effort) =>
+            {
+                try
+                {
+                    optionsPage.Model = alias;
+                    optionsPage.Effort = effort;
+                    optionsPage.SaveSettingsToStorage();
+                }
+                catch (Exception ex)
+                {
+                    // Worst case the choice is forgotten at the next restart.
+                    Log.Warning(ex, "Could not persist the model/effort choice");
+                }
+            };
+        }
+
         vm.SetServiceScope(provider);
         return vm;
     }

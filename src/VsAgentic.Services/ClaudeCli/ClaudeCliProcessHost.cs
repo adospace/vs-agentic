@@ -188,6 +188,23 @@ public sealed class ClaudeCliProcessHost : IDisposable
         sb.Append(" --permission-mode ");
         sb.Append(permFlag);
 
+        // Model and effort are start-up flags, which is why changing either one
+        // in the header restarts this process.
+        //
+        // They are treated differently on purpose. An empty model leaves the
+        // flag off, because the CLI reports the model it settled on in its init
+        // event — the header can show the truth without us having to dictate it.
+        // Effort is never reported back, so it is always sent: that is the only
+        // way the dropdown can name a level that is genuinely in force.
+        if (!string.IsNullOrWhiteSpace(_options.Model))
+        {
+            sb.Append(" --model ");
+            sb.Append(EscapeArgument(_options.Model.Trim()));
+        }
+
+        sb.Append(" --effort ");
+        sb.Append(_options.Effort.ToCliValue());
+
         // Wire the MCP permission tool so the CLI asks us before running gated tools.
         // --strict-mcp-config prevents user-level MCP config from polluting the session.
         sb.Append(" --permission-prompt-tool mcp__vsagentic__approval_prompt");

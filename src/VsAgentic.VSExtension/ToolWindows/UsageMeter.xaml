@@ -1,0 +1,112 @@
+<UserControl x:Class="VsAgentic.VSExtension.ToolWindows.UsageMeter"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vs="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
+             xmlns:platformui="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0"
+             x:Name="Root">
+
+    <UserControl.Resources>
+        <!-- Flat, filled pill. The default ProgressBar chrome carries a border,
+             a gradient and an animation that all read as "work in progress";
+             this is a level gauge, so it gets none of them. PART_Track and
+             PART_Indicator keep the stock sizing logic working.
+
+             The fill is deliberately translucent: the reading sits on top of
+             the bar, and it has to stay legible across the boundary between the
+             filled and unfilled halves. -->
+        <Style x:Key="MeterBarStyle" TargetType="ProgressBar">
+            <Setter Property="Minimum" Value="0"/>
+            <Setter Property="Maximum" Value="1"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Background"
+                    Value="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"/>
+            <!-- Normal: the hyperlink colour the chat already uses as its accent,
+                 so the header agrees with the transcript below it. -->
+            <Setter Property="Foreground"
+                    Value="{DynamicResource {x:Static vs:VsBrushes.PanelHyperlinkKey}}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Border CornerRadius="3"
+                                Background="{TemplateBinding Background}"
+                                SnapsToDevicePixels="True"
+                                ClipToBounds="True">
+                            <Grid>
+                                <Rectangle x:Name="PART_Track"/>
+                                <Rectangle x:Name="PART_Indicator"
+                                           HorizontalAlignment="Left"
+                                           RadiusX="3" RadiusY="3"
+                                           Opacity="0.45"
+                                           Fill="{TemplateBinding Foreground}"/>
+                            </Grid>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <!-- UsageWarningBrush is themed in code-behind: VS ships no
+                     semantic "warning" brush, so it is derived from the current
+                     theme's background instead of hard-coded. -->
+                <DataTrigger Binding="{Binding Level, ElementName=Root}" Value="Warning">
+                    <Setter Property="Foreground" Value="{DynamicResource UsageWarningBrush}"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Level, ElementName=Root}" Value="Critical">
+                    <Setter Property="Foreground"
+                            Value="{DynamicResource {x:Static platformui:EnvironmentColors.ToolWindowValidationErrorTextBrushKey}}"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid VerticalAlignment="Center" Margin="0,0,8,0">
+        <!-- Gauge form: the reading lives inside the bar, so no caption above
+             and no wasted vertical space. -->
+        <Grid x:Name="BarForm" MinWidth="66">
+            <Grid.Style>
+                <Style TargetType="Grid">
+                    <Setter Property="Visibility" Value="Visible"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding ShowBar, ElementName=Root}" Value="False">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Grid.Style>
+            <ProgressBar Style="{StaticResource MeterBarStyle}"
+                         Height="17"
+                         Value="{Binding Fraction, ElementName=Root}"/>
+            <TextBlock Text="{Binding ValueText, ElementName=Root}"
+                       Margin="8,0"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       FontSize="10"
+                       Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+        </Grid>
+
+        <!-- Plain form, for readings with no ceiling: a bar pinned at zero
+             forever reads as broken, not as unbounded. -->
+        <StackPanel x:Name="TextForm"
+                    Orientation="Horizontal"
+                    VerticalAlignment="Center">
+            <StackPanel.Style>
+                <Style TargetType="StackPanel">
+                    <Setter Property="Visibility" Value="Collapsed"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding ShowBar, ElementName=Root}" Value="False">
+                            <Setter Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </StackPanel.Style>
+            <TextBlock Text="{Binding Caption, ElementName=Root}"
+                       VerticalAlignment="Center"
+                       FontSize="10"
+                       Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+            <TextBlock Text="{Binding ValueText, ElementName=Root}"
+                       Margin="5,0,0,0"
+                       VerticalAlignment="Center"
+                       FontSize="10"
+                       Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+        </StackPanel>
+    </Grid>
+</UserControl>

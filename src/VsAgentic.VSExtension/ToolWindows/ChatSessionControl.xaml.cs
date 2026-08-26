@@ -1,8 +1,10 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.VisualStudio.PlatformUI;
 using Microsoft.VisualStudio.Shell;
 using VsAgentic.UI.Controls;
@@ -63,6 +65,32 @@ public partial class ChatSessionControl : UserControl
 
         // Re-apply when VS theme changes
         VSColorTheme.ThemeChanged += OnThemeChanged;
+
+        // Ctrl+wheel and Ctrl+/- over the chat itself are seen by the browser,
+        // not by WPF; the page relays them.
+        ChatWebView.ZoomChangeRequested += OnZoomChangeRequested;
+
+        // Zoom is one setting across every chat window, so follow it rather
+        // than own it. Applied without the toast here: this is the window
+        // adopting the level it was born into, not the user changing it.
+        ChatZoom.Changed += OnZoomChanged;
+        ApplyZoom(ChatZoom.Level);
+    }
+
+    /// <summary>
+    /// Drops the static-event subscriptions this control took out in
+    /// <see cref="Initialize"/>. Called when the tool window closes — not on
+    /// Unloaded, which VS also raises when the window is merely tabbed away.
+    /// </summary>
+    public void Shutdown()
+    {
+        VSColorTheme.ThemeChanged -= OnThemeChanged;
+        ChatZoom.Changed -= OnZoomChanged;
+        ChatWebView.ZoomChangeRequested -= OnZoomChangeRequested;
+
+        // A popup is its own window and would outlive the pane it belongs to.
+        _zoomToastTimer?.Stop();
+        ZoomToast.IsOpen = false;
     }
 
     private void OnThemeChanged(ThemeChangedEventArgs e)
@@ -104,6 +132,120 @@ public partial class ChatSessionControl : UserControl
         _ = ChatWebView.SetThemeColorsAsync(colors);
     }
 
+    // ------------------------------------------------------------------
+    // Zoom
+    // ------------------------------------------------------------------
+
+    private static readonly TimeSpan ZoomToastHold = TimeSpan.FromMilliseconds(900);
+
+    private DispatcherTimer? _zoomToastTimer;
+
+    private void OnPreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if ((Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control || e.Delta == 0)
+            return;
+
+        ChatZoom.Step(e.Delta > 0 ? 1 : -1);
+        e.Handled = true;
+    }
+
+    private void OnPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if ((Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control) return;
+
+        // Numpad and main-row alike, as a browser does. Marking the key handled
+        // matters beyond WPF: Ctrl+Minus is Navigate Backward in Visual Studio,
+        // and anything left unhandled here goes on to the shell's commands.
+        int? step = e.Key switch
+        {
+            Key.Add or Key.OemPlus => 1,
+            Key.Subtract or Key.OemMinus => -1,
+            Key.NumPad0 or Key.D0 => 0,
+            _ => null,
+        };
+
+        if (step is null) return;
+
+        ChatZoom.Step(step.Value);
+        e.Handled = true;
+    }
+
+    private void OnZoomChangeRequested(int step) => ChatZoom.Step(step);
+
+    private void OnZoomChanged(double level)
+    {
+        ApplyZoom(level);
+
+        // Every open chat window follows the level, but only the one being
+        // looked at flashes the reading. A popup belongs to no pane in
+        // particular once it is open, so a background tab would put its pill
+        // on top of whatever the user is actually working in.
+        if (IsVisible) ShowZoomToast(level);
+    }
+
+    /// <summary>
+    /// The factor the chrome is currently scaled by. Read off the transform
+    /// rather than <see cref="ChatZoom.Level"/> so anything measuring against
+    /// it stays right even mid-change.
+    /// </summary>
+    private double ZoomScale =>
+        Resources["ChromeZoom"] is ScaleTransform chrome && chrome.ScaleY > 0
+            ? chrome.ScaleY
+            : 1.0;
+
+    private void ApplyZoom(double level)
+    {
+        ChatWebView.ZoomFactor = level;
+
+        if (Resources["ChromeZoom"] is ScaleTransform chrome)
+        {
+            chrome.ScaleX = level;
+            chrome.ScaleY = level;
+        }
+    }
+
+    private void ShowZoomToast(double level)
+    {
+        ZoomToastText.Text = ZoomLevels.Format(level);
+        ZoomToast.CustomPopupPlacementCallback ??= PlaceZoomToast;
+
+        // Reopening an already-open popup does not re-run placement, and the
+        // reading changes width between "90%" and "100%"; closing first keeps
+        // it pinned to the corner instead of drifting left as it grows.
+        ZoomToast.IsOpen = false;
+        ZoomToast.IsOpen = true;
+
+        _zoomToastTimer ??= CreateZoomToastTimer();
+        _zoomToastTimer.Stop();
+        _zoomToastTimer.Start();
+    }
+
+    /// <summary>
+    /// Pins the reading to the chat's top-right corner. A callback rather than
+    /// a fixed offset because only here are both sizes known, and the popup's
+    /// width moves with the number in it.
+    /// </summary>
+    private static CustomPopupPlacement[] PlaceZoomToast(Size popupSize, Size targetSize, Point offset) =>
+        new[]
+        {
+            new CustomPopupPlacement(
+                new Point(targetSize.Width - popupSize.Width - 12, 8),
+                PopupPrimaryAxis.None)
+        };
+
+    private DispatcherTimer CreateZoomToastTimer()
+    {
+        var timer = new DispatcherTimer(DispatcherPriority.Normal, Dispatcher) { Interval = ZoomToastHold };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            // PopupAnimation="Fade" carries the close, so there is no animation
+            // to run or unwind here.
+            ZoomToast.IsOpen = false;
+        };
+        return timer;
+    }
+
     private void InputTextBox_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Enter &&
@@ -140,10 +282,14 @@ public partial class ChatSessionControl : UserControl
 
         var currentScreenY = PointToScreen(e.GetPosition(this)).Y;
         // Dragging upward decreases Y, which should grow the input box.
-        var delta = _resizeStartScreenY - currentScreenY;
+        // The drag is measured outside the zoom transform and the height is set
+        // inside it, so divide: at 200% the box would otherwise grow twice as
+        // fast as the pointer, and the same factor applies to the cap.
+        var zoom = ZoomScale;
+        var delta = (_resizeStartScreenY - currentScreenY) / zoom;
         var requested = _resizeStartHeight + delta;
 
-        var maxHeight = Math.Max(InputMinHeight, RootPanel.ActualHeight / 2);
+        var maxHeight = Math.Max(InputMinHeight, RootPanel.ActualHeight / (2 * zoom));
         var newHeight = Math.Max(InputMinHeight, Math.Min(requested, maxHeight));
 
         // Pin the textbox to the dragged height so it neither grows with

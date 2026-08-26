@@ -19,8 +19,32 @@ public partial class ChatWebView : UserControl
     /// </summary>
     public static event Action<string>? FileOpenRequested;
 
+    /// <summary>
+    /// Raised when the page asks for a zoom change: +1 in, -1 out, 0 back to
+    /// 100%. Ctrl+wheel and Ctrl+/- land inside the browser whenever the
+    /// pointer or focus is over the chat and never reach WPF, so the page
+    /// forwards the intent here instead of zooming itself — the host owns the
+    /// single level that the chat and the chrome around it share.
+    /// </summary>
+    public event Action<int>? ZoomChangeRequested;
+
     private bool _isWebViewReady;
+    private double _zoomFactor = ZoomLevels.Default;
     private readonly ConcurrentQueue<Func<Task>> _pendingOps = new();
+
+    /// <summary>
+    /// Scale applied to the rendered chat. Safe to set before the WebView has
+    /// finished initializing; the value is re-applied once it has.
+    /// </summary>
+    public double ZoomFactor
+    {
+        get => _zoomFactor;
+        set
+        {
+            _zoomFactor = value;
+            ApplyZoomFactor();
+        }
+    }
 
     public ChatWebView()
     {
@@ -78,9 +102,27 @@ public partial class ChatWebView : UserControl
         return reader.ReadToEnd();
     }
 
+    /// <summary>
+    /// Pushes the current level at the control. Before CoreWebView2 exists this
+    /// is a no-op rather than an error, which is why the level is kept in a
+    /// field and re-applied when navigation completes.
+    /// </summary>
+    private void ApplyZoomFactor()
+    {
+        try
+        {
+            WebView.ZoomFactor = _zoomFactor;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"ChatWebView zoom failed: {ex.Message}");
+        }
+    }
+
     private async void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
     {
         _isWebViewReady = true;
+        ApplyZoomFactor();
 
         // Replay queued operations
         while (_pendingOps.TryDequeue(out var op))
@@ -109,6 +151,10 @@ public partial class ChatWebView : UserControl
                 var path = root.GetProperty("path").GetString();
                 if (!string.IsNullOrEmpty(path))
                     FileOpenRequested?.Invoke(path!);
+            }
+            else if (type == "zoom")
+            {
+                ZoomChangeRequested?.Invoke(root.GetProperty("step").GetInt32());
             }
         }
         catch

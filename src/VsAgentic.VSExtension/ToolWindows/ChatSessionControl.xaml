@@ -6,10 +6,21 @@
              xmlns:catalog="clr-namespace:Microsoft.VisualStudio.Imaging;assembly=Microsoft.VisualStudio.ImageCatalog"
              xmlns:controls="clr-namespace:VsAgentic.UI.Controls;assembly=VsAgentic.UI"
              xmlns:bvm="clr-namespace:VsAgentic.UI.ViewModels.Banners;assembly=VsAgentic.UI"
-             xmlns:bv="clr-namespace:VsAgentic.VSExtension.ToolWindows.Banners" >
+             xmlns:bv="clr-namespace:VsAgentic.VSExtension.ToolWindows.Banners"
+             PreviewMouseWheel="OnPreviewMouseWheel"
+             PreviewKeyDown="OnPreviewKeyDown" >
 
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+
+        <!-- Zoom for everything that is not the WebView. One instance, shared
+             by LayoutTransform on each docked child, so the code-behind moves
+             the whole chrome by setting a single pair of numbers. LayoutTransform
+             rather than RenderTransform: the scaled chrome has to claim its new
+             size from the DockPanel, otherwise it grows over the chat instead
+             of pushing it. The chat itself is scaled through the browser's own
+             zoom, which stays crisp where a bitmap scale would not. -->
+        <ScaleTransform x:Key="ChromeZoom" ScaleX="1" ScaleY="1"/>
 
         <!-- Banner DataTemplates: ContentControl below picks the right view by VM type. -->
         <DataTemplate DataType="{x:Type bvm:PermissionBannerViewModel}">
@@ -113,6 +124,7 @@
 
         <!-- Input Area -->
         <Border DockPanel.Dock="Bottom"
+                LayoutTransform="{StaticResource ChromeZoom}"
                 Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}"
                 Padding="6,2,6,6">
             <Grid>
@@ -288,6 +300,7 @@
 
         <!-- Busy indicator -->
         <Border DockPanel.Dock="Bottom"
+                LayoutTransform="{StaticResource ChromeZoom}"
                 Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}"
                 Padding="16,4"
                 Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
@@ -301,6 +314,7 @@
              when ActiveBanner is null so it consumes no space when idle. -->
         <ContentControl DockPanel.Dock="Bottom"
                         x:Name="BannerHost"
+                        LayoutTransform="{StaticResource ChromeZoom}"
                         Content="{Binding ActiveBanner}"
                         Focusable="False">
             <ContentControl.Style>
@@ -316,6 +330,41 @@
         </ContentControl>
 
         <!-- Chat Messages Area - single WebView -->
-        <controls:ChatWebView x:Name="ChatWebView" />
+        <Grid>
+            <controls:ChatWebView x:Name="ChatWebView" />
+
+            <!-- Zoom reading, shown in the corner of the chat for a moment
+                 after each step and then faded out, the way a browser does it.
+
+                 A Popup rather than a plain Border in this Grid, because the
+                 WebView2 control is an HwndHost: WPF cannot draw over a child
+                 HWND, so a Border laid on top would simply not appear where it
+                 overlapped the chat. A Popup gets its own top-level window and
+                 sits above it.
+
+                 Deliberately outside the scaled chrome and at a fixed size — it
+                 reports the zoom, so it must not be subject to it. -->
+            <Popup x:Name="ZoomToast"
+                   PlacementTarget="{Binding ElementName=ChatWebView}"
+                   Placement="Custom"
+                   StaysOpen="True"
+                   AllowsTransparency="True"
+                   PopupAnimation="Fade"
+                   Focusable="False"
+                   IsHitTestVisible="False">
+                <Border Padding="10,4"
+                        CornerRadius="3"
+                        IsHitTestVisible="False"
+                        Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
+                        BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                        BorderThickness="1"
+                        SnapsToDevicePixels="True">
+                    <TextBlock x:Name="ZoomToastText"
+                               FontSize="12"
+                               FontWeight="SemiBold"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                </Border>
+            </Popup>
+        </Grid>
     </DockPanel>
 </UserControl>

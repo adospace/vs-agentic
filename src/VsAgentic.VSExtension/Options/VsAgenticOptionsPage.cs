@@ -25,6 +25,12 @@ public class VsAgenticOptionsPage : DialogPage
     [DefaultValue(CliPermissionMode.Default)]
     public CliPermissionMode CliPermissionMode { get; set; } = CliPermissionMode.Default;
 
+    [Category("Appearance")]
+    [DisplayName("Zoom (%)")]
+    [Description("Size of the chat text and the controls around it, as a percentage. Normally set with Ctrl+mouse wheel or Ctrl+Plus/Minus in the chat window (Ctrl+0 restores 100%); this is where that choice is remembered between restarts. Values are snapped to the nearest zoom step, between 50 and 300.")]
+    [DefaultValue(100)]
+    public int ZoomPercent { get; set; } = 100;
+
     [Category("Sessions")]
     [DisplayName("Keep days of activity")]
     [Description("When the extension starts, sessions whose last activity is older than this many days are deleted. Default: 30. Set to 0 to disable cleanup.")]

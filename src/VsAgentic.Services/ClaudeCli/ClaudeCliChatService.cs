@@ -63,10 +63,24 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         _outputListener = outputListener;
         _host = host;
         _logger = logger;
+    }
 
-        // Strip any inherited API key from the host process so child CLI uses
-        // subscription auth.
-        Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", null);
+    /// <summary>
+    /// Keeps an inherited <c>ANTHROPIC_API_KEY</c> out of a CLI we are about to
+    /// start, so it authenticates against the subscription rather than billing
+    /// the key at API rates.
+    ///
+    /// Applied per child process. Clearing it on the host instead would reach
+    /// far further than intended: the variable would vanish from Visual Studio
+    /// itself and from everything else it launches for the rest of the session,
+    /// which is not this extension's to decide.
+    /// </summary>
+    internal static void UseSubscriptionAuth(ProcessStartInfo psi)
+    {
+        // Emptied rather than removed: the CLI reads an empty value as "no key"
+        // (its init event reports apiKeySource "none"), and leaving the name in
+        // place makes the override visible to anyone inspecting the child.
+        psi.EnvironmentVariables["ANTHROPIC_API_KEY"] = "";
     }
 
     public async IAsyncEnumerable<string> SendMessageAsync(
@@ -664,6 +678,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 CreateNoWindow = true,
                 StandardOutputEncoding = Encoding.UTF8,
             };
+            UseSubscriptionAuth(psi);
 
             using var process = new Process { StartInfo = psi };
             process.Start();
@@ -782,8 +797,15 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 FileName = "cmd.exe",
                 Arguments = $"/K {quotedPath} /login",
                 WorkingDirectory = _options.WorkingDirectory,
-                UseShellExecute = true,
+
+                // Started directly rather than through the shell so the key can
+                // be cleared for this console: ProcessStartInfo refuses to carry
+                // an environment when UseShellExecute is on. cmd.exe is a console
+                // program and this process is not, so Windows still gives it a
+                // window of its own — which is the point of the login flow.
+                UseShellExecute = false,
             };
+            UseSubscriptionAuth(psi);
             Process.Start(psi);
         }
         catch (Exception ex)

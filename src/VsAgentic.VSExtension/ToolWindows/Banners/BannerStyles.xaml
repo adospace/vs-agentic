@@ -162,15 +162,24 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="CheckBox">
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Background="Transparent">
+                    <!-- Grid, not a horizontal StackPanel: a StackPanel measures
+                         its children with infinite width, so wrapping content
+                         next to the box never wraps — it just runs off the edge
+                         once the tool window gets narrow. -->
+                    <Grid Background="Transparent">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
                         <Border x:Name="box"
+                                Grid.Column="0"
                                 Width="16" Height="16"
                                 CornerRadius="4"
                                 BorderThickness="1"
                                 BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
                                 Background="Transparent"
-                                Margin="0,1,8,1"
-                                VerticalAlignment="Center"
+                                Margin="0,2,8,1"
+                                VerticalAlignment="Top"
                                 SnapsToDevicePixels="True">
                             <TextBlock x:Name="glyph"
                                        Text="✓"
@@ -183,10 +192,11 @@
                                        VerticalAlignment="Center"
                                        Visibility="Collapsed"/>
                         </Border>
-                        <ContentPresenter VerticalAlignment="Center"
-                                          HorizontalAlignment="Left"
+                        <ContentPresenter Grid.Column="1"
+                                          VerticalAlignment="Top"
+                                          HorizontalAlignment="Stretch"
                                           RecognizesAccessKey="True"/>
-                    </StackPanel>
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="box" Property="BorderBrush"
@@ -217,15 +227,23 @@
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="RadioButton">
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Background="Transparent">
+                    <!-- Grid, not a horizontal StackPanel — see the CheckBox
+                         template above: an infinite measure width defeats
+                         TextWrapping on the option label / description. -->
+                    <Grid Background="Transparent">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
                         <Border x:Name="box"
+                                Grid.Column="0"
                                 Width="16" Height="16"
                                 CornerRadius="8"
                                 BorderThickness="1"
                                 BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
                                 Background="Transparent"
-                                Margin="0,1,8,1"
-                                VerticalAlignment="Center"
+                                Margin="0,2,8,1"
+                                VerticalAlignment="Top"
                                 SnapsToDevicePixels="True">
                             <Border x:Name="dot"
                                     Width="6" Height="6"
@@ -235,10 +253,11 @@
                                     VerticalAlignment="Center"
                                     Visibility="Collapsed"/>
                         </Border>
-                        <ContentPresenter VerticalAlignment="Center"
-                                          HorizontalAlignment="Left"
+                        <ContentPresenter Grid.Column="1"
+                                          VerticalAlignment="Top"
+                                          HorizontalAlignment="Stretch"
                                           RecognizesAccessKey="True"/>
-                    </StackPanel>
+                    </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
                             <Setter TargetName="box" Property="BorderBrush"

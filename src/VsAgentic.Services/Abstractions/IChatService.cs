@@ -1,3 +1,5 @@
+using VsAgentic.Services.Configuration;
+
 namespace VsAgentic.Services.Abstractions;
 
 public interface IChatService
@@ -21,6 +23,29 @@ public interface IChatService
     /// Returns null when no messages have been sent yet.
     /// </summary>
     decimal? GetSessionCost();
+
+    /// <summary>
+    /// Token usage for this session, plus the rolling machine-wide windows, as
+    /// of now. Never null — a session that has sent nothing reports zeroes.
+    /// </summary>
+    SessionUsage GetUsage();
+
+    /// <summary>
+    /// Raised after each API call the CLI reports usage for, carrying the same
+    /// snapshot <see cref="GetUsage"/> would return. Fires on a background
+    /// thread; hosts must marshal to their UI thread.
+    /// </summary>
+    event Action<SessionUsage>? UsageChanged;
+
+    /// <summary>
+    /// Switches the model and/or reasoning effort for this session.
+    ///
+    /// Both are start-up flags on the CLI, so the running process is torn down
+    /// here and the next <see cref="SendMessageAsync"/> starts a fresh one that
+    /// resumes the same conversation. Nothing is lost, but the next message
+    /// pays the process-start cost. A no-op when neither value changed.
+    /// </summary>
+    void ApplyModelAndEffort(string modelAlias, ClaudeEffort effort);
 
     /// <summary>
     /// Raised when the underlying CLI returned an authentication / login-required

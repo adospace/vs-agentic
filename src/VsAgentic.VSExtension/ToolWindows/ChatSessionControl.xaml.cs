@@ -91,9 +91,18 @@ public partial class ChatSessionControl : UserControl
         // highlight, which on Win11 is often violet/purple and clashes with
         // the dark/light VS theme.
         Map("--accent", EnvironmentColors.PanelHyperlinkColorKey);
-        Map("--user-bg", EnvironmentColors.CommandBarGradientBeginColorKey);
         Map("--code-bg", EnvironmentColors.ToolWindowContentGridColorKey);
         Map("--pre-bg", EnvironmentColors.ToolWindowBackgroundColorKey);
+        Map("--thinking-bg", EnvironmentColors.CommandBarGradientBeginColorKey);
+
+        var toolWindowBackground = VSColorTheme.GetThemedColor(EnvironmentColors.ToolWindowBackgroundColorKey);
+        var promptAccent = VSColorTheme.GetThemedColor(EnvironmentColors.PanelHyperlinkColorKey);
+        var promptBorderBase = VSColorTheme.GetThemedColor(EnvironmentColors.ToolWindowBorderColorKey);
+        var promptBgBlend = RelativeLuminance(toolWindowBackground) >= 0.5 ? 0.08 : 0.12;
+
+        colors["--prompt-bg"] = ToCssHex(Blend(toolWindowBackground, promptAccent, promptBgBlend));
+        colors["--prompt-border"] = ToCssHex(Blend(promptBorderBase, promptAccent, 0.35));
+        colors["--prompt-accent"] = ToCssHex(promptAccent);
 
         // Scrollbar: derive from gray/muted text for subtle appearance
         var gray = VSColorTheme.GetThemedColor(EnvironmentColors.ScrollBarThumbBackgroundColorKey);
@@ -103,6 +112,39 @@ public partial class ChatSessionControl : UserControl
 
         _ = ChatWebView.SetThemeColorsAsync(colors);
     }
+
+    private static System.Drawing.Color Blend(System.Drawing.Color from, System.Drawing.Color to, double amount)
+    {
+        amount = Math.Max(0, Math.Min(1, amount));
+
+        byte BlendChannel(byte fromChannel, byte toChannel) =>
+            (byte)Math.Round(fromChannel + ((toChannel - fromChannel) * amount));
+
+        return System.Drawing.Color.FromArgb(
+            BlendChannel(from.R, to.R),
+            BlendChannel(from.G, to.G),
+            BlendChannel(from.B, to.B));
+    }
+
+    private static double RelativeLuminance(System.Drawing.Color color)
+    {
+        var r = ToLinear(color.R);
+        var g = ToLinear(color.G);
+        var b = ToLinear(color.B);
+
+        return (0.2126 * r) + (0.7152 * g) + (0.0722 * b);
+    }
+
+    private static double ToLinear(byte channel)
+    {
+        var c = channel / 255.0;
+        return c <= 0.04045
+            ? c / 12.92
+            : Math.Pow((c + 0.055) / 1.055, 2.4);
+    }
+
+    private static string ToCssHex(System.Drawing.Color color) =>
+        $"#{color.R:X2}{color.G:X2}{color.B:X2}";
 
     private void InputTextBox_KeyDown(object sender, KeyEventArgs e)
     {

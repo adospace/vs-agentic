@@ -15,7 +15,10 @@
     --success: #4ec9b0;
     --error: #f44747;
     --info: #808080;
-    --user-bg: #252526;
+    --prompt-bg: #202830;
+    --prompt-border: #3d4b59;
+    --prompt-accent: #569cd6;
+    --thinking-bg: #252526;
     --code-bg: #3c3c3c;
     --pre-bg: #1e1e1e;
 }
@@ -124,16 +127,20 @@ html, body {
 .msg { margin: 2px 12px; }
 
 .msg-user {
-    background: var(--user-bg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 8px;
+    background: var(--prompt-bg);
+    border: 1px solid var(--prompt-border);
+    border-left: 4px solid var(--prompt-accent);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-top: 14px;
+    margin-bottom: 12px;
 }
 .msg-user .msg-label {
-    font-weight: 600;
-    font-size: 11px;
-    margin-bottom: 2px;
-    color: var(--accent);
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.6px;
+    margin-bottom: 6px;
+    color: var(--prompt-accent);
 }
 
 .msg-assistant {
@@ -243,7 +250,7 @@ html, body {
 }
 .thinking-content {
     display: none;
-    background: var(--user-bg);
+    background: var(--thinking-bg);
     border-radius: 4px;
     padding: 10px 8px;
     margin: 4px 0 4px 18px;
@@ -265,7 +272,7 @@ html, body {
     left: 0;
     right: 0;
     height: 30px;
-    background: linear-gradient(transparent, var(--user-bg));
+    background: linear-gradient(transparent, var(--thinking-bg));
 }
 
 /* Streaming indicator */
@@ -470,7 +477,7 @@ function addMessage(id, type, dataJson) {
         div.classList.add('msg-user');
         var label = document.createElement('div');
         label.className = 'msg-label';
-        label.textContent = 'You';
+        label.textContent = 'YOU';
         var content = document.createElement('div');
         content.className = 'md-content msg-content';
         content.innerHTML = renderUserMd(data.Content || '');

@@ -91,6 +91,10 @@ html, body {
 .msg:hover .msg-copy-btn {
     opacity: 1;
 }
+.msg.code-hover .msg-copy-btn {
+    opacity: 0;
+    pointer-events: none;
+}
 .msg-copy-btn:hover {
     color: var(--text-primary);
     background: var(--bg-input);
@@ -319,6 +323,44 @@ html, body {
     font-size: 12px;
     color: var(--text-primary);
 }
+/* Copy button on code blocks. The <pre> is wrapped in .code-block so the
+   button stays pinned when the code scrolls horizontally inside the <pre>. */
+.code-block {
+    position: relative;
+}
+.code-block > pre {
+    /* Room for the button so it never sits on top of the first code line. */
+    padding-right: 36px;
+}
+.code-copy-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 22px;
+    height: 22px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.45;
+    transition: opacity 0.15s;
+    z-index: 5;
+    padding: 0;
+    line-height: 1;
+}
+.code-block:hover .code-copy-btn { opacity: 1; }
+.code-copy-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-input);
+}
+.code-copy-btn.copied {
+    color: var(--success);
+    opacity: 1;
+}
 .md-content blockquote {
     border-left: 3px solid var(--accent);
     margin: 0.5em 0;
@@ -482,6 +524,7 @@ function addMessage(id, type, dataJson) {
         content.className = 'md-content msg-content';
         content.innerHTML = renderUserMd(data.Content || '');
         linkifyFilePaths(content);
+        addCodeCopyButtons(content);
         div.appendChild(label);
         div.appendChild(content);
     }
@@ -497,6 +540,7 @@ function addMessage(id, type, dataJson) {
         if (data.IsStreaming) content.classList.add('streaming-cursor');
         content.innerHTML = renderMd(data.Content || '');
         linkifyFilePaths(content);
+        addCodeCopyButtons(content);
         inner.appendChild(bullet);
         inner.appendChild(content);
         div.appendChild(inner);
@@ -634,6 +678,7 @@ function updateContent(id, contentMarkdown) {
             if (mc) {
                 mc.innerHTML = type === 'User' ? renderUserMd(contentMarkdown) : renderMd(contentMarkdown);
                 linkifyFilePaths(mc);
+                addCodeCopyButtons(mc);
             }
         } else if (type === 'ToolStep' || type === 'Thinking') {
             var sc = el.querySelector('.msg-streaming-content');
@@ -670,6 +715,7 @@ function setBody(id, bodyContent, bodyMode) {
         body.innerHTML = renderMd(bodyContent);
     }
     linkifyFilePaths(body);
+    addCodeCopyButtons(body);
     body.style.display = '';
 
     // Apply cap and show-more link
@@ -796,6 +842,58 @@ function copyToClipboard(text) {
     document.body.removeChild(ta);
 }
 
+function flashCopied(btn) {
+    btn.innerHTML = ICON_CHECK;
+    btn.classList.add('copied');
+    setTimeout(function() {
+        btn.innerHTML = ICON_COPY;
+        btn.classList.remove('copied');
+    }, 1500);
+}
+
+// Give every fenced code block its own copy button, so a prompt or snippet
+// can be taken without selecting it by hand.
+function addCodeCopyButtons(container) {
+    var pres = container.querySelectorAll('pre');
+    for (var i = 0; i < pres.length; i++) {
+        var pre = pres[i];
+        if (pre.parentNode && pre.parentNode.classList.contains('code-block')) continue;
+
+        var wrap = document.createElement('div');
+        wrap.className = 'code-block';
+        pre.parentNode.insertBefore(wrap, pre);
+        wrap.appendChild(pre);
+
+        var btn = document.createElement('button');
+        btn.className = 'code-copy-btn';
+        btn.title = 'Copy code to clipboard';
+        btn.innerHTML = ICON_COPY;
+        // Bind per-iteration so the handler copies its own block.
+        btn.addEventListener('click', (function(target, button) {
+            return function(e) {
+                e.stopPropagation();
+                var code = target.querySelector('code');
+                var text = (code || target).innerText;
+                if (!text) return;
+                copyToClipboard(text.replace(/\n$/, ''));
+                flashCopied(button);
+            };
+        })(pre, btn));
+        wrap.appendChild(btn);
+
+        // A code block at the very top of a message would sit under the
+        // message-level copy button; yield to the code button while hovering.
+        wrap.addEventListener('mouseenter', function() {
+            var msg = this.closest('.msg');
+            if (msg) msg.classList.add('code-hover');
+        });
+        wrap.addEventListener('mouseleave', function() {
+            var msg = this.closest('.msg');
+            if (msg) msg.classList.remove('code-hover');
+        });
+    }
+}
+
 function addCopyButton(msgDiv) {
     var btn = document.createElement('button');
     btn.className = 'msg-copy-btn';
@@ -806,12 +904,7 @@ function addCopyButton(msgDiv) {
         var text = getMessageText(msgDiv);
         if (!text) return;
         copyToClipboard(text);
-        btn.innerHTML = ICON_CHECK;
-        btn.classList.add('copied');
-        setTimeout(function() {
-            btn.innerHTML = ICON_COPY;
-            btn.classList.remove('copied');
-        }, 1500);
+        flashCopied(btn);
     });
     msgDiv.appendChild(btn);
 }

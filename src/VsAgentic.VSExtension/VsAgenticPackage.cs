@@ -182,6 +182,13 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         });
 
         var provider = services.BuildServiceProvider();
+
+        // ChatWebView is instantiated by XAML, so it gets its logger handed to
+        // it rather than injected.
+        var loggerFactory = provider.GetService<Microsoft.Extensions.Logging.ILoggerFactory>();
+        if (loggerFactory is not null)
+            VsAgentic.UI.Controls.ChatWebView.Logger = loggerFactory.CreateLogger("VsAgentic.UI.Controls.ChatWebView");
+
         var chatService = provider.GetRequiredService<IChatService>();
         var optionsAccessor = provider.GetRequiredService<Microsoft.Extensions.Options.IOptions<VsAgentic.Services.Configuration.VsAgenticOptions>>();
         var permissionBroker = provider.GetRequiredService<VsAgentic.Services.ClaudeCli.Permissions.IPermissionBroker>();

@@ -86,8 +86,8 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             });
         };
 
-        // Listen for file-open requests from rendered markdown
-        ChatWebView.FileOpenRequested += OnFileOpenRequested;
+        // Listen for clicks and menu picks on file links in rendered markdown
+        ChatWebView.FileLinkRequested += OnFileLinkRequested;
 
         InitializeZoom();
 
@@ -550,7 +550,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     int IVsSolutionEvents.OnBeforeUnloadProject(IVsHierarchy pRealHierarchy, IVsHierarchy pStubHierarchy) => Microsoft.VisualStudio.VSConstants.S_OK;
     int IVsSolutionEvents.OnQueryCloseSolution(object pUnkReserved, ref int pfCancel) => Microsoft.VisualStudio.VSConstants.S_OK;
 
-    private void OnFileOpenRequested(string rawPath)
+    private void OnFileLinkRequested(string rawPath, FileLinkAction action)
     {
         _ = JoinableTaskFactory.RunAsync(async () =>
         {
@@ -561,6 +561,13 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             var lineMatch = Regex.Match(rawPath, @":(\d+)(?:-\d+)?$");
             var filePath = lineMatch.Success ? rawPath.Substring(0, lineMatch.Index) : rawPath;
 
+            // A markdown link can carry a file URI or percent-encoded characters
+            if (filePath.StartsWith("file:", StringComparison.OrdinalIgnoreCase)
+                && Uri.TryCreate(filePath, UriKind.Absolute, out var fileUri))
+                filePath = fileUri.LocalPath;
+            else
+                filePath = Uri.UnescapeDataString(filePath);
+
             // Convert MSYS/Git-Bash style paths ("/c/foo/bar") to Windows form ("c:\foo\bar")
             var msysMatch = Regex.Match(filePath, @"^/([A-Za-z])/");
             if (msysMatch.Success)
@@ -569,15 +576,12 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             // Normalize forward slashes
             filePath = filePath.Replace('/', '\\');
 
-            // Resolve relative paths against the solution directory
-            if (!Path.IsPathRooted(filePath) && _solutionDirectory is not null)
+            var resolved = ResolveLinkedPath(filePath);
+            if (resolved is null)
             {
-                filePath = Path.GetFullPath(Path.Combine(_solutionDirectory, filePath));
-            }
-
-            if (!File.Exists(filePath))
-            {
-                System.Diagnostics.Debug.WriteLine($"VsAgentic: File not found: {filePath}");
+                // Say so where the user can see it. A click that does nothing
+                // looks like a broken link rather than a missing file.
+                SetStatusBarText($"VsAgentic: File not found: {filePath}");
                 return;
             }
 
@@ -586,25 +590,109 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
             try
             {
-                VsShellUtilities.OpenDocument(this, filePath, Guid.Empty,
-                    out _, out _, out IVsWindowFrame? frame);
-                frame?.Show();
-
-                if (line > 0 && frame is not null)
+                switch (action)
                 {
-                    // Navigate to the specific line
-                    if (VsShellUtilities.GetTextView(frame) is var textView && textView is not null)
-                    {
-                        textView.SetCaretPos(line - 1, 0);
-                        textView.CenterLines(line - 1, 1);
-                    }
+                    case FileLinkAction.Open when Directory.Exists(resolved):
+                        System.Diagnostics.Process.Start("explorer.exe", $"\"{resolved}\"");
+                        break;
+
+                    case FileLinkAction.Open:
+                        OpenDocumentAtLine(resolved, line);
+                        break;
+
+                    case FileLinkAction.CopyPath:
+                        Clipboard.SetText(resolved);
+                        SetStatusBarText($"VsAgentic: Copied {resolved}");
+                        break;
+
+                    case FileLinkAction.ShowInExplorer:
+                        System.Diagnostics.Process.Start("explorer.exe", $"/select,\"{resolved}\"");
+                        break;
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"VsAgentic: Failed to open file: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"VsAgentic: File link action {action} failed for {resolved}: {ex.Message}");
+                SetStatusBarText($"VsAgentic: {action} failed for {resolved}");
             }
         });
+    }
+
+    /// <summary>
+    /// Finds the file or folder a link in the chat points at, or null if there
+    /// is none. The CLI runs in the solution directory, but the model often
+    /// writes a path relative to the repository root, which can sit above it
+    /// (a solution kept in src\, say). So a relative path is also tried against
+    /// each parent up to the repository root. Outside a repository only the
+    /// solution directory counts: further up, a match would be a coincidence.
+    /// </summary>
+    private string? ResolveLinkedPath(string path)
+    {
+        try
+        {
+            if (Path.IsPathRooted(path))
+                return PathExists(path) ? Path.GetFullPath(path) : null;
+
+            if (_solutionDirectory is null) return null;
+
+            var start = new DirectoryInfo(_solutionDirectory);
+            var stop = FindRepositoryRoot(start) ?? start;
+            for (var dir = start; dir is not null; dir = dir.Parent)
+            {
+                var candidate = Path.GetFullPath(Path.Combine(dir.FullName, path));
+                if (PathExists(candidate)) return candidate;
+                if (SameDirectory(dir, stop)) break;
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
+        {
+            // Not a valid path at all, e.g. a link the regex took for one
+        }
+        return null;
+    }
+
+    private static bool PathExists(string path) => File.Exists(path) || Directory.Exists(path);
+
+    private static DirectoryInfo? FindRepositoryRoot(DirectoryInfo start)
+    {
+        for (var dir = start; dir is not null; dir = dir.Parent)
+        {
+            // .git is a file, not a folder, in a worktree or a submodule
+            if (PathExists(Path.Combine(dir.FullName, ".git"))) return dir;
+        }
+        return null;
+    }
+
+    private static bool SameDirectory(DirectoryInfo a, DirectoryInfo b) =>
+        string.Equals(
+            a.FullName.TrimEnd(Path.DirectorySeparatorChar),
+            b.FullName.TrimEnd(Path.DirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase);
+
+    private void OpenDocumentAtLine(string filePath, int line)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        VsShellUtilities.OpenDocument(this, filePath, Guid.Empty,
+            out _, out _, out IVsWindowFrame? frame);
+        frame?.Show();
+
+        if (line > 0 && frame is not null)
+        {
+            // Navigate to the specific line
+            if (VsShellUtilities.GetTextView(frame) is var textView && textView is not null)
+            {
+                textView.SetCaretPos(line - 1, 0);
+                textView.CenterLines(line - 1, 1);
+            }
+        }
+    }
+
+    private void SetStatusBarText(string text)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        if (GetService(typeof(SVsStatusbar)) is IVsStatusbar statusBar)
+            statusBar.SetText(text);
     }
 
     protected override void Dispose(bool disposing)
@@ -612,7 +700,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         ThreadHelper.ThrowIfNotOnUIThread();
         if (disposing)
         {
-            ChatWebView.FileOpenRequested -= OnFileOpenRequested;
+            ChatWebView.FileLinkRequested -= OnFileLinkRequested;
 
             if (_persistZoom is not null)
             {

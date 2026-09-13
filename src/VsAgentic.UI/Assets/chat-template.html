@@ -146,6 +146,7 @@ html, body {
     border-radius: 4px;
     padding: 4px 0;
     min-width: 120px;
+    white-space: nowrap;
     box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     z-index: 1000;
     display: none;
@@ -873,14 +874,18 @@ function setThemeColors(colorsJson) {
 
 // --- Event handlers ---
 
+// The host resolves the path, so it also does the work: only it knows the
+// solution directory a relative path hangs off.
+function requestFileLink(action, path) {
+    window.chrome.webview.postMessage(JSON.stringify({type:'fileLink', action:action, path:path}));
+}
+
 document.addEventListener('click', function(e) {
     var link = e.target.closest('a.file-link');
     if (link) {
         e.preventDefault();
         var path = link.dataset.path;
-        if (path) {
-            window.chrome.webview.postMessage(JSON.stringify({type:'openFile', path:path}));
-        }
+        if (path) requestFileLink('open', path);
     }
 });
 
@@ -1038,35 +1043,55 @@ loadMessages = function(jsonArray) {
 };
 
 // --- Context menu ---
+// One menu, refilled on every right-click with what fits the target: a file
+// link gets the file actions, a selection gets Copy.
 var _ctxMenu;
-function createCtxMenu() {
-    _ctxMenu = document.createElement('div');
-    _ctxMenu.className = 'ctx-menu';
-    var copyItem = document.createElement('div');
-    copyItem.className = 'ctx-menu-item';
-    copyItem.textContent = 'Copy';
-    copyItem.addEventListener('click', function() {
-        var sel = window.getSelection().toString();
-        if (sel) {
-            copyToClipboard(sel);
-        }
-        _ctxMenu.style.display = 'none';
+function showCtxMenu(e, items) {
+    if (!_ctxMenu) {
+        _ctxMenu = document.createElement('div');
+        _ctxMenu.className = 'ctx-menu';
+        document.body.appendChild(_ctxMenu);
+    }
+    _ctxMenu.innerHTML = '';
+    items.forEach(function(item) {
+        var el = document.createElement('div');
+        el.className = 'ctx-menu-item';
+        el.textContent = item.label;
+        el.addEventListener('click', function() {
+            _ctxMenu.style.display = 'none';
+            item.run();
+        });
+        _ctxMenu.appendChild(el);
     });
-    _ctxMenu.appendChild(copyItem);
-    document.body.appendChild(_ctxMenu);
+    _ctxMenu.style.display = 'block';
+    // Position near cursor, clamped to viewport. Measured once shown, since
+    // the size depends on the items.
+    var x = Math.min(e.clientX, window.innerWidth - _ctxMenu.offsetWidth - 4);
+    var y = Math.min(e.clientY, window.innerHeight - _ctxMenu.offsetHeight - 4);
+    _ctxMenu.style.left = Math.max(0, x) + 'px';
+    _ctxMenu.style.top = Math.max(0, y) + 'px';
 }
 
 document.addEventListener('contextmenu', function(e) {
+    if (_ctxMenu) _ctxMenu.style.display = 'none';
+    var link = e.target.closest('a.file-link');
+    var path = link && link.dataset.path;
+    if (path) {
+        e.preventDefault();
+        showCtxMenu(e, [
+            { label: 'Open', run: function() { requestFileLink('open', path); } },
+            { label: 'Copy path', run: function() { requestFileLink('copyPath', path); } },
+            { label: 'Show in Explorer', run: function() { requestFileLink('showInExplorer', path); } }
+        ]);
+        return;
+    }
+
     var sel = window.getSelection().toString();
     if (sel) {
         e.preventDefault();
-        if (!_ctxMenu) createCtxMenu();
-        _ctxMenu.style.display = 'block';
-        // Position near cursor, clamped to viewport
-        var x = Math.min(e.clientX, window.innerWidth - 140);
-        var y = Math.min(e.clientY, window.innerHeight - 40);
-        _ctxMenu.style.left = x + 'px';
-        _ctxMenu.style.top = y + 'px';
+        showCtxMenu(e, [
+            { label: 'Copy', run: function() { copyToClipboard(sel); } }
+        ]);
     }
 });
 

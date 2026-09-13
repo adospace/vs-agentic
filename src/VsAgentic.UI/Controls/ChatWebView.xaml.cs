@@ -18,15 +18,16 @@ namespace VsAgentic.UI.Controls;
 public partial class ChatWebView : UserControl
 {
     /// <summary>
-    /// Raised when the user clicks a file path link in rendered content.
-    /// The string argument is the raw path (possibly with :line suffix).
+    /// Raised when the user clicks a file path link in rendered content, or
+    /// picks an item from its right-click menu. The string argument is the raw
+    /// path (possibly with :line suffix).
     /// </summary>
-    public static event Action<string>? FileOpenRequested;
+    public static event Action<string, FileLinkAction>? FileLinkRequested;
 
     /// <summary>
     /// Set by the host once its DI container is up. The control is created by
     /// XAML, so there is nothing to inject into — static, like
-    /// <see cref="FileOpenRequested"/>. Defaults to a no-op logger.
+    /// <see cref="FileLinkRequested"/>. Defaults to a no-op logger.
     /// </summary>
     public static ILogger Logger { get; set; } = NullLogger.Instance;
 
@@ -312,11 +313,18 @@ public partial class ChatWebView : UserControl
             var root = doc.RootElement;
             var type = root.GetProperty("type").GetString();
 
-            if (type == "openFile")
+            if (type == "fileLink")
             {
                 var path = root.GetProperty("path").GetString();
-                if (!string.IsNullOrEmpty(path))
-                    FileOpenRequested?.Invoke(path!);
+                var action = root.GetProperty("action").GetString() switch
+                {
+                    "open" => FileLinkAction.Open,
+                    "copyPath" => FileLinkAction.CopyPath,
+                    "showInExplorer" => FileLinkAction.ShowInExplorer,
+                    _ => (FileLinkAction?)null,
+                };
+                if (!string.IsNullOrEmpty(path) && action.HasValue)
+                    FileLinkRequested?.Invoke(path!, action.Value);
             }
             else if (type == "zoom")
             {

@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -26,12 +28,38 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     [ObservableProperty]
     private string _alternativeText = "";
 
+    // The CLI takes rules back on an allow response and stops asking for
+    // anything they match, so remembering is not modelled here: the rules are
+    // handed over and the CLI's own rule engine does the matching.
+    private readonly IReadOnlyList<PermissionRule> _rules;
+    private readonly IReadOnlyList<PermissionRule> _similarRules;
+
+    /// <summary>Whether this request can be turned into rules at all.</summary>
+    public bool CanAllowForSession => _rules.Count > 0;
+
+    /// <summary>Whether the similar choices grant anything beyond the specific ones.</summary>
+    public bool CanAllowSimilar { get; }
+
+    // The tooltips name every rule about to be granted, e.g.
+    // Bash(cd:*)  Bash(git push:*), so a compound command does not quietly
+    // grant more than it appears to.
+    public string AllowForSessionTooltip => $"Allow {Describe(_rules)} for the rest of this session";
+    public string AllowAlwaysTooltip => $"Allow {Describe(_rules)} from now on, in every project. Written to ~/.claude/settings.json";
+    public string AllowSimilarForSessionTooltip => $"Allow {Describe(_similarRules)} for the rest of this session";
+    public string AllowSimilarAlwaysTooltip => $"Allow {Describe(_similarRules)} from now on, in every project. Written to ~/.claude/settings.json";
+
     public PermissionBannerViewModel(PermissionRequest request, Action<PermissionDecision> onResolved)
     {
         _request = request;
         _onResolved = onResolved;
         BodyText = FormatBody(request);
+        _rules = PermissionRuleBuilder.Build(request.ToolName, request.Input);
+        _similarRules = PermissionRuleBuilder.BuildSimilar(request.ToolName, request.Input);
+        CanAllowSimilar = PermissionRuleBuilder.HasDistinctSimilar(request.ToolName, request.Input);
     }
+
+    private static string Describe(IReadOnlyList<PermissionRule> rules) =>
+        string.Join("  ", rules.Select(r => r.Display));
 
     partial void OnIsOtherModeChanged(bool value)
     {
@@ -42,13 +70,39 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     partial void OnAlternativeTextChanged(string value) => SubmitCommand.NotifyCanExecuteChanged();
 
     [RelayCommand]
-    private void Allow()
-    {
-        var inputJson = _request.Input.ValueKind == JsonValueKind.Undefined
+    private void Allow() => _onResolved(PermissionDecision.Allow(InputJson()));
+
+    /// <summary>Allow, and stop asking for calls of this shape until the CLI
+    /// process exits.</summary>
+    [RelayCommand]
+    private void AllowForSession() => AllowWith(_rules, PermissionRuleScope.Session);
+
+    /// <summary>
+    /// Allow, and have the CLI write the rule to the user's own settings.
+    ///
+    /// User settings rather than the project's, for two reasons. The CLI
+    /// ignores project settings until the workspace is trusted, so a rule
+    /// written there can be silently inert. And a personal choice should not
+    /// end up in a repository and travel into someone else's checkout. The
+    /// cost is reach: the rule applies in every project, which the tooltip
+    /// says.
+    /// </summary>
+    [RelayCommand]
+    private void AllowAlways() => AllowWith(_rules, PermissionRuleScope.User);
+
+    [RelayCommand]
+    private void AllowSimilarForSession() => AllowWith(_similarRules, PermissionRuleScope.Session);
+
+    [RelayCommand]
+    private void AllowSimilarAlways() => AllowWith(_similarRules, PermissionRuleScope.User);
+
+    private void AllowWith(IReadOnlyList<PermissionRule> rules, PermissionRuleScope scope) =>
+        _onResolved(PermissionDecision.AllowWithRules(InputJson(), rules, scope));
+
+    private string InputJson() =>
+        _request.Input.ValueKind == JsonValueKind.Undefined
             ? "{}"
             : _request.Input.GetRawText();
-        _onResolved(PermissionDecision.Allow(inputJson));
-    }
 
     [RelayCommand]
     private void Deny()

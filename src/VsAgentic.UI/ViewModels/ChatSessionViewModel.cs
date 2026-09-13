@@ -45,6 +45,12 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// </summary>
     public bool HasCustomTitle { get; set; }
 
+    /// <summary>
+    /// Title of a session whose first message is an image with no text, until
+    /// a message with text gives the title model something to summarize.
+    /// </summary>
+    private const string PastedImageTitle = "Pasted image";
+
     // Realtime activity indicator: a braille spinner prefix while the AI is
     // working, a steady "? " prefix while awaiting user input (permission /
     // question banner), and no prefix while idle. Host bindings (e.g. the VS
@@ -318,6 +324,20 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                     Status = ParseEnum<OutputItemStatus>(msg.StatusText),
                     IsStreaming = false
                 });
+                List<string>? imageDataUris = null;
+                if (msg.ImageFileNames is { Count: > 0 })
+                {
+                    imageDataUris = new List<string>(msg.ImageFileNames.Count);
+                    foreach (var fileName in msg.ImageFileNames)
+                    {
+                        // A missing file just means one thumbnail short; the rest
+                        // of the conversation still restores.
+                        var stored = await store.GetImageAsync(folder, sessionId.Value, fileName);
+                        if (stored is not null)
+                            imageDataUris.Add(stored.ToDataUri());
+                    }
+                }
+
                 restoreData.Add(new ChatMessageData
                 {
                     Id = $"restore-{msgIndex++}",
@@ -329,7 +349,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                     BodyMode = msg.BodyMode ?? "Markdown",
                     ExpanderTitle = msg.ExpanderTitle ?? "",
                     Status = msg.StatusText,
-                    IsStreaming = false
+                    IsStreaming = false,
+                    Images = imageDataUris is { Count: > 0 } ? imageDataUris : null
                 });
             }
             if (restoreData.Count > 0)
@@ -347,13 +368,48 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         }
     }
 
-    private bool CanSend() => !IsBusy && !string.IsNullOrWhiteSpace(InputText);
+    // An image on its own is a perfectly good prompt — "what is wrong here?" is
+    // often implicit — so text is only required when nothing is attached.
+    private bool CanSend() =>
+        !IsBusy && (!string.IsNullOrWhiteSpace(InputText) || PendingImages.Count > 0);
+
+    /// <summary>
+    /// Images pasted into the input box, waiting to go out with the next message.
+    /// </summary>
+    public ObservableCollection<ChatImageAttachment> PendingImages { get; } = new();
+
+    /// <summary>
+    /// Attaches an image to the next message. Called by the host when the user
+    /// pastes one into the input box.
+    /// </summary>
+    public void AttachImage(ChatImageAttachment image)
+    {
+        PendingImages.Add(image);
+        SendCommand.NotifyCanExecuteChanged();
+    }
+
+    public void RemovePendingImage(ChatImageAttachment image)
+    {
+        PendingImages.Remove(image);
+        SendCommand.NotifyCanExecuteChanged();
+    }
 
     [RelayCommand(CanExecute = nameof(CanSend))]
     private async Task SendAsync()
     {
         var message = InputText.Trim();
         InputText = "";
+
+        var sentImages = PendingImages.Count > 0
+            ? PendingImages.ToList()
+            : null;
+        PendingImages.Clear();
+        SendCommand.NotifyCanExecuteChanged();
+
+        // Written next to the session so reopening it shows the images again.
+        var storedImageNames = sentImages is null
+            ? null
+            : await PersistImagesAsync(sentImages);
 
         var userMsgId = $"user-{++_userMsgCounter}";
         Items.Add(new ChatItemViewModel
@@ -367,7 +423,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             Id = userMsgId,
             Type = "User",
             Content = message,
-            Title = "You"
+            Title = "You",
+            Images = sentImages?.Select(i => i.ToDataUri()).ToList()
         });
         RequestScroll();
 
@@ -376,6 +433,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             ItemType = ChatItemType.User.ToString(),
             Content = message,
             Title = "You",
+            ImageFileNames = storedImageNames,
             CreatedUtc = DateTime.UtcNow
         });
 
@@ -399,10 +457,22 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             return;
         }
 
-        // Generate a title from the first user message (fire-and-forget, non-blocking).
-        // Skipped when the user already named the session by hand.
-        var isFirstMessage = Items.Count(i => i.Type == ChatItemType.User) == 1;
-        if (isFirstMessage && !HasCustomTitle)
+        // Generate a title from the first user message that has text (fire-and-forget,
+        // non-blocking). Skipped when the user already named the session by hand.
+        // The title model only sees text: handed an image-only prompt it names the
+        // session after the empty message ("Empty message, no request given"), so
+        // such a session gets a placeholder until text arrives.
+        var userMessages = Items.Where(i => i.Type == ChatItemType.User).ToList();
+        var hasText = !string.IsNullOrWhiteSpace(message);
+        var isFirstMessage = userMessages.Count == 1;
+        var isFirstText = hasText && userMessages.Count(i => !string.IsNullOrWhiteSpace(i.Content)) == 1;
+
+        if (isFirstMessage && !hasText && !HasCustomTitle)
+        {
+            SessionTitle = PastedImageTitle;
+            PersistTitleUpdateFireAndForget(PastedImageTitle);
+        }
+        else if (isFirstText && !HasCustomTitle)
         {
             _ = Task.Run(async () =>
             {
@@ -428,7 +498,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         var token = _sendCts.Token;
         try
         {
-            await foreach (var _ in _chatService.SendMessageAsync(message, token))
+            await foreach (var _ in _chatService.SendMessageAsync(message, sentImages, token))
             {
                 // Output is handled by listener callbacks
             }
@@ -628,6 +698,37 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     }
 
     // --- Persistence helpers (fire-and-forget) ---
+
+    /// <summary>
+    /// Writes attachments into the session folder before the message that
+    /// references them is appended, so a reopened session never points at files
+    /// that are not there yet. Awaited rather than fire-and-forget for that
+    /// reason. Returns null when persistence is off or every write failed.
+    /// </summary>
+    private async Task<List<string>?> PersistImagesAsync(IReadOnlyList<ChatImageAttachment> images)
+    {
+        var store = ActiveStore;
+        var folder = ActiveFolder;
+        var sessionId = ActiveSessionId;
+        if (store is null || folder is null || !sessionId.HasValue) return null;
+
+        var names = new List<string>(images.Count);
+        foreach (var image in images)
+        {
+            try
+            {
+                names.Add(await store.SaveImageAsync(folder, sessionId.Value, image));
+            }
+            catch (Exception ex)
+            {
+                // The message still goes out with the image inline; only the
+                // stored copy is lost, so this must not abort the send.
+                _logger.LogWarning(ex, "[VM] Could not store attached image");
+            }
+        }
+
+        return names.Count > 0 ? names : null;
+    }
 
     private void PersistMessageFireAndForget(PersistedMessage message)
     {

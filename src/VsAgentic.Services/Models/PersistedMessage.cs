@@ -11,5 +11,13 @@ public class PersistedMessage
     public string? BodyMode { get; set; }
     public string? ExpanderTitle { get; set; }
     public string StatusText { get; set; } = "Success";
+
+    /// <summary>
+    /// Names of image files stored in the session's <c>images</c> folder. Only
+    /// the names are kept here so <c>messages.json</c> stays small — the bytes
+    /// would otherwise add megabytes per screenshot.
+    /// </summary>
+    public List<string>? ImageFileNames { get; set; }
+
     public DateTime CreatedUtc { get; set; }
 }

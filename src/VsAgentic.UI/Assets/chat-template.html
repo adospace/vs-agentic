@@ -174,6 +174,26 @@ html, body {
     margin-top: 14px;
     margin-bottom: 12px;
 }
+/* Attached images: thumbnails by default, click to see the whole thing. */
+.msg-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 4px 0 8px 0;
+}
+.msg-image {
+    max-height: 120px;
+    max-width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: zoom-in;
+    display: block;
+}
+.msg-image.expanded {
+    max-height: none;
+    cursor: zoom-out;
+}
+
 .msg-user .msg-label {
     font-weight: 700;
     font-size: 10px;
@@ -588,12 +608,35 @@ function addMessage(id, type, dataJson) {
         var label = document.createElement('div');
         label.className = 'msg-label';
         label.textContent = 'YOU';
+        div.appendChild(label);
+
+        if (data.Images && data.Images.length) {
+            var strip = document.createElement('div');
+            strip.className = 'msg-images';
+            for (var ii = 0; ii < data.Images.length; ii++) {
+                var thumb = document.createElement('img');
+                // Data URI built on the host side; never user-authored markup.
+                thumb.src = data.Images[ii];
+                thumb.className = 'msg-image';
+                thumb.addEventListener('click', function() {
+                    this.classList.toggle('expanded');
+                });
+                // A thumbnail has no height until it decodes, so the scroll
+                // that follows the prompt runs against a container that is
+                // still too short. Land on the bottom again once it does.
+                thumb.addEventListener('load', function() {
+                    if (!_userScrolledUp) scrollToBottom();
+                });
+                strip.appendChild(thumb);
+            }
+            div.appendChild(strip);
+        }
+
         var content = document.createElement('div');
         content.className = 'md-content msg-content';
         content.innerHTML = renderUserMd(data.Content || '');
         linkifyFilePaths(content);
         addCodeCopyButtons(content);
-        div.appendChild(label);
         div.appendChild(content);
     }
     else if (type === 'Assistant') {

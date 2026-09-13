@@ -7,6 +7,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.VisualStudio.PlatformUI;
 using Microsoft.VisualStudio.Shell;
+using VsAgentic.Services.Abstractions;
 using VsAgentic.UI.Controls;
 using VsAgentic.UI.ViewModels;
 
@@ -173,6 +174,15 @@ public partial class ChatSessionControl : UserControl
 
     private static string ToCssHex(System.Drawing.Color color) =>
         $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+
+    private void RemoveAttachment_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is ChatSessionViewModel vm &&
+            sender is FrameworkElement { DataContext: ChatImageAttachment image })
+        {
+            vm.RemovePendingImage(image);
+        }
+    }
 
     // ------------------------------------------------------------------
     // Zoom
@@ -451,6 +461,25 @@ public partial class ChatSessionControl : UserControl
 
     private void InputTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        // Ctrl+V is caught here rather than through DataObject.Pasting. A
+        // screenshot sits on the clipboard as a bitmap with no text format, so
+        // TextBoxBase.CanPaste is false, the paste command never runs, and the
+        // Pasting event never fires — the keystroke would be swallowed silently.
+        if (e.Key == Key.V && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+        {
+            if (DataContext is ChatSessionViewModel vm)
+            {
+                var image = ClipboardImage.TryRead();
+                if (image is not null)
+                {
+                    vm.AttachImage(image);
+                    // Otherwise a copied image file would also paste its path.
+                    e.Handled = true;
+                    return;
+                }
+            }
+        }
+
         if (!MentionPopup.IsOpen) return;
 
         switch (e.Key)

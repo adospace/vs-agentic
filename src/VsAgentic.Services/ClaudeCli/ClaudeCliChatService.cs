@@ -46,6 +46,28 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     private Task? _dispatcherTask;
     private readonly object _dispatcherLock = new object();
 
+    // ── Token usage ───────────────────────────────────────────────────────
+    // Accumulated from the usage block on each assistant event. The result
+    // event also carries a usage object, but it is a turn-level aggregate, so
+    // reading both would double-count; the per-message blocks are the finer
+    // grained of the two and are what the context meter needs anyway.
+    private readonly object _usageLock = new object();
+    private long _inputTokens;
+    private long _outputTokens;
+    private long _cacheReadTokens;
+    private long _cacheCreationTokens;
+    private long _contextTokens;
+
+    private string? _currentModel;
+
+    // The CLI can emit more than one assistant event carrying the same message
+    // id (the usage block is repeated verbatim on each). Counting per id rather
+    // than per event keeps a single API call from being billed to the meter
+    // several times over.
+    private readonly HashSet<string> _countedMessageIds = new HashSet<string>(StringComparer.Ordinal);
+
+    private readonly UsageLog _usageLog = UsageLog.Shared;
+
     // The dispatcher consumes events from the host and routes them to whichever
     // turn is currently active. We only ever have one active turn at a time —
     // SendMessageAsync calls are serialized by the UI (IsBusy gate) — so a
@@ -238,6 +260,14 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             _cliSessionId = sid.GetString();
             _logger.LogDebug("[ClaudeCli] Session started: {SessionId}", _cliSessionId);
         }
+
+        // The alias we pass to --model resolves server-side, so this init event
+        // is the only place that names the model actually serving the session —
+        // and the only place the [1m] variants announce themselves. It can differ
+        // between process starts (a model switch, a changed default), so raise on
+        // every change.
+        if (evt.TryGetProperty("model", out var modelProp) && modelProp.ValueKind == JsonValueKind.String)
+            SetCurrentModel(modelProp.GetString());
         // Diagnostic: dump the available tool names so we can verify whether
         // AskUserQuestion is registered in headless mode.
         if (evt.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array)
@@ -260,6 +290,11 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (turn == null) return;
 
         if (!evt.TryGetProperty("message", out var msg)) return;
+
+        // Before the content check: a message can carry usage worth counting
+        // even when its content block is one we do not render.
+        AccountUsage(msg);
+
         if (!msg.TryGetProperty("content", out var contentArr)) return;
         if (contentArr.ValueKind != JsonValueKind.Array) return;
 
@@ -447,7 +482,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         else
         {
             if (evt.TryGetProperty("cost_usd", out var cost) && cost.ValueKind == JsonValueKind.Number)
+            {
                 _cumulativeCostUsd += cost.GetDecimal();
+                RaiseUsageChanged();
+            }
         }
 
         // Signal SendMessageAsync to return.
@@ -739,18 +777,205 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     public decimal? GetSessionCost() => _cumulativeCostUsd > 0 ? _cumulativeCostUsd : null;
 
+    // ── Usage accounting ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// Folds one assistant message's <c>usage</c> block into the session totals
+    /// and the machine-wide rolling log.
+    /// </summary>
+    private void AccountUsage(JsonElement message)
+    {
+        if (!message.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
+            return;
+
+        var input = ReadTokenCount(usage, "input_tokens");
+        var output = ReadTokenCount(usage, "output_tokens");
+        var cacheRead = ReadTokenCount(usage, "cache_read_input_tokens");
+        var cacheCreate = ReadTokenCount(usage, "cache_creation_input_tokens");
+
+        // Everything the call carried — this is the number that has to fit the
+        // context window, so cache reads count in full here even though they
+        // are discounted for billing.
+        var context = input + output + cacheRead + cacheCreate;
+        if (context <= 0) return;
+
+        var messageId = message.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.String
+            ? idProp.GetString()
+            : null;
+
+        lock (_usageLock)
+        {
+            // No id means we cannot tell a repeat from a new call, so we count
+            // it and accept the risk of a small overcount — better than
+            // dropping usage we did incur.
+            if (messageId is not null && !_countedMessageIds.Add(messageId))
+                return;
+
+            // Ids are only ever needed to spot an immediate repeat; a long
+            // session should not accumulate them without bound.
+            if (_countedMessageIds.Count > 4096)
+            {
+                _countedMessageIds.Clear();
+                if (messageId is not null) _countedMessageIds.Add(messageId);
+            }
+
+            _inputTokens += input;
+            _outputTokens += output;
+            _cacheReadTokens += cacheRead;
+            _cacheCreationTokens += cacheCreate;
+
+            // Assigned, not accumulated: this is an occupancy reading, and it
+            // drops back down when the CLI compacts the conversation.
+            _contextTokens = context;
+        }
+
+        // Cache reads are charged at a fraction of a fresh input token, so
+        // counting them in full here would have the rate-limit meter racing
+        // ahead of the real limit on exactly the long sessions where caching
+        // helps most. A tenth is the published ratio.
+        _usageLog.Record(input + output + cacheCreate + cacheRead / 10);
+
+        RaiseUsageChanged();
+    }
+
+    private static long ReadTokenCount(JsonElement usage, string name) =>
+        usage.TryGetProperty(name, out var p)
+        && p.ValueKind == JsonValueKind.Number
+        && p.TryGetInt64(out var value)
+        && value > 0
+            ? value
+            : 0;
+
+    public SessionUsage GetUsage()
+    {
+        long input, output, cacheRead, cacheCreate, context;
+
+        lock (_usageLock)
+        {
+            input = _inputTokens;
+            output = _outputTokens;
+            cacheRead = _cacheReadTokens;
+            cacheCreate = _cacheCreationTokens;
+            context = _contextTokens;
+        }
+
+        var (shortTotal, longTotal) = _usageLog.Totals(
+            ClaudeUsagePlanDefaults.ShortWindow, ClaudeUsagePlanDefaults.LongWindow);
+
+        return new SessionUsage
+        {
+            InputTokens = input,
+            OutputTokens = output,
+            CacheReadTokens = cacheRead,
+            CacheCreationTokens = cacheCreate,
+            ContextTokens = context,
+            ShortWindowTokens = shortTotal,
+            LongWindowTokens = longTotal,
+            ShortWindowBudget = _options.EffectiveFiveHourBudget,
+            LongWindowBudget = _options.EffectiveWeeklyBudget,
+            CostUsd = _cumulativeCostUsd > 0 ? _cumulativeCostUsd : null,
+        };
+    }
+
+    public string? CurrentModel => _currentModel;
+
+    public string? CliSessionId => _cliSessionId;
+
+    public event Action<string?>? ModelChanged;
+
+    private void SetCurrentModel(string? model)
+    {
+        if (string.IsNullOrWhiteSpace(model)) model = null;
+        if (string.Equals(model, _currentModel, StringComparison.Ordinal)) return;
+
+        _currentModel = model;
+        _logger.LogInformation("[ClaudeCli] Session model: {Model}", model ?? "(unknown)");
+
+        try { ModelChanged?.Invoke(model); }
+        catch (Exception ex)
+        {
+            // Same reasoning as UsageChanged: the dispatcher loop comes first.
+            _logger.LogError(ex, "[ClaudeCli] ModelChanged handler threw");
+        }
+    }
+
+    public event Action<SessionUsage>? UsageChanged;
+
+    private void RaiseUsageChanged()
+    {
+        var handler = UsageChanged;
+        if (handler is null) return;
+
+        try { handler(GetUsage()); }
+        catch (Exception ex)
+        {
+            // A crashing meter must not take the dispatcher loop down with it.
+            _logger.LogError(ex, "[ClaudeCli] UsageChanged handler threw");
+        }
+    }
+
+    public void ApplyModelAndEffort(string modelAlias, ClaudeEffort effort)
+    {
+        var alias = (modelAlias ?? "").Trim();
+        var modelChanged = !string.Equals(_options.Model, alias, StringComparison.OrdinalIgnoreCase);
+        if (!modelChanged && _options.Effort == effort)
+        {
+            return;
+        }
+
+        _options.Model = alias;
+        _options.Effort = effort;
+
+        // Both are start-up flags, so the running process cannot pick them up.
+        // Killing it here leaves _cliSessionId intact, which means the next
+        // SendMessageAsync starts a fresh process with --resume and the
+        // conversation carries on where it left off.
+        try
+        {
+            _host.Stop();
+            lock (_dispatcherLock) { _dispatcherTask = null; }
+            _logger.LogInformation(
+                "[ClaudeCli] Model/effort set to '{Model}'/'{Effort}'; process restarts on next message",
+                alias.Length == 0 ? "(cli default)" : alias, effort);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[ClaudeCli] Failed to stop CLI after a model/effort change");
+        }
+
+        // The model reported so far no longer describes what the next turn runs
+        // on. Clearing it lets the host fall back to its preview until the new
+        // process reports the real one.
+        if (modelChanged)
+            SetCurrentModel(null);
+    }
+
     public void ClearHistory()
     {
         _cliSessionId = null;
         _cumulativeCostUsd = 0;
+
+        lock (_usageLock)
+        {
+            _inputTokens = _outputTokens = _cacheReadTokens = _cacheCreationTokens = 0;
+            _contextTokens = 0;
+            _countedMessageIds.Clear();
+        }
+
         _host.Stop();
         lock (_dispatcherLock) { _dispatcherTask = null; }
         _logger.LogInformation("[ClaudeCli] Session cleared (process killed)");
+        SetCurrentModel(null);
+        RaiseUsageChanged();
     }
 
     public string SerializeHistory()
     {
-        return JsonSerializer.Serialize(new { cliSessionId = _cliSessionId });
+        // The model is persisted alongside the session id because --resume keeps a
+        // session on the model it was created with, so the configured default is
+        // not a valid stand-in when this session is reopened later. It is also the
+        // only record of a [1m] variant: the CLI's transcript names the bare model.
+        return JsonSerializer.Serialize(new { cliSessionId = _cliSessionId, model = _currentModel });
     }
 
     public void RestoreHistory(string serializedHistory)
@@ -763,6 +988,11 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 _cliSessionId = sid.GetString();
                 _logger.LogInformation("[ClaudeCli] Restored session: {SessionId}", _cliSessionId);
             }
+
+            // Sessions saved before this field existed do not have it; the host
+            // then falls back to reading the CLI's transcript.
+            if (doc.RootElement.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String)
+                SetCurrentModel(m.GetString());
         }
         catch (JsonException)
         {

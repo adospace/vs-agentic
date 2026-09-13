@@ -1,3 +1,5 @@
+using VsAgentic.Services.Configuration;
+
 namespace VsAgentic.Services.Abstractions;
 
 public interface IChatService
@@ -21,6 +23,51 @@ public interface IChatService
     /// Returns null when no messages have been sent yet.
     /// </summary>
     decimal? GetSessionCost();
+
+    /// <summary>
+    /// The model the CLI reported for the current session (e.g. "claude-opus-5[1m]"),
+    /// taken from the <c>system/init</c> event, or restored with the session
+    /// history. Null until either has happened — the CLI emits init with the
+    /// first message, not at process start.
+    /// </summary>
+    string? CurrentModel { get; }
+
+    /// <summary>
+    /// The CLI's own session id, once one exists — either restored from persisted
+    /// history or assigned when the session started. Lets the host locate the
+    /// CLI's transcript for this session.
+    /// </summary>
+    string? CliSessionId { get; }
+
+    /// <summary>
+    /// Raised when <see cref="CurrentModel"/> changes — on session start, on
+    /// restore, and again after a process restart, which can pick up a different
+    /// model. Raised on a background thread; hosts must marshal to the UI thread.
+    /// </summary>
+    event Action<string?>? ModelChanged;
+
+    /// <summary>
+    /// Token usage for this session, plus the rolling machine-wide windows, as
+    /// of now. Never null — a session that has sent nothing reports zeroes.
+    /// </summary>
+    SessionUsage GetUsage();
+
+    /// <summary>
+    /// Raised after each API call the CLI reports usage for, carrying the same
+    /// snapshot <see cref="GetUsage"/> would return. Fires on a background
+    /// thread; hosts must marshal to their UI thread.
+    /// </summary>
+    event Action<SessionUsage>? UsageChanged;
+
+    /// <summary>
+    /// Switches the model and/or reasoning effort for this session.
+    ///
+    /// Both are start-up flags on the CLI, so the running process is torn down
+    /// here and the next <see cref="SendMessageAsync"/> starts a fresh one that
+    /// resumes the same conversation. Nothing is lost, but the next message
+    /// pays the process-start cost. A no-op when neither value changed.
+    /// </summary>
+    void ApplyModelAndEffort(string modelAlias, ClaudeEffort effort);
 
     /// <summary>
     /// Raised when the underlying CLI returned an authentication / login-required

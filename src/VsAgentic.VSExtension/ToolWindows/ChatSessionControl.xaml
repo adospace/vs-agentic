@@ -7,11 +7,125 @@
              xmlns:controls="clr-namespace:VsAgentic.UI.Controls;assembly=VsAgentic.UI"
              xmlns:bvm="clr-namespace:VsAgentic.UI.ViewModels.Banners;assembly=VsAgentic.UI"
              xmlns:bv="clr-namespace:VsAgentic.VSExtension.ToolWindows.Banners"
+             xmlns:local="clr-namespace:VsAgentic.VSExtension.ToolWindows"
              PreviewMouseWheel="OnPreviewMouseWheel"
              PreviewKeyDown="OnPreviewKeyDown" >
 
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <controls:MinWidthVisibilityConverter x:Key="MinWidth"/>
+
+        <!-- Status bar pickers. Fully retemplated rather than merely unbordered:
+             the stock ComboBox chrome draws its own border, background and
+             focus ring, none of which BorderThickness="0" removes. What is left
+             is the label plus a chevron, with a hover fill borrowed from the
+             command bar so it still reads as clickable. -->
+        <Style x:Key="StatusComboStyle" TargetType="ComboBox">
+            <Setter Property="Margin" Value="4,0,0,0"/>
+            <Setter Property="Padding" Value="6,0"/>
+            <Setter Property="Height" Value="19"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Foreground"
+                    Value="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <!-- Foreground is forwarded explicitly. ToggleButton's
+                                 own default style sets it to the system control
+                                 text colour, and a style setter beats an
+                                 inherited value, so without this local value the
+                                 label renders near-black on a dark theme no
+                                 matter what the ComboBox says. -->
+                            <ToggleButton x:Name="Toggle"
+                                          Focusable="False"
+                                          ClickMode="Press"
+                                          Foreground="{TemplateBinding Foreground}"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border x:Name="Chrome"
+                                                Background="Transparent"
+                                                CornerRadius="3"
+                                                SnapsToDevicePixels="True">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <ContentPresenter Grid.Column="0"
+                                                                  Margin="6,0,2,0"
+                                                                  VerticalAlignment="Center"
+                                                                  Content="{Binding SelectionBoxItem, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                                                  ContentTemplate="{Binding SelectionBoxItemTemplate, RelativeSource={RelativeSource AncestorType=ComboBox}}"/>
+                                                <Path Grid.Column="1"
+                                                      Margin="0,1,6,0"
+                                                      VerticalAlignment="Center"
+                                                      Data="M 0 0 L 3.5 3.5 L 7 0 Z"
+                                                      Fill="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                            </Grid>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Chrome" Property="Background"
+                                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}"/>
+                                            </Trigger>
+                                            <Trigger Property="IsChecked" Value="True">
+                                                <Setter TargetName="Chrome" Property="Background"
+                                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseDownBackgroundGradientKey}}"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+
+                            <!-- Opens upwards: the status bar sits at the bottom
+                                 of the window, like the @-mention popup. -->
+                            <Popup IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   Placement="Top"
+                                   AllowsTransparency="True"
+                                   PopupAnimation="Fade"
+                                   Focusable="False">
+                                <Border Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
+                                        BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                                        BorderThickness="1"
+                                        CornerRadius="3"
+                                        MinWidth="{TemplateBinding ActualWidth}"
+                                        SnapsToDevicePixels="True">
+                                    <ItemsPresenter/>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="StatusComboItemStyle" TargetType="ComboBoxItem">
+            <Setter Property="Padding" Value="8,3"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Foreground"
+                    Value="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="ItemChrome"
+                                Background="Transparent"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="ItemChrome" Property="Background"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
 
         <!-- Zoom for everything that is not the WebView. One instance, shared
              by LayoutTransform on each docked child, so the code-behind moves
@@ -267,14 +381,101 @@
                                                Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
                                 </Button>
 
-                                <!-- Status info area (reserved for future) -->
-                                <TextBlock Grid.Column="1"
-                                           x:Name="StatusInfoText"
-                                           VerticalAlignment="Center"
-                                           Margin="10,0"
-                                           FontSize="11"
-                                           Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
-                                           TextTrimming="CharacterEllipsis"/>
+                                <!-- Status info: usage readings and the model /
+                                     effort pickers, right-aligned towards Send.
+
+                                     Each item names the cell width it needs and
+                                     drops out below it. Context is the last to go:
+                                     it is ambient, and hidden it cannot warn that a
+                                     compaction is near. The pickers go first: they
+                                     are occasional actions, reachable again by
+                                     widening the pane or through Tools → Options.
+
+                                     The thresholds are cumulative estimates of the
+                                     items' widths, in unzoomed pixels. The cell is
+                                     inside the zoomed chrome, so its ActualWidth
+                                     shrinks with zoom and the same numbers hold.
+                                     ClipToBounds keeps an overflow off the @ button. -->
+                                <Grid Grid.Column="1"
+                                      x:Name="StatusInfo"
+                                      Margin="6,0"
+                                      ClipToBounds="True">
+                                    <StackPanel Orientation="Horizontal"
+                                                HorizontalAlignment="Right"
+                                                VerticalAlignment="Center">
+
+                                        <!-- The 5h and 7d budgets are estimates, so
+                                             these are plain text: a bar would claim a
+                                             precision the numbers do not have. -->
+                                        <StackPanel Orientation="Horizontal"
+                                                    Visibility="{Binding HasWindowMeters, Converter={StaticResource BoolToVis}}">
+                                            <local:UsageMeter Caption="7d"
+                                                              ValueText="{Binding LongWindowDisplay}"
+                                                              ShowBar="False"
+                                                              ToolTip="{Binding LongWindowTooltip}"
+                                                              Visibility="{Binding ActualWidth, ElementName=StatusInfo,
+                                                                           Converter={StaticResource MinWidth},
+                                                                           ConverterParameter=255}"/>
+                                            <local:UsageMeter Caption="5h"
+                                                              ValueText="{Binding ShortWindowDisplay}"
+                                                              ShowBar="False"
+                                                              ToolTip="{Binding ShortWindowTooltip}"
+                                                              Visibility="{Binding ActualWidth, ElementName=StatusInfo,
+                                                                           Converter={StaticResource MinWidth},
+                                                                           ConverterParameter=170}"/>
+                                        </StackPanel>
+
+                                        <local:UsageMeter Caption="Session"
+                                                          ValueText="{Binding SessionTokensDisplay}"
+                                                          ShowBar="False"
+                                                          ToolTip="{Binding SessionTokensTooltip}"
+                                                          Visibility="{Binding ActualWidth, ElementName=StatusInfo,
+                                                                       Converter={StaticResource MinWidth},
+                                                                       ConverterParameter=325}"/>
+
+                                        <!-- The one bar: the context ceiling is real,
+                                             derived from the model id. -->
+                                        <local:UsageMeter ValueText="{Binding ContextDisplay}"
+                                                          Fraction="{Binding ContextFraction}"
+                                                          Level="{Binding ContextLevel}"
+                                                          ToolTip="{Binding ContextTooltip}"/>
+
+                                        <!-- Changing either picker restarts the CLI
+                                             process on the next message; the
+                                             conversation is resumed, not lost.
+
+                                             An ItemTemplate, not DisplayMemberPath:
+                                             the Default row renames itself once the
+                                             model is known, and StatusComboStyle only
+                                             forwards SelectionBoxItemTemplate. With
+                                             DisplayMemberPath that is null, so the
+                                             closed box would draw ToString() once and
+                                             keep showing "Default". -->
+                                        <ComboBox Style="{StaticResource StatusComboStyle}"
+                                                  ItemContainerStyle="{StaticResource StatusComboItemStyle}"
+                                                  ItemsSource="{Binding ModelOptions}"
+                                                  SelectedItem="{Binding SelectedModel}"
+                                                  ToolTip="{Binding ModelDisplay, StringFormat='Model: {0}&#x0a;Takes effect on the next message.'}"
+                                                  Visibility="{Binding ActualWidth, ElementName=StatusInfo,
+                                                               Converter={StaticResource MinWidth},
+                                                               ConverterParameter=405}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding DisplayName}"/>
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
+
+                                        <ComboBox Style="{StaticResource StatusComboStyle}"
+                                                  ItemContainerStyle="{StaticResource StatusComboItemStyle}"
+                                                  ItemsSource="{Binding EffortOptions}"
+                                                  SelectedItem="{Binding SelectedEffort}"
+                                                  ToolTip="Reasoning effort. Default sends no level to the CLI.&#x0a;Takes effect on the next message."
+                                                  Visibility="{Binding ActualWidth, ElementName=StatusInfo,
+                                                               Converter={StaticResource MinWidth},
+                                                               ConverterParameter=480}"/>
+                                    </StackPanel>
+                                </Grid>
 
                                 <!-- Send / Stop buttons -->
                                 <Grid Grid.Column="2" Margin="2">

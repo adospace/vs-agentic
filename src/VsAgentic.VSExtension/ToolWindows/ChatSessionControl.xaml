@@ -304,7 +304,8 @@
                 Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}"
                 Padding="16,4"
                 Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
-            <TextBlock Text="Thinking..."
+            <TextBlock Text="{Binding BusyStatus}"
+                       TextTrimming="CharacterEllipsis"
                        Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
                        FontSize="12" FontStyle="Italic"/>
         </Border>

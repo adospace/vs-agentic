@@ -105,7 +105,8 @@
         <!-- Busy indicator -->
         <Border DockPanel.Dock="Bottom" Background="#1e1e1e" Padding="16,6"
                 Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
-            <TextBlock Text="Thinking..." Foreground="#808080" FontSize="12" FontStyle="Italic"/>
+            <TextBlock Text="{Binding BusyStatus}" TextTrimming="CharacterEllipsis"
+                       Foreground="#808080" FontSize="12" FontStyle="Italic"/>
         </Border>
 
         <!-- Chat Messages Area - single WebView -->

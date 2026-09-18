@@ -56,6 +56,9 @@ public partial class ChatSessionControl : UserControl
         viewModel.MessagesRestored += (messages) =>
             _ = ChatWebView.LoadMessagesAsync(messages);
 
+        viewModel.TurnEnded += () =>
+            _ = ChatWebView.EndActivityAsync();
+
         // Banner mounting is now driven by the ActiveBanner property on the VM —
         // the BannerHost ContentControl in XAML binds to it and DataTemplates
         // pick the right UserControl by VM type.

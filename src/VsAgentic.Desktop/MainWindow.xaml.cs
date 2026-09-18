@@ -47,6 +47,9 @@ public partial class MainWindow : Window
         viewModel.MessagesRestored += (messages) =>
             _ = ChatWebView.LoadMessagesAsync(messages);
 
+        viewModel.TurnEnded += () =>
+            _ = ChatWebView.EndActivityAsync();
+
         viewModel.PermissionPromptRequested += (request, resolve) =>
             ChatWebView.ShowPermissionBanner(request, resolve);
 

@@ -315,6 +315,74 @@ html, body {
     background: linear-gradient(transparent, var(--thinking-bg));
 }
 
+/* Activity group: one row standing in for a run of finished steps.
+   A long task otherwise leaves the chat unreadable — every file read, every
+   grep, every thought block claims its own space and the answer scrolls away.
+   The row reports the step in flight while the task runs and what was done
+   once it is over; the steps themselves are behind it, opened by hand. */
+.activity {
+    margin: 4px 12px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-secondary);
+}
+.activity-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.activity-arrow {
+    font-size: 8px;
+    transition: transform 0.15s;
+    display: inline-block;
+    flex-shrink: 0;
+}
+.activity-arrow.expanded { transform: rotate(90deg); }
+.activity-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--text-muted);
+    flex-shrink: 0;
+}
+.activity.running .activity-dot {
+    background: var(--accent);
+    animation: activity-pulse 1.2s ease-in-out infinite;
+}
+.activity.has-error .activity-dot { background: var(--error); }
+@keyframes activity-pulse { 50% { opacity: 0.25; } }
+/* min-width:0 is what lets the ellipsis happen: without it the flex item
+   refuses to shrink below the width of its text and the count is pushed out
+   of the row instead. */
+.activity-current {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.activity.running .activity-label { color: var(--text-primary); }
+.activity-detail {
+    color: var(--text-muted);
+    font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+    font-size: 11px;
+}
+.activity-count {
+    flex-shrink: 0;
+    font-size: 11px;
+}
+.activity-items {
+    display: none;
+    border-top: 1px solid var(--border);
+    padding: 2px 0;
+}
+.activity-items.visible { display: block; }
+
 /* Streaming indicator */
 .streaming-cursor::after {
     content: '\25ae';
@@ -575,7 +643,191 @@ function createScrollButton() {
     document.body.appendChild(_scrollBtn);
 }
 
+// --- Activity group ---
+// Everything a turn does on its way to an answer — tool steps, thinking, and
+// the running commentary between them — is folded into a single row, so what
+// is left standing in the transcript is the prompt and the reply to it. Only
+// the user's next prompt closes the row, which is what keeps it to one per
+// turn.
+//
+// The reply itself has to stream where it can be seen, and there is no way to
+// know that a block of text is the reply until the turn ends without anything
+// following it. So text is left out in the open as it arrives and pulled into
+// the row only once a further step proves it was commentary after all.
+
+var _activityGroup = null;
+var _pendingText = null;
+
+function isActivityType(type) {
+    return type === 'ToolStep' || type === 'Thinking';
+}
+
+// A turn that could not run at all. The service reports these as steps of its
+// own: the CLI failing to start, whose body carries the install instructions,
+// and a turn the CLI ended with an error. They are the one thing in a turn the
+// user has to see, so they stay out of the folded row.
+//
+// The tool name is part of the test on purpose. An ordinary tool call that
+// fails is a step like any other and belongs in the row; it is only reported as
+// Success today (#46), and matching the status alone would throw every failed
+// command out of the row the day that is fixed.
+function isTurnFailure(type, data) {
+    return type === 'ToolStep' && data.Status === 'Error' && data.ToolName === 'ClaudeCli';
+}
+
+function setActivityLabel(group, text) {
+    var label = group.querySelector('.activity-label');
+    if (label) label.textContent = text || '';
+}
+
+function setActivityDetail(group, text) {
+    var detail = group.querySelector('.activity-detail');
+    if (detail) detail.textContent = text ? ' · ' + text : '';
+}
+
+function setActivityCount(group, count) {
+    var el = group.querySelector('.activity-count');
+    if (el) el.textContent = count === 1 ? '1 step' : count + ' steps';
+}
+
+// The one-line summary a group carries once it is closed: which tools ran,
+// most recent last, so the row still says what happened without being opened.
+function activitySummary(group) {
+    var tools = group._tools || [];
+    if (!tools.length) return 'Earlier output';
+    if (tools.length <= 4) return tools.join(', ');
+    return tools.slice(0, 4).join(', ') + ' +' + (tools.length - 4) + ' more';
+}
+
+// The step's own body is markdown meant for the expanded view; the header has
+// one line, so take the first non-empty one and strip the markup that would
+// otherwise show up as literal backticks and asterisks.
+function activityDetailFrom(body) {
+    if (!body) return '';
+    var lines = body.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].replace(/^```.*$/, '').replace(/[`*_]/g, '').trim();
+        if (!line) continue;
+        return line.length > 90 ? line.slice(0, 90) + '…' : line;
+    }
+    return '';
+}
+
+// `before` is the message the row has to open above: a group born of text that
+// is only now shown to have been commentary belongs where that text was, not
+// at the end of the chat.
+function createActivityGroup(before) {
+    var group = document.createElement('div');
+    group.className = 'activity running';
+    group._tools = [];
+    group._count = 0;
+
+    var header = document.createElement('div');
+    header.className = 'activity-header';
+    header.title = 'Show the individual steps';
+
+    var arrow = document.createElement('span');
+    arrow.className = 'activity-arrow';
+    arrow.textContent = '▶';
+
+    var dot = document.createElement('span');
+    dot.className = 'activity-dot';
+
+    var current = document.createElement('span');
+    current.className = 'activity-current';
+    var label = document.createElement('span');
+    label.className = 'activity-label';
+    label.textContent = 'Working…';
+    var detail = document.createElement('span');
+    detail.className = 'activity-detail';
+    current.appendChild(label);
+    current.appendChild(detail);
+
+    var count = document.createElement('span');
+    count.className = 'activity-count';
+
+    header.appendChild(arrow);
+    header.appendChild(dot);
+    header.appendChild(current);
+    header.appendChild(count);
+
+    var items = document.createElement('div');
+    items.className = 'activity-items';
+
+    header.addEventListener('click', function() {
+        var show = !items.classList.contains('visible');
+        items.classList.toggle('visible', show);
+        arrow.classList.toggle('expanded', show);
+        header.title = show ? 'Hide the individual steps' : 'Show the individual steps';
+        // Bodies that arrived while the group was shut could not be measured,
+        // so their height cap is decided now, on the way open.
+        if (show) applyPendingBodyCaps(items);
+    });
+
+    group.appendChild(header);
+    group.appendChild(items);
+    if (before) _container.insertBefore(group, before);
+    else _container.appendChild(group);
+    return group;
+}
+
+// Text the turn has moved on from. Called before anything else is added, so
+// the row it goes into is always the one it chronologically belongs to.
+function absorbPendingText() {
+    if (!_pendingText) return;
+    var text = _pendingText;
+    _pendingText = null;
+    if (!_activityGroup) _activityGroup = createActivityGroup(text);
+    _activityGroup.querySelector('.activity-items').appendChild(text);
+}
+
+function addToActivityGroup(div, type, data) {
+    if (!_activityGroup) _activityGroup = createActivityGroup();
+    var group = _activityGroup;
+
+    group.querySelector('.activity-items').appendChild(div);
+    group._count++;
+    setActivityCount(group, group._count);
+
+    // Marked here rather than only in updateStatus, so a step that is already
+    // finished when it arrives still marks the row. That is every step in a
+    // restored session, which is why the dot never turned red on one.
+    if (data.Status === 'Error') group.classList.add('has-error');
+
+    var tool = type === 'Thinking' ? 'Thinking' : (data.ToolName || 'tool');
+    var seen = group._tools.indexOf(tool);
+    if (seen >= 0) group._tools.splice(seen, 1);
+    group._tools.push(tool);
+
+    if (type === 'Thinking') {
+        setActivityLabel(group, data.ExpanderTitle || 'Thinking…');
+        setActivityDetail(group, '');
+    } else {
+        setActivityLabel(group, data.Title || ('Using ' + tool));
+        setActivityDetail(group, activityDetailFrom(data.Body));
+    }
+}
+
+function closeActivityGroup() {
+    // Whatever text is standing outside at this point is the reply the turn
+    // ended on, and stays where the user can read it.
+    _pendingText = null;
+    if (!_activityGroup) return;
+    var group = _activityGroup;
+    _activityGroup = null;
+    group.classList.remove('running');
+    setActivityLabel(group, activitySummary(group));
+    setActivityDetail(group, '');
+}
+
 // --- Public API ---
+
+// Called by the host when the turn is over. Without it a group whose last step
+// is a tool call would keep its live header, pulsing at nothing, until the next
+// message happened to close it.
+function endActivity() {
+    closeActivityGroup();
+}
 
 function addMessage(id, type, dataJson) {
     var data = typeof dataJson === 'string' ? JSON.parse(dataJson) : dataJson;
@@ -729,15 +981,35 @@ function addMessage(id, type, dataJson) {
         div.appendChild(content);
     }
 
-    _container.appendChild(div);
     if (type === 'User') {
+        // A new prompt ends the previous turn's row for good.
+        closeActivityGroup();
+        _container.appendChild(div);
         // A prompt the user just sent themselves: take them to it no matter
         // where they were reading. Only output that arrives on its own is
         // allowed to stay below the fold.
         _userScrolledUp = false;
         scrollToBottom();
         updateScrollButton();
+    } else if (isTurnFailure(type, data)) {
+        // Left standing, and the text before it left alone: when a turn ends in
+        // an error, that text is usually as far as the answer got, and folding
+        // it away takes both the answer and the reason off the screen at once.
+        _container.appendChild(div);
+        maybeScrollToBottom();
+    } else if (isActivityType(type)) {
+        absorbPendingText();
+        addToActivityGroup(div, type, data);
+        maybeScrollToBottom();
     } else {
+        // No absorbing here. Text is only commentary once a step follows it,
+        // and nothing that reaches this branch is a step. The service does not
+        // send two assistant items in a row, so in practice this is the
+        // "Processing stopped." or "Error:" message the view model adds when a
+        // turn is cancelled or throws — and the reply it interrupts has to stay
+        // where it can be read.
+        _container.appendChild(div);
+        _pendingText = div;
         maybeScrollToBottom();
     }
 }
@@ -778,6 +1050,15 @@ function updateStatus(id, status, expanderTitle) {
         var et = el.querySelector('.msg-expander-title');
         if (et) et.textContent = expanderTitle;
     }
+
+    // The folded row speaks for whichever step is in flight, so a title that
+    // moves on (thinking counting its seconds) has to move the row with it.
+    var group = el.closest('.activity');
+    if (!group) return;
+    if (status === 'Error') group.classList.add('has-error');
+    if (!group.classList.contains('running') || !expanderTitle) return;
+    var items = group.querySelector('.activity-items');
+    if (items.lastElementChild === el) setActivityLabel(group, expanderTitle);
 }
 
 function setBody(id, bodyContent, bodyMode) {
@@ -798,27 +1079,46 @@ function setBody(id, bodyContent, bodyMode) {
 
     // Apply cap and show-more link
     body.classList.add('capped');
-    // Check if content exceeds cap after render
-    requestAnimationFrame(function() {
-        if (body.scrollHeight <= 120) {
-            body.classList.remove('capped');
-        } else {
-            // Add show more link if not already present
-            var existing = el.querySelector('.show-more-link');
-            if (!existing) {
-                var link = document.createElement('span');
-                link.className = 'show-more-link';
-                link.textContent = 'Show more';
-                link.addEventListener('click', function() {
-                    var isCapped = body.classList.contains('capped');
-                    body.classList.toggle('capped', !isCapped);
-                    link.textContent = isCapped ? 'Show less' : 'Show more';
-                });
-                body.parentNode.insertBefore(link, body.nextSibling);
-            }
-        }
-    });
+    if (body.offsetParent === null) {
+        // Inside a folded activity group. A hidden element reports a height of
+        // zero, so measuring now would take the cap off every body and the
+        // group would open onto the full output of every step it holds.
+        body.dataset.capPending = '1';
+    } else {
+        requestAnimationFrame(function() { applyBodyCap(el, body); });
+    }
     maybeScrollToBottom();
+}
+
+// Caps a rendered body at the height the CSS allows and gives it a show-more
+// link, unless it is short enough to stand on its own. The element has to be
+// visible: this reads scrollHeight.
+function applyBodyCap(el, body) {
+    delete body.dataset.capPending;
+    if (body.scrollHeight <= 120) {
+        body.classList.remove('capped');
+        return;
+    }
+    // Add show more link if not already present
+    var existing = el.querySelector('.show-more-link');
+    if (existing) return;
+    var link = document.createElement('span');
+    link.className = 'show-more-link';
+    link.textContent = 'Show more';
+    link.addEventListener('click', function() {
+        var isCapped = body.classList.contains('capped');
+        body.classList.toggle('capped', !isCapped);
+        link.textContent = isCapped ? 'Show less' : 'Show more';
+    });
+    body.parentNode.insertBefore(link, body.nextSibling);
+}
+
+function applyPendingBodyCaps(items) {
+    var pending = items.querySelectorAll('.msg-body[data-cap-pending]');
+    for (var i = 0; i < pending.length; i++) {
+        var body = pending[i];
+        applyBodyCap(body.closest('.msg'), body);
+    }
 }
 
 function completeMessage(id) {
@@ -839,6 +1139,8 @@ function completeMessage(id) {
 
 function clearAll() {
     if (_container) _container.innerHTML = '';
+    _activityGroup = null;
+    _pendingText = null;
     _userScrolledUp = false;
     updateScrollButton();
 }
@@ -857,6 +1159,9 @@ function loadMessages(jsonArray) {
             completeMessage(m.Id);
         }
     }
+    // Nothing in a restored transcript is still running, including a run of
+    // steps that the session ended on.
+    closeActivityGroup();
     _userScrolledUp = false;
     scrollToBottom();
     updateScrollButton();

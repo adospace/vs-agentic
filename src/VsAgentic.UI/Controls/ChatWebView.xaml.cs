@@ -375,6 +375,16 @@ public partial class ChatWebView : UserControl
         return ExecuteOrQueueAsync("clearAll()");
     }
 
+    /// <summary>
+    /// Closes the folded run of steps the chat is currently collecting into.
+    /// Called when the turn ends, so a run the model finished on stops
+    /// presenting itself as still in flight.
+    /// </summary>
+    public Task EndActivityAsync()
+    {
+        return ExecuteOrQueueAsync("endActivity()");
+    }
+
     public Task LoadMessagesAsync(IEnumerable<ChatMessageData> messages)
     {
         var json = JsonSerializer.Serialize(messages);

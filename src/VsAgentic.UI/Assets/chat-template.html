@@ -1074,24 +1074,28 @@ function showCtxMenu(e, items) {
 
 document.addEventListener('contextmenu', function(e) {
     if (_ctxMenu) _ctxMenu.style.display = 'none';
+
+    // Both can apply at once: a link inside selected text. The file actions come
+    // first, because the link is what was clicked, but Copy has to stay on the
+    // menu or selecting a paragraph that mentions a file leaves no way to copy it.
+    var items = [];
+
     var link = e.target.closest('a.file-link');
     var path = link && link.dataset.path;
     if (path) {
-        e.preventDefault();
-        showCtxMenu(e, [
-            { label: 'Open', run: function() { requestFileLink('open', path); } },
-            { label: 'Copy path', run: function() { requestFileLink('copyPath', path); } },
-            { label: 'Show in Explorer', run: function() { requestFileLink('showInExplorer', path); } }
-        ]);
-        return;
+        items.push({ label: 'Open', run: function() { requestFileLink('open', path); } });
+        items.push({ label: 'Copy path', run: function() { requestFileLink('copyPath', path); } });
+        items.push({ label: 'Show in Explorer', run: function() { requestFileLink('showInExplorer', path); } });
     }
 
     var sel = window.getSelection().toString();
     if (sel) {
+        items.push({ label: 'Copy', run: function() { copyToClipboard(sel); } });
+    }
+
+    if (items.length) {
         e.preventDefault();
-        showCtxMenu(e, [
-            { label: 'Copy', run: function() { copyToClipboard(sel); } }
-        ]);
+        showCtxMenu(e, items);
     }
 });
 

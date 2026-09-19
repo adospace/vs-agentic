@@ -91,18 +91,6 @@ public static class ClaudeModelCatalog
     public static ClaudeModelInfo Default => All[0];
 
     /// <summary>
-    /// Resolves a stored alias back to its catalog entry, falling back to
-    /// <see cref="Default"/> so a stale or hand-edited setting cannot leave the
-    /// dropdown with nothing selected.
-    /// </summary>
-    public static ClaudeModelInfo Find(string? alias)
-    {
-        if (string.IsNullOrWhiteSpace(alias)) return Default;
-        return All.FirstOrDefault(m => string.Equals(m.Alias, alias, StringComparison.OrdinalIgnoreCase))
-            ?? Default;
-    }
-
-    /// <summary>
     /// Context window for the concrete model id the CLI reports in its
     /// <c>system/init</c> event. We read it off the id rather than the selected
     /// alias because the alias resolves server-side — the init event is the

@@ -244,8 +244,17 @@ public sealed class UsageLog
                     writer.WriteLine(Format(e.Utc, e.Tokens));
             }
 
-            File.Delete(_path);
-            File.Move(temp, _path);
+            // Replace, not delete-then-move. Between the delete and the move,
+            // another Visual Studio appending a row would recreate the file and
+            // the move would fail: the pruned rows would be left in the .tmp
+            // file and the log would hold that one row. Replace swaps the file
+            // in one step, so the worst case is losing a row appended while we
+            // were reading — which no amount of care here can prevent.
+            if (File.Exists(_path))
+                File.Replace(temp, _path, null);
+            else
+                File.Move(temp, _path);
+
             _loadedStamp = WriteStamp(_path);
         }
         catch (Exception)

@@ -56,7 +56,9 @@ public partial class ChatSessionViewModel
     /// "whatever the CLI picks" relabels itself to the model that actually
     /// turned up — and two sessions can be on different models.
     /// </summary>
-    public IReadOnlyList<ModelOption> ModelOptions { get; } =
+    public IReadOnlyList<ModelOption> ModelOptions => _modelOptions;
+
+    private readonly List<ModelOption> _modelOptions =
         ClaudeModelCatalog.All.Select(m => new ModelOption(m)).ToList();
 
     public IReadOnlyList<ClaudeEffort> EffortOptions { get; } =
@@ -131,10 +133,7 @@ public partial class ChatSessionViewModel
         _suppressModelEffortApply = true;
         try
         {
-            var alias = ClaudeModelCatalog.Find(options.Model).Alias;
-            SelectedModel = ModelOptions.FirstOrDefault(
-                m => string.Equals(m.Alias, alias, StringComparison.OrdinalIgnoreCase))
-                ?? ModelOptions[0];
+            SelectedModel = OptionFor(options.Model);
             SelectedEffort = options.Effort;
         }
         finally
@@ -147,6 +146,29 @@ public partial class ChatSessionViewModel
 
         chatService.ModelChanged += OnChatServiceModelChanged;
         RefreshModelPreview();
+    }
+
+    /// <summary>
+    /// The picker row for a configured alias, adding one when the alias is not
+    /// in the catalog. The Model setting is free text under Tools → Options, and
+    /// the host passes whatever it holds to <c>--model</c>. Folding an unknown
+    /// value back to Default, as the catalog does, would leave the picker naming
+    /// a model the CLI is not being asked for: with a typo every message fails
+    /// while the status bar reads Default, and nothing points at the setting.
+    /// A row of its own names what is actually being sent.
+    /// </summary>
+    private ModelOption OptionFor(string? configuredAlias)
+    {
+        var alias = (configuredAlias ?? "").Trim();
+
+        var known = _modelOptions.FirstOrDefault(
+            m => string.Equals(m.Alias, alias, StringComparison.OrdinalIgnoreCase));
+        if (known is not null) return known;
+        if (alias.Length == 0) return _modelOptions[0];
+
+        var custom = new ModelOption(new ClaudeModelInfo(alias, alias));
+        _modelOptions.Add(custom);
+        return custom;
     }
 
     private void OnChatServiceUsageChanged(SessionUsage usage) => Dispatch(() => Usage = usage);

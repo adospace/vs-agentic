@@ -40,13 +40,15 @@ Claude Code comes with a full suite of agentic tools — file search, code searc
 The status bar under the chat input shows where your tokens are going:
 
 - **Context** — how full the model's context window is, so a compaction is never a surprise
-- **5h / 7d** — tokens spent in the trailing rate-limit windows, counted across every session on the machine and kept between restarts
+- **5h / 7d** — tokens spent in the trailing rate-limit windows, counted across every VsAgentic session on the machine and kept between restarts
 - **Session** — what this conversation has cost so far, broken down by input, output and cache in the tooltip
 - **Model / effort** dropdowns — switch either without leaving the chat; the conversation is resumed, not lost. Effort `Default` sends no level to the CLI
 
 In a narrow pane the readings drop out one by one; the context reading stays longest.
 
 The rate-limit budgets are estimates — Anthropic does not publish the real limits — so the 5h / 7d readings are a gauge, not an authority. Adjust them under **Tools → Options → VsAgentic** if you have measured your own.
+
+The 5h / 7d readings count what VsAgentic itself has spent. Work done by `claude` in a terminal draws on the same limits but is not counted here, so your real usage can be higher than these numbers show.
 
 ### 🖼️ Rich Markdown Rendering
 Responses are rendered with full Markdown support — syntax-highlighted code blocks, tables, lists, and inline formatting — via an embedded WebView2 control.

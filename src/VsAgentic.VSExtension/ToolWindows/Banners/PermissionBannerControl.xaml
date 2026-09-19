@@ -29,7 +29,9 @@
                        MaxHeight="160"
                        TextWrapping="Wrap"/>
 
-            <!-- Initial state: Allow / Deny / Other... in a single row.
+            <!-- Initial state: Allow / Allow for this session / Deny / Other...
+                 in a single row. The session button is hidden when the request
+                 gives nothing stable to build a rule from.
                  Clicking Allow or Deny dispatches immediately; Other...
                  swaps the row out for the alternative-input row below. -->
             <StackPanel Orientation="Horizontal"
@@ -39,6 +41,11 @@
                 <Button Content="Allow"
                         Style="{StaticResource PrimaryButtonStyle}"
                         Command="{Binding AllowCommand}"/>
+                <Button Content="Allow for this session"
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        Command="{Binding AllowForSessionCommand}"
+                        ToolTip="{Binding AllowForSessionTooltip}"
+                        Visibility="{Binding CanAllowForSession, Converter={StaticResource BoolToVis}}"/>
                 <Button Content="Deny"
                         Style="{StaticResource DangerButtonStyle}"
                         Command="{Binding DenyCommand}"/>

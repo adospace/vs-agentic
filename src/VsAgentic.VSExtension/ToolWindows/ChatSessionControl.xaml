@@ -9,11 +9,23 @@
              xmlns:bv="clr-namespace:VsAgentic.VSExtension.ToolWindows.Banners"
              xmlns:local="clr-namespace:VsAgentic.VSExtension.ToolWindows"
              PreviewMouseWheel="OnPreviewMouseWheel"
-             PreviewKeyDown="OnPreviewKeyDown" >
+             PreviewKeyDown="OnPreviewKeyDown"
+             PreviewMouseDown="OnPreviewMouseDown" >
 
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <controls:MinWidthVisibilityConverter x:Key="MinWidth"/>
+
+        <!-- Flashes the status bar background while waiting for input. To-only
+             animation with AutoReverse, so the themed base colour never has to
+             be restated here: it animates from whatever the brush currently is
+             and back. Keyframes can't carry a DynamicResource anyway (a
+             Storyboard is a Freezable), and VsBrushes keys resolve to a Brush,
+             not the Color a colour keyframe needs. -->
+        <Storyboard x:Key="FlashStoryboard" RepeatBehavior="Forever" AutoReverse="True">
+            <ColorAnimation Storyboard.TargetProperty="Background.Color"
+                            To="#66808080" Duration="0:0:0.75"/>
+        </Storyboard>
 
         <!-- Status bar pickers. Fully retemplated rather than merely unbordered:
              the stock ComboBox chrome draws its own border, background and
@@ -373,6 +385,29 @@
                         <Border Grid.Row="1"
                                 BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
                                 BorderThickness="0,1,0,0">
+                            <!-- A local brush, not the shared VsBrushes one: the themed
+                                 brushes are frozen and can't be animated. -->
+                            <Border.Background>
+                                <SolidColorBrush Color="{DynamicResource {x:Static vs:VsColors.ComboBoxBackgroundKey}}"/>
+                            </Border.Background>
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Style.Triggers>
+                                        <!-- IsFlashing, not Activity: the view model already
+                                             folds the state and the user's Appearance switch
+                                             into one answer, so the switch logic stays in
+                                             one place as more states are added. -->
+                                        <DataTrigger Binding="{Binding IsFlashing}" Value="True">
+                                            <DataTrigger.EnterActions>
+                                                <BeginStoryboard x:Name="FlashBegin" Storyboard="{StaticResource FlashStoryboard}"/>
+                                            </DataTrigger.EnterActions>
+                                            <DataTrigger.ExitActions>
+                                                <StopStoryboard BeginStoryboardName="FlashBegin"/>
+                                            </DataTrigger.ExitActions>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
@@ -510,13 +545,24 @@
             </Grid>
         </Border>
 
-        <!-- Busy indicator -->
+        <!-- Status indicator. The wording per state and the empty-means-hidden
+             rule both live on the view model's StatusText, so a new state does
+             not add a trigger here. -->
         <Border DockPanel.Dock="Bottom"
                 LayoutTransform="{StaticResource ChromeZoom}"
                 Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}"
-                Padding="16,4"
-                Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}">
-            <TextBlock Text="Thinking..."
+                Padding="16,4">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Setter Property="Visibility" Value="Visible"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding StatusText}" Value="">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
+            <TextBlock Text="{Binding StatusText}"
                        Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
                        FontSize="12" FontStyle="Italic"/>
         </Border>

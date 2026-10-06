@@ -889,6 +889,27 @@ document.addEventListener('click', function(e) {
     }
 });
 
+// Clicking in the transcript means the user is looking at this session, which
+// is one of the things that clears its "turn finished" indicator. The host
+// cannot see it for itself: this page is a browser child window, so the click
+// is neither a WPF mouse event nor necessarily a change of WPF focus.
+// pointerdown in the capture phase, so a handler that stops propagation (the
+// file links above, text selection) cannot swallow the signal.
+document.addEventListener('pointerdown', function() {
+    window.chrome.webview.postMessage(JSON.stringify({type:'click'}));
+}, true);
+
+// Whether the user is in this session at all, for the same reason: focus
+// sitting in the transcript is focus the host cannot see. blur fires when the
+// browser hands focus back to the chrome around it and when the whole
+// application goes to the background, which is the distinction the host wants.
+function reportFocus(hasFocus) {
+    window.chrome.webview.postMessage(JSON.stringify({type:'focus', hasFocus:hasFocus}));
+}
+
+window.addEventListener('focus', function() { reportFocus(true); });
+window.addEventListener('blur', function() { reportFocus(false); });
+
 // --- Zoom ---
 // The host owns the zoom level, because it also scales the input box and the
 // banners that sit outside this page. Ctrl+wheel and Ctrl+/- are swallowed by

@@ -72,8 +72,17 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     // turn is currently active. We only ever have one active turn at a time —
     // SendMessageAsync calls are serialized by the UI (IsBusy gate) — so a
     // single mutable reference is enough.
+    //
+    // The CLI can also start a turn on its own, for example when a background
+    // command finishes and its notification wakes the model. Such a turn has no
+    // SendMessageAsync caller; the dispatcher opens one for it (Unsolicited).
     private TurnState? _activeTurn;
     private readonly object _activeTurnLock = new object();
+
+    // Set when the user stops a turn the CLI is still running. Stop does not
+    // interrupt the CLI, so the rest of that turn keeps arriving; it is dropped
+    // up to the next result event instead of being shown as a turn of its own.
+    private bool _discardUntilResult;
 
     // ── Control requests ──────────────────────────────────────────────────
     // A model or effort change goes to the running process as a control
@@ -146,10 +155,18 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         }
 
         var turn = new TurnState();
+        TurnState? replaced;
         lock (_activeTurnLock)
         {
+            replaced = _activeTurn;
             _activeTurn = turn;
+            _discardUntilResult = false;
         }
+
+        // The UI gates sending while a turn runs, but a turn the CLI started
+        // on its own can begin just before the gate closes.
+        if (replaced is { Unsolicited: true })
+            RaiseUnsolicitedTurnCompleted();
 
         // Send the user message line.
         try
@@ -178,7 +195,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             }
             catch (OperationCanceledException)
             {
-                ClearActiveTurn(turn);
+                AbandonTurn(turn);
                 throw;
             }
 
@@ -186,7 +203,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             try { more = await wait.ConfigureAwait(false); }
             catch (OperationCanceledException)
             {
-                ClearActiveTurn(turn);
+                AbandonTurn(turn);
                 throw;
             }
 
@@ -205,6 +222,58 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             if (ReferenceEquals(_activeTurn, turn))
                 _activeTurn = null;
         }
+    }
+
+    // Stop leaves the CLI running the turn. Drop the rest of it rather than
+    // showing it as a turn the CLI started on its own.
+    private void AbandonTurn(TurnState turn)
+    {
+        lock (_activeTurnLock)
+        {
+            if (!ReferenceEquals(_activeTurn, turn)) return;
+            _activeTurn = null;
+            if (!turn.ResultReceived)
+                _discardUntilResult = true;
+        }
+    }
+
+    public event Action? UnsolicitedTurnStarted;
+    public event Action? UnsolicitedTurnCompleted;
+
+    public void StopUnsolicitedTurn()
+    {
+        TurnState? turn;
+        lock (_activeTurnLock) { turn = _activeTurn; }
+        if (turn is not { Unsolicited: true }) return;
+
+        AbandonTurn(turn);
+        RaiseUnsolicitedTurnCompleted();
+    }
+
+    // Opens a turn for events that arrive while no SendMessageAsync call is
+    // waiting, so they are rendered like any other answer.
+    //
+    // A sent turn stays _activeTurn after its result until SendMessageAsync
+    // gets to ClearActiveTurn, which waits for the caller on the UI thread.
+    // That turn is over, so a CLI-started turn replaces it; the late
+    // ClearActiveTurn then finds another turn and leaves it alone.
+    private void BeginUnsolicitedTurnIfIdle()
+    {
+        lock (_activeTurnLock)
+        {
+            if (_activeTurn is { ResultReceived: false } || _discardUntilResult) return;
+            _activeTurn = new TurnState { Unsolicited = true };
+        }
+
+        _logger.LogInformation("[ClaudeCli] CLI started a turn on its own");
+        try { UnsolicitedTurnStarted?.Invoke(); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] UnsolicitedTurnStarted handler threw"); }
+    }
+
+    private void RaiseUnsolicitedTurnCompleted()
+    {
+        try { UnsolicitedTurnCompleted?.Invoke(); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] UnsolicitedTurnCompleted handler threw"); }
     }
 
     private void EnsureDispatcherStarted()
@@ -241,11 +310,13 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         {
             // Process exited unexpectedly; tear down any active turn so callers unblock.
             TurnState? turn;
-            lock (_activeTurnLock) { turn = _activeTurn; _activeTurn = null; }
+            lock (_activeTurnLock) { turn = _activeTurn; _activeTurn = null; _discardUntilResult = false; }
             if (turn != null)
             {
                 FinalizeOpenBlocks(turn);
                 turn.TextDeltas.Writer.TryComplete();
+                if (turn.Unsolicited)
+                    RaiseUnsolicitedTurnCompleted();
             }
 
             // Background tasks are children of the CLI and end with it.
@@ -265,6 +336,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 return;
 
             case "assistant":
+                BeginUnsolicitedTurnIfIdle();
                 await HandleAssistantEventAsync(evt).ConfigureAwait(false);
                 return;
 
@@ -588,8 +660,20 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     private void HandleResultEvent(JsonElement evt)
     {
         TurnState? turn;
-        lock (_activeTurnLock) { turn = _activeTurn; }
-        if (turn == null) return;
+        lock (_activeTurnLock)
+        {
+            turn = _activeTurn;
+            if (turn is not { ResultReceived: false })
+            {
+                // End of a stopped turn: what follows is new again.
+                _discardUntilResult = false;
+                return;
+            }
+
+            // Under the lock, so a Stop that comes after this point sees the
+            // result as taken and does not drop the next turn.
+            turn.ResultReceived = true;
+        }
 
         FinalizeOpenBlocks(turn);
 
@@ -633,6 +717,13 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
         // Signal SendMessageAsync to return.
         turn.TextDeltas.Writer.TryComplete();
+
+        // No SendMessageAsync call is waiting on a turn the CLI started itself.
+        if (turn.Unsolicited)
+        {
+            ClearActiveTurn(turn);
+            RaiseUnsolicitedTurnCompleted();
+        }
     }
 
     // ── Finalization helpers ───────────────────────────────────────────────
@@ -1297,6 +1388,13 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         public StringBuilder ResponseBuilder = new StringBuilder();
 
         public OutputItem? ToolItem;
+
+        // True for a turn the CLI started on its own; no caller reads TextDeltas.
+        public bool Unsolicited;
+
+        // Set when the dispatcher takes the result event, under _activeTurnLock.
+        // From then on the turn is over, even while it is still _activeTurn.
+        public bool ResultReceived;
 
         // Set when the CLI flags an assistant message as "authentication_failed".
         public bool AuthFailed;

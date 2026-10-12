@@ -282,9 +282,58 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         }
 
         chatService.LoginRequired += OnChatServiceLoginRequired;
+        chatService.UnsolicitedTurnStarted += OnUnsolicitedTurnStarted;
+        chatService.UnsolicitedTurnCompleted += OnUnsolicitedTurnCompleted;
         chatService.BackgroundTasksChanged += OnChatServiceBackgroundTasksChanged;
 
         InitializeUsage(chatService, options.Value);
+    }
+
+    // True while a turn the CLI started on its own is running. It holds the
+    // session busy like a sent message does, so Send stays off and Stop works.
+    //
+    // Such a turn can start while SendAsync is still closing the turn before
+    // it (the service already has that turn's result). Whichever of the two
+    // ends last clears IsBusy and ends the turn in the view.
+    private bool _inUnsolicitedTurn;
+
+    private void OnUnsolicitedTurnStarted()
+    {
+        Dispatch(() =>
+        {
+            _inUnsolicitedTurn = true;
+            IsBusy = true;
+        });
+    }
+
+    private void OnUnsolicitedTurnCompleted()
+    {
+        Dispatch(() =>
+        {
+            if (!_inUnsolicitedTurn) return;
+            _inUnsolicitedTurn = false;
+            OnExchangeCompleted();
+
+            // A sent message still holds the session; SendAsync ends the turn.
+            if (_sendCts is not null) return;
+
+            IsBusy = false;
+            TurnEnded?.Invoke();
+            RequestScroll();
+        });
+    }
+
+    private void OnExchangeCompleted()
+    {
+        // Persist conversation history after each completed exchange
+        PersistConversationHistoryFireAndForget();
+
+        // Refresh cost and last activity in the session list
+        if (_chatService is not null && SessionInfo is not null)
+        {
+            SessionInfo.SessionCost = _chatService.GetSessionCost();
+            SessionInfo.LastActivity = DateTime.Now;
+        }
     }
 
     // ── Background tasks ──────────────────────────────────────────────────
@@ -724,15 +773,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 // Output is handled by listener callbacks
             }
 
-            // Persist conversation history after each completed exchange
-            PersistConversationHistoryFireAndForget();
-
-            // Refresh cost and last activity in the session list
-            if (_chatService is not null && SessionInfo is not null)
-            {
-                SessionInfo.SessionCost = _chatService.GetSessionCost();
-                SessionInfo.LastActivity = DateTime.Now;
-            }
+            OnExchangeCompleted();
         }
         catch (OperationCanceledException)
         {
@@ -772,8 +813,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         {
             _sendCts?.Dispose();
             _sendCts = null;
-            IsBusy = false;
-            TurnEnded?.Invoke();
+
+            // A turn the CLI started on its own may already be running; it
+            // keeps the session busy and ends the turn when it completes.
+            if (!_inUnsolicitedTurn)
+            {
+                IsBusy = false;
+                TurnEnded?.Invoke();
+            }
         }
         RequestScroll();
     }
@@ -785,6 +832,12 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         try { _sendCts?.Cancel(); }
         catch { /* best effort — token may already be disposed */ }
+
+        if (_inUnsolicitedTurn)
+        {
+            try { _chatService?.StopUnsolicitedTurn(); }
+            catch (Exception ex) { _logger.LogError(ex, "[VM] Stop: StopUnsolicitedTurn failed"); }
+        }
 
         // The dispatcher loop blocks on the broker's TCS while a permission /
         // question banner is open. SendAsync's cancellation token doesn't reach
@@ -1070,6 +1123,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             {
                 _chatService.UsageChanged -= OnChatServiceUsageChanged;
                 _chatService.ModelChanged -= OnChatServiceModelChanged;
+                _chatService.UnsolicitedTurnStarted -= OnUnsolicitedTurnStarted;
+                _chatService.UnsolicitedTurnCompleted -= OnUnsolicitedTurnCompleted;
                 _chatService.BackgroundTasksChanged -= OnChatServiceBackgroundTasksChanged;
             }
         }

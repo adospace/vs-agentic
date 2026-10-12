@@ -229,6 +229,35 @@ html, body {
 .toolstep-status { font-size: 10px; }
 .toolstep-name { color: var(--text-muted); }
 
+/* Mark on a step whose work runs on in the background (run_in_background).
+   The step itself completes at once; this follows the work it started. */
+.toolstep-bg {
+    font-size: 11px;
+    padding: 0 6px;
+    border: 1px solid currentColor;
+    border-radius: 8px;
+    cursor: default;
+}
+.toolstep-bg-Running { color: var(--info); animation: bg-pulse 1.6s ease-in-out infinite; }
+.toolstep-bg-Completed { color: var(--success); }
+.toolstep-bg-Failed { color: var(--error); }
+.toolstep-bg-Stopped { color: var(--text-muted); }
+@keyframes bg-pulse { 50% { opacity: 0.45; } }
+
+/* Notice: a one-line event from the extension, e.g. a background command that
+   ended. Indented like a step, in muted text, with a colored outcome icon. */
+.msg-notice {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.notice-icon { font-weight: bold; }
+.notice-Success .notice-icon { color: var(--success); }
+.notice-Error .notice-icon { color: var(--error); }
+.notice-Info .notice-icon { color: var(--text-muted); }
+
 .toolstep-expander {
     margin: 4px 0 0 18px;
     font-size: 11px;
@@ -990,6 +1019,17 @@ function addMessage(id, type, dataJson) {
         body.style.display = 'none';
         div.appendChild(body);
     }
+    else if (type === 'Notice') {
+        div.classList.add('msg-notice', 'notice-' + (data.Status || 'Info'));
+        var icon = document.createElement('span');
+        icon.className = 'notice-icon';
+        icon.textContent = NOTICE_ICONS[data.Status] || NOTICE_ICONS.Info;
+        var text = document.createElement('span');
+        text.className = 'notice-text';
+        text.textContent = data.Content || '';
+        div.appendChild(icon);
+        div.appendChild(text);
+    }
     else if (type === 'Thinking') {
         div.classList.add('msg-thinking');
         var header = document.createElement('div');
@@ -1062,6 +1102,14 @@ function addMessage(id, type, dataJson) {
         _userScrolledUp = false;
         scrollToBottom();
         updateScrollButton();
+    } else if (type === 'Notice') {
+        // Background work ending is a boundary like a prompt: the CLI wakes up
+        // after it and starts a turn of its own. Close the row so that turn's
+        // steps do not fold into the last one, nor take its reply with them,
+        // and leave the notice standing.
+        closeActivityGroup();
+        _container.appendChild(div);
+        maybeScrollToBottom();
     } else if (isTurnFailure(type, data)) {
         // Left standing, and the text before it left alone: when a turn ends in
         // an error, that text is usually as far as the answer got, and folding
@@ -1131,6 +1179,33 @@ function updateStatus(id, status, expanderTitle) {
     if (!group.classList.contains('running') || !expanderTitle) return;
     var items = group.querySelector('.activity-items');
     if (items.lastElementChild === el) setActivityLabel(group, expanderTitle);
+}
+
+var NOTICE_ICONS = { Success: '✓', Error: '✗', Info: '■' };
+
+var BG_LABELS = {
+    Running: '⧗ running in background',
+    Completed: '✓ background done',
+    Failed: '✗ background failed',
+    Stopped: '■ background stopped'
+};
+
+// Marks a tool step whose work runs on in the background. Called again with
+// the outcome when the CLI reports the work ended; the summary (e.g. the exit
+// code) goes into the tooltip.
+function setBackgroundState(id, state, summary) {
+    var el = document.getElementById('msg-' + id);
+    if (!el) return;
+    var header = el.querySelector('.toolstep-header');
+    if (!header) return;
+    var badge = header.querySelector('.toolstep-bg');
+    if (!badge) {
+        badge = document.createElement('span');
+        header.appendChild(badge);
+    }
+    badge.className = 'toolstep-bg toolstep-bg-' + state;
+    badge.textContent = BG_LABELS[state] || state;
+    badge.title = summary || '';
 }
 
 function setBody(id, bodyContent, bodyMode) {
@@ -1319,6 +1394,9 @@ function getMessageText(msgEl) {
     } else if (type === 'Thinking') {
         var tc = msgEl.querySelector('.thinking-content');
         return tc ? tc.textContent : '';
+    } else if (type === 'Notice') {
+        var nt = msgEl.querySelector('.notice-text');
+        return nt ? nt.textContent : '';
     }
     return '';
 }

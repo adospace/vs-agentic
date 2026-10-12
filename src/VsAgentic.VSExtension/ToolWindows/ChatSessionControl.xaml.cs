@@ -48,6 +48,9 @@ public partial class ChatSessionControl : UserControl
         viewModel.MessageBodySet += (id, body, mode) =>
             _ = ChatWebView.SetBodyAsync(id, body, mode);
 
+        viewModel.MessageBackgroundStateSet += (id, state, summary) =>
+            _ = ChatWebView.SetBackgroundStateAsync(id, state, summary);
+
         viewModel.MessageCompleted += (id) =>
             _ = ChatWebView.CompleteMessageAsync(id);
 

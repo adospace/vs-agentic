@@ -214,6 +214,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     public event Action<string, string>? MessageContentUpdated;
     public event Action<string, OutputItemStatus, string>? MessageStatusUpdated;
     public event Action<string, string, OutputBodyMode>? MessageBodySet;
+    public event Action<string, BackgroundStepState, string?>? MessageBackgroundStateSet;
     public event Action<string>? MessageCompleted;
     public event Action? AllCleared;
 
@@ -283,8 +284,62 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
         chatService.LoginRequired += OnChatServiceLoginRequired;
         chatService.BackgroundTasksChanged += OnChatServiceBackgroundTasksChanged;
+        chatService.StepBackgroundStateChanged += OnChatServiceStepBackgroundStateChanged;
 
         InitializeUsage(chatService, options.Value);
+    }
+
+    // The step id is the id the transcript already knows the step by, so the
+    // mark goes straight to the web view. It is not saved: a reopened session
+    // shows the step without it.
+    //
+    // When the work ends, a notice line with the outcome is added as well. The
+    // step may sit folded away, or far up the transcript; the notice lands
+    // where the user is reading, just above the answer the CLI wakes up to
+    // give. Unlike the mark it is saved with the session.
+    private void OnChatServiceStepBackgroundStateChanged(string stepId, BackgroundStepState state, string? summary)
+    {
+        Dispatch(() =>
+        {
+            MessageBackgroundStateSet?.Invoke(stepId, state, summary);
+            if (state != BackgroundStepState.Running)
+                AddNotice(state, string.IsNullOrWhiteSpace(summary) ? $"Background command {state.ToString().ToLowerInvariant()}." : summary!);
+        });
+    }
+
+    private void AddNotice(BackgroundStepState state, string text)
+    {
+        // The status picks the icon and color in the web view.
+        var status = state switch
+        {
+            BackgroundStepState.Completed => OutputItemStatus.Success,
+            BackgroundStepState.Failed => OutputItemStatus.Error,
+            _ => OutputItemStatus.Info,
+        };
+        var id = $"notice-{Guid.NewGuid():N}";
+        Items.Add(new ChatItemViewModel
+        {
+            Type = ChatItemType.Notice,
+            Content = text,
+            Status = status,
+            IsStreaming = false
+        });
+        MessageAdded?.Invoke(id, ChatItemType.Notice, new ChatMessageData
+        {
+            Id = id,
+            Type = ChatItemType.Notice.ToString(),
+            Content = text,
+            Status = status.ToString()
+        });
+        RequestScroll();
+
+        PersistMessageFireAndForget(new PersistedMessage
+        {
+            ItemType = ChatItemType.Notice.ToString(),
+            Content = text,
+            StatusText = status.ToString(),
+            CreatedUtc = DateTime.UtcNow
+        });
     }
 
     // ── Background tasks ──────────────────────────────────────────────────
@@ -1071,6 +1126,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 _chatService.UsageChanged -= OnChatServiceUsageChanged;
                 _chatService.ModelChanged -= OnChatServiceModelChanged;
                 _chatService.BackgroundTasksChanged -= OnChatServiceBackgroundTasksChanged;
+                _chatService.StepBackgroundStateChanged -= OnChatServiceStepBackgroundStateChanged;
             }
         }
         catch { }

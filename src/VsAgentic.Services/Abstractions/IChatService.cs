@@ -96,6 +96,16 @@ public interface IChatService
     void LaunchLogin();
 
     /// <summary>
+    /// Raised when the work a tool step moved to the background starts or
+    /// ends. Arguments: the step id (the same id the output listener used for
+    /// the step), the new state, and the CLI's summary when the work ended,
+    /// e.g. <c>Background command "…" failed with exit code 3</c>. Can fire
+    /// between turns. Raised on a background thread; hosts must marshal to
+    /// the UI thread.
+    /// </summary>
+    event Action<string, BackgroundStepState, string?>? StepBackgroundStateChanged;
+
+    /// <summary>
     /// The tasks the CLI is running in the background right now. Empty when
     /// none run, and after the CLI process stops, which ends them.
     /// </summary>

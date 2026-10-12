@@ -545,6 +545,12 @@ public partial class ChatWebView : UserControl
             $"updateStatus({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(status.ToString())}, {JsonSerializer.Serialize(expanderTitle)})");
     }
 
+    public Task SetBackgroundStateAsync(string id, BackgroundStepState state, string? summary)
+    {
+        return ExecuteOrQueueAsync(
+            $"setBackgroundState({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(state.ToString())}, {JsonSerializer.Serialize(summary)})");
+    }
+
     public Task SetBodyAsync(string id, string body, OutputBodyMode bodyMode)
     {
         return ExecuteOrQueueAsync(

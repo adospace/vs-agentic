@@ -194,6 +194,7 @@ Your feedback makes VsAgentic better! Here's how to get involved:
 - 💡 **Have a feature idea?** [Open an issue](https://github.com/adospace/vs-agentic/issues/new) and describe it
 - ⭐ **Enjoying the extension?** A star on GitHub goes a long way — thank you!
 - 🗳️ **Marketplace review** — Leaving a review on the Visual Studio Marketplace helps other developers discover VsAgentic.
+- 🛠️ **Want to contribute?** See [CONTRIBUTING.md](https://github.com/adospace/vs-agentic/blob/main/CONTRIBUTING.md) for how to build, run, and test the extension locally, on a fork and before raising a PR back to the main repo
 
 ---
 

@@ -116,4 +116,29 @@
     <None Include="source.extension.vsixmanifest" SubType="Designer" />
   </ItemGroup>
 
+  <!--
+    Force the intermediate manifest to be regenerated when the source one changes.
+
+    DetokenizeVsixManifestSource (Microsoft.VSSDK.BuildTools 17.14.2120) writes
+    $(IntermediateOutputPath)extension.vsixmanifest only when that file does not
+    already exist — it reports the write in FileWrites either way, so the build
+    log gives no hint. Every edit to source.extension.vsixmanifest is therefore
+    silently ignored on an incremental build: the version, DisplayName,
+    Description, Prerequisites and Assets are all frozen at whatever they were
+    when obj was last clean, and the packed .vsix keeps carrying the stale copy.
+
+    Version is the one that bites hardest, because VSIXInstaller keys on it —
+    a bumped manifest produces a .vsix still stamped with the old version, which
+    then silently fails to install over itself.
+
+    Inputs/Outputs make this a no-op once the intermediate is current, so the
+    delete only happens on the builds that actually need it.
+  -->
+  <Target Name="ForceRefreshIntermediateVsixManifest"
+          BeforeTargets="DetokenizeVsixManifestFile"
+          Inputs="source.extension.vsixmanifest"
+          Outputs="$(IntermediateOutputPath)extension.vsixmanifest">
+    <Delete Files="$(IntermediateOutputPath)extension.vsixmanifest" />
+  </Target>
+
 </Project>

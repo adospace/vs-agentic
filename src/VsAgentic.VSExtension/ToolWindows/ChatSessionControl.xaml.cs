@@ -66,6 +66,7 @@ public partial class ChatSessionControl : UserControl
 
         // Apply VS theme colors to the WebView
         ApplyThemeColors();
+        ApplyShellBrushes();
 
         // Re-apply when VS theme changes
         VSColorTheme.ThemeChanged += OnThemeChanged;
@@ -99,7 +100,11 @@ public partial class ChatSessionControl : UserControl
 
     private void OnThemeChanged(ThemeChangedEventArgs e)
     {
-        Dispatcher.BeginInvoke(new Action(() => ApplyThemeColors()));
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            ApplyThemeColors();
+            ApplyShellBrushes();
+        }));
     }
 
     private void ApplyThemeColors()
@@ -112,13 +117,31 @@ public partial class ChatSessionControl : UserControl
             colors[cssVar] = $"#{wpfColor.R:X2}{wpfColor.G:X2}{wpfColor.B:X2}";
         }
 
+        // Where the shell palette has the color, it comes from the theme the
+        // user picked; the environment key is what a Visual Studio 2026 theme
+        // leaves to its fallback. See ShellPalette.
+        void MapShell(string cssVar, string shellColor, ThemeResourceKey fallback)
+        {
+            if (ShellPalette.TryGetColor(shellColor) is not Color color)
+            {
+                Map(cssVar, fallback);
+                return;
+            }
+
+            // Some of these colors are meant to sit over what is behind them,
+            // a control edge above all, so the alpha is passed on.
+            colors[cssVar] = color.A == byte.MaxValue
+                ? $"#{color.R:X2}{color.G:X2}{color.B:X2}"
+                : $"#{color.R:X2}{color.G:X2}{color.B:X2}{color.A:X2}";
+        }
+
         Map("--bg-primary", EnvironmentColors.ToolWindowBackgroundColorKey);
         Map("--bg-secondary", EnvironmentColors.CommandBarGradientBeginColorKey);
-        Map("--bg-input", EnvironmentColors.ComboBoxBackgroundColorKey);
-        Map("--text-primary", EnvironmentColors.ToolWindowTextColorKey);
-        Map("--text-heading", EnvironmentColors.ToolWindowTextColorKey);
-        Map("--text-muted", EnvironmentColors.CommandBarTextInactiveColorKey);
-        Map("--border", EnvironmentColors.ToolWindowBorderColorKey);
+        MapShell("--bg-input", "ControlFillActiveInput", EnvironmentColors.ComboBoxBackgroundColorKey);
+        MapShell("--text-primary", "TextFillPrimary", EnvironmentColors.ToolWindowTextColorKey);
+        MapShell("--text-heading", "TextFillPrimary", EnvironmentColors.ToolWindowTextColorKey);
+        MapShell("--text-muted", "TextFillSecondary", EnvironmentColors.CommandBarTextInactiveColorKey);
+        MapShell("--border", "ControlStrokeDefault", EnvironmentColors.ToolWindowBorderColorKey);
         Map("--code-bg", EnvironmentColors.ToolWindowContentGridColorKey);
         Map("--pre-bg", EnvironmentColors.ToolWindowBackgroundColorKey);
         Map("--thinking-bg", EnvironmentColors.CommandBarGradientBeginColorKey);
@@ -152,46 +175,37 @@ public partial class ChatSessionControl : UserControl
     /// often violet and clashes with the VS theme.
     /// </remarks>
     private static System.Drawing.Color ThemeAccent() =>
-        // A theme written for the Visual Studio 2026 shell defines the Shell
-        // category and leaves the Environment category to its fallback theme.
-        // PanelHyperlink then carries the fallback's color, not the theme's, so
-        // ask the shell first and keep the environment key for VS 2022.
-        TryGetShellColor("HyperlinkFillPrimary")
-            ?? VSColorTheme.GetThemedColor(EnvironmentColors.PanelHyperlinkColorKey);
+        // A theme written for the Visual Studio 2026 shell leaves PanelHyperlink
+        // to its fallback theme, so ask the shell palette first and keep the
+        // environment key for Visual Studio 2022. See ShellPalette.
+        ShellPalette.TryGetColor("HyperlinkFillPrimary") is Color accent
+            ? System.Drawing.Color.FromArgb(accent.A, accent.R, accent.G, accent.B)
+            : VSColorTheme.GetThemedColor(EnvironmentColors.PanelHyperlinkColorKey);
 
     /// <summary>
-    /// Reads one color of the Visual Studio 2026 shell palette. Returns null on
-    /// Visual Studio 2022, whose shell has no such category, and on any theme
-    /// that leaves the color undefined.
+    /// The environment brushes the chrome of this window binds to, each paired
+    /// with the shell color that carries the same meaning in a Visual Studio
+    /// 2026 theme.
     /// </summary>
-    private static System.Drawing.Color? TryGetShellColor(string name)
+    // VsBrushes exposes its keys as object, which is also what a resource
+    // dictionary takes, so the pairs are held that way.
+    private static readonly (object Brush, string ShellColor)[] ChromeBrushes =
     {
-        var application = Application.Current;
-        if (application is null)
-            return null;
-
-        // The palette stores these colors as background values, so that is the
-        // key type the theme registers them under.
-        var key = new ThemeResourceKey(ShellCategory, name, ThemeResourceKeyType.BackgroundColor);
-
-        var resource = application.TryFindResource(key);
-        var color = resource switch
-        {
-            Color themeColor => themeColor,
-            SolidColorBrush themeBrush => themeBrush.Color,
-            _ => (Color?)null,
-        };
-
-        return color is Color found
-            ? System.Drawing.Color.FromArgb(found.A, found.R, found.G, found.B)
-            : null;
-    }
+        (VsBrushes.ComboBoxBackgroundKey, "ControlFillActiveInput"),
+        (VsBrushes.ComboBoxBorderKey, "ControlStrokeDefault"),
+        (VsBrushes.WindowTextKey, "TextFillPrimary"),
+        (VsBrushes.GrayTextKey, "TextFillSecondary"),
+        (VsBrushes.PanelHyperlinkKey, "HyperlinkFillPrimary"),
+        (VsBrushes.CommandBarMouseOverBackgroundGradientKey, "SubtleFillSecondary"),
+        (VsBrushes.CommandBarMouseDownBackgroundGradientKey, "SubtleFillTertiary"),
+        (VsBrushes.CommandBarSelectedKey, "SubtleFillTertiary"),
+    };
 
     /// <summary>
-    /// Category of the shell palette that Visual Studio 2026 themes are built
-    /// on. Named "Shell" in a theme's .pkgdef.
+    /// Points the prompt box and the status row at the shell palette, so that a
+    /// theme which defines only the shell colors still reaches them.
     /// </summary>
-    private static readonly Guid ShellCategory = new("73708DED-2D56-4AAD-B8EB-73B20D3F4BFF");
+    private void ApplyShellBrushes() => ShellPalette.OverrideBrushes(this, ChromeBrushes);
 
     private static System.Drawing.Color Blend(System.Drawing.Color from, System.Drawing.Color to, double amount)
     {

@@ -587,13 +587,26 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     private void HandleResultEvent(JsonElement evt)
     {
+        var isError = evt.TryGetProperty("is_error", out var ie) && ie.ValueKind == JsonValueKind.True;
+
+        // The CLI removed its transcript (cleanupPeriodDays), so this id can
+        // never resume again. Dropping it lets the next message start a new
+        // conversation, and the history saved after this turn keeps it dropped
+        // across restarts. Done before the turn check: the CLI fails at start-up,
+        // possibly before the turn is registered.
+        var missingConversation = isError && IsMissingConversation(evt);
+        if (missingConversation)
+        {
+            _logger.LogWarning("[ClaudeCli] CLI no longer has conversation {SessionId}; the next message starts a new one", _cliSessionId);
+            _cliSessionId = null;
+        }
+
         TurnState? turn;
         lock (_activeTurnLock) { turn = _activeTurn; }
         if (turn == null) return;
 
         FinalizeOpenBlocks(turn);
 
-        var isError = evt.TryGetProperty("is_error", out var ie) && ie.ValueKind == JsonValueKind.True;
         if (isError)
         {
             var resultText = evt.TryGetProperty("result", out var rp) ? rp.GetString() : null;
@@ -607,6 +620,22 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             {
                 try { LoginRequired?.Invoke(resultText); }
                 catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] LoginRequired handler threw"); }
+            }
+            else if (missingConversation)
+            {
+                var errorItem = new OutputItem
+                {
+                    Id = Guid.NewGuid().ToString("N"),
+                    ToolName = "ClaudeCli",
+                    Title = "Conversation no longer available",
+                    Status = OutputItemStatus.Error,
+                    Body = "The Claude CLI no longer has this conversation. It removes old conversations "
+                         + "after its cleanupPeriodDays setting. Your message was not sent. "
+                         + "The next message starts a new conversation: the messages above stay here, "
+                         + "but Claude does not see them."
+                };
+                _outputListener.OnStepStarted(errorItem);
+                _outputListener.OnStepCompleted(errorItem);
             }
             else
             {
@@ -1282,6 +1311,29 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             || t.Contains("does not meet scope requirement")
             || t.Contains("disabled organization")
             || t.Contains("api error: 401");
+    }
+
+    /// <summary>
+    /// True only when the CLI says it has no conversation under the id we
+    /// asked it to resume. Any other <c>--resume</c> failure keeps the id: a
+    /// wrong guess there would throw away a conversation that still exists.
+    /// </summary>
+    private bool IsMissingConversation(JsonElement resultEvt)
+    {
+        var resumedId = _cliSessionId;
+        if (string.IsNullOrEmpty(resumedId)) return false;
+        if (!resultEvt.TryGetProperty("errors", out var errors) || errors.ValueKind != JsonValueKind.Array) return false;
+
+        // CLI 2.1.296: "No conversation found with session ID: <id>".
+        foreach (var e in errors.EnumerateArray())
+        {
+            if (e.ValueKind != JsonValueKind.String) continue;
+            var text = e.GetString() ?? string.Empty;
+            if (text.StartsWith("No conversation found with session ID", StringComparison.OrdinalIgnoreCase)
+                && text.IndexOf(resumedId, StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+        }
+        return false;
     }
 
     public void Dispose() => _host.Dispose();

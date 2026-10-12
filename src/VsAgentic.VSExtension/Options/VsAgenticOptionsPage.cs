@@ -69,7 +69,7 @@ public class VsAgenticOptionsPage : DialogPage
 
     [Category("Sessions")]
     [DisplayName("Keep days of activity")]
-    [Description("When the extension starts, sessions whose last activity is older than this many days are deleted. Default: 30. Set to 0 to disable cleanup.")]
+    [Description("When the extension starts, sessions whose last activity is older than this many days are deleted. The Claude CLI removes its own copy of a conversation after its cleanupPeriodDays setting (default 30). When it no longer has a session's conversation, the next message in that session starts a new one, and Claude does not see the earlier messages. Default: 30. Set to 0 to disable cleanup.")]
     [DefaultValue(30)]
     public int KeepActivityDays { get; set; } = 30;
 }

@@ -197,7 +197,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         {
             var optionsPage = (VsAgenticOptionsPage?)GetDialogPage(typeof(VsAgenticOptionsPage));
             var keepDays = optionsPage?.KeepActivityDays ?? 30;
-            await _sessionStore.DeleteSessionsOlderThanAsync(_solutionDirectory, keepDays);
+            await _sessionStore.PurgeOldSessionsAsync(_solutionDirectory, keepDays);
         }
         catch (Exception ex)
         {

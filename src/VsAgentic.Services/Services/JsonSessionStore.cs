@@ -168,17 +168,65 @@ public class JsonSessionStore : ISessionStore
         }
     }
 
-    public async Task DeleteSessionsOlderThanAsync(string folderPath, int days)
+    public async Task SetSessionArchivedAsync(string folderPath, int sessionId, bool archived)
+    {
+        var semaphore = GetLock(folderPath);
+        await semaphore.WaitAsync();
+        try
+        {
+            var indexPath = GetSessionIndexPath(folderPath);
+            var index = await ReadJsonAsync<List<SessionEntry>>(indexPath) ?? new List<SessionEntry>();
+
+            var entry = index.Find(s => s.Id == sessionId);
+            if (entry is null) return;
+
+            entry.ArchivedUtc = archived ? DateTime.UtcNow : null;
+
+            // A restore counts as activity. Without it a session the clean-up
+            // archived is still past the cutoff, and the next startup archives
+            // it again.
+            if (!archived)
+                entry.LastActivityUtc = DateTime.UtcNow;
+
+            await WriteJsonAsync(indexPath, index);
+
+            // session.json is the copy a session folder carries for itself; it
+            // is rewritten so the two do not disagree after a restore.
+            var sessionPath = Path.Combine(GetSessionDir(folderPath, sessionId), "session.json");
+            if (File.Exists(sessionPath))
+                await WriteJsonAsync(sessionPath, entry);
+        }
+        finally
+        {
+            semaphore.Release();
+        }
+    }
+
+    public async Task PurgeOldSessionsAsync(string folderPath, int days)
     {
         if (days <= 0) return;
 
         var cutoffUtc = DateTime.UtcNow.AddDays(-days);
+
+        // The index is read once and iterated over a copy, because both calls
+        // below rewrite it.
         var index = await GetSessionIndexAsync(folderPath);
 
         foreach (var entry in index)
         {
-            if (entry.LastActivityUtc < cutoffUtc)
-                await DeleteSessionAsync(folderPath, entry.Id);
+            if (entry.ArchivedUtc is DateTime archivedUtc)
+            {
+                // Stage two: archived long enough, so now it really goes.
+                if (archivedUtc < cutoffUtc)
+                    await DeleteSessionAsync(folderPath, entry.Id);
+            }
+            else if (entry.LastActivityUtc < cutoffUtc)
+            {
+                // Stage one: idle long enough. This used to delete the session
+                // outright; it now archives it, so the next startup is what
+                // removes it and the user has until then to restore it.
+                await SetSessionArchivedAsync(folderPath, entry.Id, archived: true);
+            }
         }
     }
 

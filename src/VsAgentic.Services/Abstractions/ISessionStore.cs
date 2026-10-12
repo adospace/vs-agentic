@@ -14,7 +14,24 @@ public interface ISessionStore
     Task<SessionEntry> CreateSessionAsync(string folderPath, string title);
     Task UpdateSessionAsync(string folderPath, SessionEntry entry);
     Task DeleteSessionAsync(string folderPath, int sessionId);
-    Task DeleteSessionsOlderThanAsync(string folderPath, int days);
+
+    /// <summary>
+    /// Marks a session as archived, or clears that mark when
+    /// <paramref name="archived"/> is false. Nothing on disk moves. Clearing
+    /// the mark also sets the last activity to now, so the startup clean-up
+    /// does not archive the session again.
+    /// </summary>
+    Task SetSessionArchivedAsync(string folderPath, int sessionId, bool archived);
+
+    /// <summary>
+    /// The startup clean-up, in two stages, both measured against
+    /// <paramref name="days"/>: a session that has been idle for that long is
+    /// archived, and a session that has been archived for that long is
+    /// deleted. A session therefore survives idle for twice
+    /// <paramref name="days"/> before anything is lost, and the user has the
+    /// whole second stretch to restore it.
+    /// </summary>
+    Task PurgeOldSessionsAsync(string folderPath, int days);
 
     // Messages
     Task<IReadOnlyList<PersistedMessage>> GetMessagesAsync(string folderPath, int sessionId);

@@ -66,6 +66,13 @@ public partial class SessionInfo : ObservableObject
     private bool _isPinned;
 
     /// <summary>
+    /// True while the session sits in the archive, which is a separate view of
+    /// the same list. Mirrors <see cref="SessionEntry.ArchivedUtc"/>.
+    /// </summary>
+    [ObservableProperty]
+    private bool _isArchived;
+
+    /// <summary>
     /// True on the first unpinned row when pinned rows sit above it in the
     /// visible list. The row draws a separator there, so the two groups read
     /// apart. Set by <see cref="SessionListViewModel"/>.
@@ -126,6 +133,14 @@ public partial class SessionListViewModel : ObservableObject
     [ObservableProperty]
     private string _searchText = string.Empty;
 
+    /// <summary>
+    /// Switches the list between the normal sessions and the archive. The two
+    /// never show together, so "Restore" and "Delete permanently" can only be
+    /// reached where they make sense.
+    /// </summary>
+    [ObservableProperty]
+    private bool _showArchived;
+
     public event Action<SessionInfo>? SessionOpenRequested;
     public event Action<SessionInfo>? SessionRemoved;
 
@@ -142,8 +157,11 @@ public partial class SessionListViewModel : ObservableObject
         FilteredSessions = CollectionViewSource.GetDefaultView(Sessions);
         FilteredSessions.Filter = obj =>
             obj is SessionInfo s
+            && s.IsArchived == ShowArchived
             && (string.IsNullOrWhiteSpace(SearchText)
                 || s.Name.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0);
+
+        Sessions.CollectionChanged += (_, _) => OnPropertyChanged(nameof(ArchiveButtonText));
 
         // Fires on every add, remove, move and filter refresh.
         FilteredSessions.CollectionChanged += (_, _) => UpdatePinnedBoundary();
@@ -168,6 +186,24 @@ public partial class SessionListViewModel : ObservableObject
     }
 
     partial void OnSearchTextChanged(string value) => FilteredSessions.Refresh();
+
+    partial void OnShowArchivedChanged(bool value)
+    {
+        FilteredSessions.Refresh();
+        OnPropertyChanged(nameof(ArchiveButtonText));
+
+        // The previous selection belongs to the view being left, so it is no
+        // longer in the list the user can see.
+        SelectedSession = null;
+    }
+
+    /// <summary>
+    /// Label of the button that switches views, carrying the archive count so
+    /// the user can see there is something in there without opening it.
+    /// </summary>
+    public string ArchiveButtonText => ShowArchived
+        ? "Back to sessions"
+        : $"Archive ({Sessions.Count(s => s.IsArchived)})";
 
     /// <summary>
     /// Initializes the view model with a session store and folder path for persistence.
@@ -198,6 +234,7 @@ public partial class SessionListViewModel : ObservableObject
                 Name = entry.Title,
                 HasCustomTitle = entry.TitleIsCustom,
                 IsPinned = entry.IsPinned,
+                IsArchived = entry.ArchivedUtc.HasValue,
                 LastActivity = entry.LastActivityUtc.ToLocalTime(),
                 IsActive = false
             };
@@ -209,6 +246,10 @@ public partial class SessionListViewModel : ObservableObject
     [RelayCommand]
     public async Task NewSessionAsync()
     {
+        // A new session is never archived, so it would be created into a list
+        // that cannot show it.
+        ShowArchived = false;
+
         var session = new SessionInfo
         {
             Name = $"Chat {Sessions.Count + 1}",
@@ -282,7 +323,14 @@ public partial class SessionListViewModel : ObservableObject
     private void OpenSession(SessionInfo? session)
     {
         if (session is null) return;
+
         SelectedSession = session;
+
+        // An archived session does not open. Restoring it first is one click,
+        // and it keeps a session the user is working in out of the archive,
+        // where the startup clean-up would eventually delete it.
+        if (session.IsArchived) return;
+
         SessionOpenRequested?.Invoke(session);
     }
 
@@ -379,4 +427,64 @@ public partial class SessionListViewModel : ObservableObject
         if (SelectedSession == session)
             SelectedSession = Sessions.FirstOrDefault();
     }
+
+    /// <summary>
+    /// Moves a session into the archive. This is what the row's main action
+    /// does now, so the plain gesture is the reversible one. No confirmation:
+    /// the point of the archive is that the step can be taken back.
+    /// </summary>
+    [RelayCommand]
+    private Task ArchiveSessionAsync(SessionInfo? session) => SetArchivedAsync(session, archived: true);
+
+    /// <summary>
+    /// Takes a session back out of the archive, into the normal list.
+    /// </summary>
+    [RelayCommand]
+    private Task RestoreSessionAsync(SessionInfo? session) => SetArchivedAsync(session, archived: false);
+
+    private async Task SetArchivedAsync(SessionInfo? session, bool archived)
+    {
+        if (session is null || session.IsArchived == archived) return;
+
+        session.IsArchived = archived;
+
+        // The store counts a restore as activity, so the row shows it and
+        // takes the place the next load gives it: newest in its group.
+        if (!archived)
+        {
+            session.LastActivity = DateTime.Now;
+            var target = session.IsPinned ? 0 : Sessions.TakeWhile(s => s.IsPinned).Count();
+            Sessions.Move(Sessions.IndexOf(session), target);
+        }
+
+        // The row belongs to the other view now, so it leaves the one on
+        // screen. Its window goes with it when it is archived; restoring does
+        // not reopen a window the user did not ask for.
+        FilteredSessions.Refresh();
+        OnPropertyChanged(nameof(ArchiveButtonText));
+
+        if (archived)
+        {
+            session.IsActive = false;
+            SessionRemoved?.Invoke(session);
+        }
+
+        if (SelectedSession == session)
+            SelectedSession = null;
+
+        if (session.PersistedId.HasValue && _sessionStore is not null && _folderPath is not null)
+        {
+            try
+            {
+                await _sessionStore.SetSessionArchivedAsync(_folderPath, session.PersistedId.Value, archived);
+            }
+            catch { /* best effort — the list still reflects the choice for this run */ }
+        }
+    }
+
+    /// <summary>
+    /// Switches between the normal list and the archive.
+    /// </summary>
+    [RelayCommand]
+    private void ToggleArchiveView() => ShowArchived = !ShowArchived;
 }

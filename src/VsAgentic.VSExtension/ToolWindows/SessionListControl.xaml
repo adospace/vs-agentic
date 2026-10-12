@@ -268,6 +268,26 @@
             </Style.Triggers>
         </Style>
 
+        <!-- The archive is a separate view of the same list, so a row offers
+             only the actions that belong to the view it is shown in. -->
+        <Style x:Key="ActiveOnlyMenuItemStyle" TargetType="MenuItem" BasedOn="{StaticResource SessionMenuItemStyle}">
+            <Setter Property="Visibility" Value="Collapsed" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding PlacementTarget.DataContext.IsArchived, RelativeSource={RelativeSource AncestorType=ContextMenu}}" Value="False">
+                    <Setter Property="Visibility" Value="Visible" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="ArchivedOnlyMenuItemStyle" TargetType="MenuItem" BasedOn="{StaticResource SessionMenuItemStyle}">
+            <Setter Property="Visibility" Value="Collapsed" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding PlacementTarget.DataContext.IsArchived, RelativeSource={RelativeSource AncestorType=ContextMenu}}" Value="True">
+                    <Setter Property="Visibility" Value="Visible" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
         </ResourceDictionary>
     </UserControl.Resources>
 
@@ -281,6 +301,9 @@
         <!-- Toolbar -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4">
             <Button Content="New Session" Command="{Binding NewSessionCommand}" />
+            <!-- Carries the archive count, so the user can see there is
+                 something in there without opening it. -->
+            <Button Content="{Binding ArchiveButtonText}" Command="{Binding ToggleArchiveViewCommand}" />
         </StackPanel>
 
         <!-- Search Box -->
@@ -349,8 +372,27 @@
                                         <imaging:CrispImage Width="16" Height="16" Moniker="{x:Static catalog:KnownMonikers.Rename}" />
                                     </MenuItem.Icon>
                                 </MenuItem>
-                                <MenuItem Header="Delete"
-                                          Style="{StaticResource SessionMenuItemStyle}"
+                                <!-- The plain action on a normal row is the
+                                     reversible one. Deleting outright is
+                                     reachable from the archive. -->
+                                <MenuItem Header="Archive"
+                                          Style="{StaticResource ActiveOnlyMenuItemStyle}"
+                                          Command="{Binding PlacementTarget.Tag.ArchiveSessionCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
+                                    <MenuItem.Icon>
+                                        <imaging:CrispImage Width="16" Height="16" Moniker="{x:Static catalog:KnownMonikers.MoveToFolder}" />
+                                    </MenuItem.Icon>
+                                </MenuItem>
+                                <MenuItem Header="Restore"
+                                          Style="{StaticResource ArchivedOnlyMenuItemStyle}"
+                                          Command="{Binding PlacementTarget.Tag.RestoreSessionCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
+                                    <MenuItem.Icon>
+                                        <imaging:CrispImage Width="16" Height="16" Moniker="{x:Static catalog:KnownMonikers.Undo}" />
+                                    </MenuItem.Icon>
+                                </MenuItem>
+                                <MenuItem Header="Delete permanently"
+                                          Style="{StaticResource ArchivedOnlyMenuItemStyle}"
                                           Command="{Binding PlacementTarget.Tag.RemoveSessionCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                           CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
                                     <MenuItem.Icon>

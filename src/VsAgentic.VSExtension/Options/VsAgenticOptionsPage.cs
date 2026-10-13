@@ -38,6 +38,12 @@ public class VsAgenticOptionsPage : DialogPage
     public ClaudeEffort Effort { get; set; } = ClaudeEffort.Default;
 
     [Category("Claude CLI")]
+    [DisplayName("Background command limit")]
+    [Description("Most time Claude may give a background shell command (a dev server, a watcher) before the CLI stops it. The CLI treats this extension as an unattended session and stops such commands after 30 minutes unless Claude asks for longer, and allows at most 2 hours. This setting raises that maximum through BASH_MAX_TIMEOUT_MS; the 30-minute default stays. CliDefault leaves the variable alone. A value already set in the environment Visual Studio started with is kept. Applies to sessions started after the change.")]
+    [DefaultValue(BackgroundCommandLimit.OneDay)]
+    public BackgroundCommandLimit BackgroundCommandLimit { get; set; } = BackgroundCommandLimit.OneDay;
+
+    [Category("Claude CLI")]
     [DisplayName("Check for CLI updates")]
     [Description("On startup, compare the Claude Code CLI against the latest release published on the npm registry and show a banner when a newer one exists. The banner offers to run 'claude update' in a console window. Nothing is installed without a click.")]
     [DefaultValue(true)]

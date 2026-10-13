@@ -31,8 +31,10 @@ public partial class ChatSessionViewModel
     [NotifyPropertyChangedFor(nameof(SessionTokensTooltip))]
     [NotifyPropertyChangedFor(nameof(ShortWindowDisplay))]
     [NotifyPropertyChangedFor(nameof(ShortWindowTooltip))]
+    [NotifyPropertyChangedFor(nameof(ShortWindowLevel))]
     [NotifyPropertyChangedFor(nameof(LongWindowDisplay))]
     [NotifyPropertyChangedFor(nameof(LongWindowTooltip))]
+    [NotifyPropertyChangedFor(nameof(LongWindowLevel))]
     [NotifyPropertyChangedFor(nameof(HasWindowMeters))]
     private SessionUsage _usage = SessionUsage.Empty;
 
@@ -309,22 +311,56 @@ public partial class ChatSessionViewModel
 
     public bool HasWindowMeters => Usage.HasWindowBudget;
 
-    public string ShortWindowDisplay => FormatBudget(Usage.ShortWindowTokens, Usage.ShortWindowBudget);
+    // Each window shows the plan limit the CLI reported when there is one, and
+    // the local estimate otherwise: before the first turn, with a CLI that
+    // cannot report, or after the window has reset.
 
-    public string ShortWindowTooltip => WindowTooltip(
-        "Last 5 hours", Usage.ShortWindowTokens, Usage.ShortWindowBudget, Usage.ShortWindowFraction);
+    public string ShortWindowDisplay => Usage.ShortWindowLimit is { } limit
+        ? FormatPercent(limit.Percent)
+        : FormatBudget(Usage.ShortWindowTokens, Usage.ShortWindowBudget);
 
-    public string LongWindowDisplay => FormatBudget(Usage.LongWindowTokens, Usage.LongWindowBudget);
+    public string ShortWindowTooltip => Usage.ShortWindowLimit is { } limit
+        ? LimitTooltip("5-hour limit", limit, Array.Empty<PlanLimitWindow>())
+        : WindowTooltip("Last 5 hours", Usage.ShortWindowTokens, Usage.ShortWindowBudget, Usage.ShortWindowFraction);
 
-    public string LongWindowTooltip => WindowTooltip(
-        "Last 7 days", Usage.LongWindowTokens, Usage.LongWindowBudget, Usage.LongWindowFraction);
+    public UsageLevel ShortWindowLevel => Usage.ShortWindowLevel;
+
+    public string LongWindowDisplay => Usage.LongWindowLimit is { } limit
+        ? FormatPercent(limit.Percent)
+        : FormatBudget(Usage.LongWindowTokens, Usage.LongWindowBudget);
+
+    public string LongWindowTooltip => Usage.LongWindowLimit is { } limit
+        ? LimitTooltip("Weekly limit", limit, Usage.ModelLimits)
+        : WindowTooltip("Last 7 days", Usage.LongWindowTokens, Usage.LongWindowBudget, Usage.LongWindowFraction);
+
+    public UsageLevel LongWindowLevel => Usage.LongWindowLevel;
 
     private static string WindowTooltip(string title, long used, long budget, double fraction) =>
         title + "\n"
         + $"Used: {FormatExact(used)} of about {FormatExact(budget)} tokens ({fraction:P0})\n"
         + "Counted across every VsAgentic session on this machine, and kept between restarts.\n"
         + "The budget is an estimate — Anthropic does not publish the real limit, so treat this "
-        + "as a gauge rather than an authority. Adjust it under Tools → Options → VsAgentic.";
+        + "as a gauge rather than an authority. Adjust it under Tools → Options → VsAgentic.\n"
+        + "On a subscription, the limit Claude Code reports replaces this estimate after the first reply.";
+
+    private static string LimitTooltip(string title, PlanLimitWindow limit, IReadOnlyList<PlanLimitWindow> models)
+    {
+        var text = title + "\n"
+            + $"Used: {FormatPercent(limit.Percent)} of your plan's limit\n";
+        if (limit.ResetsAt is { } resetsAt)
+            text += $"Resets: {FormatResetTime(resetsAt)}\n";
+
+        foreach (var model in models)
+        {
+            text += $"{model.Name}: {FormatPercent(model.Percent)}";
+            if (model.ResetsAt is { } modelReset) text += $", resets {FormatResetTime(modelReset)}";
+            text += "\n";
+        }
+
+        return text
+            + "Reported by Claude Code for your account, so it includes use outside VsAgentic, "
+            + "such as the terminal and claude.ai.";
+    }
 
     // ── Formatting ────────────────────────────────────────────────────────
 
@@ -354,6 +390,21 @@ public partial class ChatSessionViewModel
     /// <summary>Grouped digits for tooltips, where the exact number is the point.</summary>
     private static string FormatExact(long tokens) =>
         tokens.ToString("N0", CultureInfo.InvariantCulture);
+
+    /// <summary>Whole percent: "13%". The CLI reports whole numbers too.</summary>
+    private static string FormatPercent(double percent) =>
+        Math.Round(percent).ToString("0", CultureInfo.InvariantCulture) + "%";
+
+    /// <summary>
+    /// Local time, with the day added once the reset is more than a day out:
+    /// "11:49", or "Sat 16:00" for the weekly window.
+    /// </summary>
+    private static string FormatResetTime(DateTimeOffset resetsAt)
+    {
+        var local = resetsAt.ToLocalTime();
+        var format = local - DateTimeOffset.Now > TimeSpan.FromHours(24) ? "ddd HH:mm" : "HH:mm";
+        return local.ToString(format, CultureInfo.InvariantCulture);
+    }
 
     /// <summary>
     /// The tilde marks the budget as the estimate it is. The count beside it is

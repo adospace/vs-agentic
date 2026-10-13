@@ -30,7 +30,8 @@ public enum ClaudeUsagePlan
 /// via <see cref="VsAgenticOptions.FiveHourTokenBudget"/> and
 /// <see cref="VsAgenticOptions.WeeklyTokenBudget"/>. Treat the meter as a
 /// gauge, not as an authority — the CLI remains the only thing that knows when
-/// you have actually run out.
+/// you have actually run out. Once it reports the plan limits
+/// (<see cref="ClaudeCli.PlanUsageStore"/>), these budgets stop being shown.
 /// </summary>
 public static class ClaudeUsagePlanDefaults
 {

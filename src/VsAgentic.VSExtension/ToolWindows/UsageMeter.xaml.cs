@@ -72,7 +72,8 @@ public partial class UsageMeter : UserControl
     /// <summary>
     /// False for readings with no ceiling — session totals only ever grow, so
     /// there is no fraction to draw — and for the rolling windows, whose ceiling
-    /// is only an estimate.
+    /// is only an estimate until the CLI reports the plan limit. The plain form
+    /// still colours its reading by <see cref="Level"/>.
     /// </summary>
     public bool ShowBar
     {

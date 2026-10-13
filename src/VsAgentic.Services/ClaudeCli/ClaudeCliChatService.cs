@@ -76,13 +76,38 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     private readonly object _activeTurnLock = new object();
 
     // ── Control requests ──────────────────────────────────────────────────
-    // A model or effort change goes to the running process as a control
-    // request. The dispatcher completes the matching entry when the CLI
-    // answers; the result is the error text, or null on success.
-    private readonly Dictionary<string, TaskCompletionSource<string?>> _pendingControl =
-        new Dictionary<string, TaskCompletionSource<string?>>(StringComparer.Ordinal);
+    // A model or effort change, or a question about plan usage, goes to the
+    // running process as a control request. The dispatcher completes the
+    // matching entry when the CLI answers.
+    private readonly Dictionary<string, TaskCompletionSource<ControlReply>> _pendingControl =
+        new Dictionary<string, TaskCompletionSource<ControlReply>>(StringComparer.Ordinal);
     private int _controlRequestSeq;
     private static readonly TimeSpan ControlRequestTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// The CLI's answer to a control request: the error text, or null on
+    /// success together with the <c>response</c> body, if it sent one.
+    /// </summary>
+    private readonly struct ControlReply
+    {
+        public ControlReply(string? error, JsonElement? response)
+        {
+            Error = error;
+            Response = response;
+        }
+
+        public string? Error { get; }
+        public JsonElement? Response { get; }
+
+        public static ControlReply Failed(string error) => new ControlReply(error, null);
+    }
+
+    // ── Plan usage ────────────────────────────────────────────────────────
+    // Asked for after each turn. One request at a time; a CLI that answers
+    // with an error does not know the request, and is not asked again.
+    private int _planUsageRequestInFlight;
+    private volatile bool _planUsageUnsupported;
+    private readonly PlanUsageStore _planUsage = PlanUsageStore.Shared;
 
     // Set when the running process could not take a change. The next message
     // then restarts it, so the change still lands — but never mid-turn.
@@ -98,6 +123,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         _outputListener = outputListener;
         _host = host;
         _logger = logger;
+
+        // Another session's turn can move the plan readings; this session's
+        // meters follow. Detached in Dispose: the store outlives every session.
+        _planUsage.Changed += RaiseUsageChanged;
     }
 
     /// <summary>
@@ -282,6 +311,11 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             case "control_response":
                 HandleControlResponse(evt);
                 return;
+
+            case "rate_limit_event":
+                if (evt.TryGetProperty("rate_limit_info", out var rateLimit))
+                    _planUsage.ApplyRateLimitEvent(rateLimit);
+                return;
         }
     }
 
@@ -291,7 +325,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         var requestId = response.TryGetProperty("request_id", out var id) ? id.GetString() : null;
         if (requestId is null) return;
 
-        TaskCompletionSource<string?>? pending;
+        TaskCompletionSource<ControlReply>? pending;
         lock (_pendingControl)
         {
             if (!_pendingControl.TryGetValue(requestId, out pending)) return;
@@ -299,11 +333,19 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         }
 
         var ok = response.TryGetProperty("subtype", out var st) && st.GetString() == "success";
-        var error = ok ? null
-            : response.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String
-                ? e.GetString() ?? "error"
-                : "error";
-        pending.TrySetResult(error);
+        if (ok)
+        {
+            // Cloned: the event's document is released once the dispatcher
+            // moves on, and the waiter reads the body after that.
+            JsonElement? body = response.TryGetProperty("response", out var b) ? b.Clone() : null;
+            pending.TrySetResult(new ControlReply(null, body));
+            return;
+        }
+
+        var error = response.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String
+            ? e.GetString() ?? "error"
+            : "error";
+        pending.TrySetResult(ControlReply.Failed(error));
     }
 
     private void HandleSystemEvent(JsonElement evt)
@@ -587,6 +629,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     private void HandleResultEvent(JsonElement evt)
     {
+        // Before the turn check: a turn this host did not start still spent
+        // from the plan.
+        RefreshPlanUsage();
+
         TurnState? turn;
         lock (_activeTurnLock) { turn = _activeTurn; }
         if (turn == null) return;
@@ -1030,6 +1076,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
         var (shortTotal, longTotal) = _usageLog.Totals(
             ClaudeUsagePlanDefaults.ShortWindow, ClaudeUsagePlanDefaults.LongWindow);
+        var limits = _planUsage.Read(DateTimeOffset.UtcNow);
 
         return new SessionUsage
         {
@@ -1042,6 +1089,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             LongWindowTokens = longTotal,
             ShortWindowBudget = _options.EffectiveFiveHourBudget,
             LongWindowBudget = _options.EffectiveWeeklyBudget,
+            ShortWindowLimit = limits.FiveHour,
+            LongWindowLimit = limits.SevenDay,
+            ModelLimits = limits.Models,
             CostUsd = _cumulativeCostUsd > 0 ? _cumulativeCostUsd : null,
         };
     }
@@ -1135,29 +1185,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     private async Task ApplyToRunningProcessAsync(
         bool includeModel, string? model, bool includeEffort, string? effort)
     {
-        var requestId = "vsagentic-" + Interlocked.Increment(ref _controlRequestSeq);
-        var pending = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (_pendingControl) { _pendingControl[requestId] = pending; }
-
-        string? error;
-        try
-        {
-            EnsureDispatcherStarted();
-            var line = StreamJsonProtocol.BuildApplyFlagSettings(
-                requestId, includeModel, model, includeEffort, effort);
-            await _host.WriteLineAsync(line, CancellationToken.None).ConfigureAwait(false);
-
-            var done = await Task.WhenAny(pending.Task, Task.Delay(ControlRequestTimeout)).ConfigureAwait(false);
-            error = done == pending.Task ? pending.Task.Result : "no response";
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-        }
-        finally
-        {
-            lock (_pendingControl) { _pendingControl.Remove(requestId); }
-        }
+        var reply = await SendControlRequestAsync(requestId => StreamJsonProtocol.BuildApplyFlagSettings(
+            requestId, includeModel, model, includeEffort, effort)).ConfigureAwait(false);
+        var error = reply.Error;
 
         if (error is null)
         {
@@ -1172,6 +1202,78 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         _logger.LogWarning(
             "[ClaudeCli] CLI did not take the model/effort change ({Error}); restarting before the next message",
             error);
+    }
+
+    /// <summary>
+    /// Writes one control request and waits for its answer. No answer within
+    /// <see cref="ControlRequestTimeout"/> counts as a failure.
+    ///
+    /// Never await this from the dispatcher loop: the dispatcher is what
+    /// delivers the answer.
+    /// </summary>
+    private async Task<ControlReply> SendControlRequestAsync(Func<string, string> buildLine)
+    {
+        var requestId = "vsagentic-" + Interlocked.Increment(ref _controlRequestSeq);
+        var pending = new TaskCompletionSource<ControlReply>(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_pendingControl) { _pendingControl[requestId] = pending; }
+
+        try
+        {
+            EnsureDispatcherStarted();
+            await _host.WriteLineAsync(buildLine(requestId), CancellationToken.None).ConfigureAwait(false);
+
+            var done = await Task.WhenAny(pending.Task, Task.Delay(ControlRequestTimeout)).ConfigureAwait(false);
+            return done == pending.Task ? pending.Task.Result : ControlReply.Failed("no response");
+        }
+        catch (Exception ex)
+        {
+            return ControlReply.Failed(ex.Message);
+        }
+        finally
+        {
+            lock (_pendingControl) { _pendingControl.Remove(requestId); }
+        }
+    }
+
+    /// <summary>
+    /// Asks the running CLI for the plan rate limits, without waiting for the
+    /// answer. Called after each turn; the answer lands in
+    /// <see cref="PlanUsageStore"/>, which updates every session's meters.
+    /// </summary>
+    private void RefreshPlanUsage()
+    {
+        if (_planUsageUnsupported || !_host.IsRunning) return;
+        if (Interlocked.Exchange(ref _planUsageRequestInFlight, 1) == 1) return;
+
+        _ = RefreshPlanUsageAsync();
+    }
+
+    private async Task RefreshPlanUsageAsync()
+    {
+        try
+        {
+            var reply = await SendControlRequestAsync(StreamJsonProtocol.BuildGetUsage).ConfigureAwait(false);
+
+            if (reply.Error is null)
+            {
+                if (reply.Response is { } body) _planUsage.ApplyUsageResponse(body);
+                return;
+            }
+
+            // An error answer is a CLI that does not know get_usage (it is
+            // experimental in the SDK). No answer may be a busy process, so
+            // that one is tried again after the next turn.
+            if (reply.Error != "no response") _planUsageUnsupported = true;
+            _logger.LogInformation("[ClaudeCli] Plan usage not available from the CLI: {Error}", reply.Error);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[ClaudeCli] Plan usage refresh failed");
+        }
+        finally
+        {
+            Volatile.Write(ref _planUsageRequestInFlight, 0);
+        }
     }
 
     public void ClearHistory()
@@ -1284,7 +1386,11 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             || t.Contains("api error: 401");
     }
 
-    public void Dispose() => _host.Dispose();
+    public void Dispose()
+    {
+        _planUsage.Changed -= RaiseUsageChanged;
+        _host.Dispose();
+    }
 
     /// <summary>State for one in-flight turn.</summary>
     private sealed class TurnState

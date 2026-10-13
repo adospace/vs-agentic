@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace VsAgentic.Services.Abstractions;
 
@@ -26,6 +27,9 @@ public enum UsageLevel
 ///    the last call. It falls back down after a compaction.
 ///  - The rolling windows are machine-wide, span every session and survive a
 ///    restart, because that is the scope the rate limit itself applies at.
+///    They are the fallback: once the CLI reports the plan limits
+///    (<see cref="ShortWindowLimit"/>, <see cref="LongWindowLimit"/>), those
+///    are shown instead.
 /// </summary>
 public record SessionUsage
 {
@@ -82,9 +86,27 @@ public record SessionUsage
 
     public bool HasAny => TotalTokens > 0;
 
-    public UsageLevel ShortWindowLevel => LevelOf(ShortWindowFraction);
+    // ── Plan limits reported by the CLI ───────────────────────────────────
+    // When present, these replace the local estimate for their window: they
+    // are the server's reading for the whole account. Null when the CLI has
+    // not reported yet, cannot (an older CLI), or the window has reset since.
 
-    public UsageLevel LongWindowLevel => LevelOf(LongWindowFraction);
+    /// <summary>The 5-hour plan window, as the CLI last reported it.</summary>
+    public PlanLimitWindow? ShortWindowLimit { get; init; }
+
+    /// <summary>The weekly plan window, as the CLI last reported it.</summary>
+    public PlanLimitWindow? LongWindowLimit { get; init; }
+
+    /// <summary>Weekly windows that apply to one model only, e.g. Fable.</summary>
+    public IReadOnlyList<PlanLimitWindow> ModelLimits { get; init; } = Array.Empty<PlanLimitWindow>();
+
+    /// <summary>
+    /// Only a reported limit warns. The estimate has no colour: its budget is a
+    /// guess, and a guess should not turn the status bar red.
+    /// </summary>
+    public UsageLevel ShortWindowLevel => ShortWindowLimit is { } l ? LevelOf(l.Fraction) : UsageLevel.Normal;
+
+    public UsageLevel LongWindowLevel => LongWindowLimit is { } l ? LevelOf(l.Fraction) : UsageLevel.Normal;
 
     /// <summary>
     /// Warn at three quarters, escalate at nine tenths. The warning band is

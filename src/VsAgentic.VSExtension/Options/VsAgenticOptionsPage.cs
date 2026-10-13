@@ -45,7 +45,7 @@ public class VsAgenticOptionsPage : DialogPage
 
     [Category("Usage meters")]
     [DisplayName("Plan")]
-    [Description("Subscription the 5-hour and weekly readings under the chat input are sized against. Display only — nothing here is sent to the CLI. Choose Unlimited to hide those readings.")]
+    [Description("Subscription the 5-hour and weekly estimates under the chat input are sized against. Once Claude Code reports your plan's real limits, after the first reply, those replace the estimates. Display only — nothing here is sent to the CLI. Choose Unlimited to hide those readings.")]
     [DefaultValue(ClaudeUsagePlan.Pro)]
     public ClaudeUsagePlan UsagePlan { get; set; } = ClaudeUsagePlan.Pro;
 

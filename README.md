@@ -24,8 +24,8 @@ Settings are available in the Visual Studio **Tools → Options → VsAgentic** 
 - **Claude CLI Path** — path to the `claude` executable (defaults to `claude` on PATH)
 - **CLI Permission Mode** — controls how the CLI handles tool permissions
 - **Model** / **Reasoning effort** — remembered from the dropdowns under the chat input
-- **Plan** — which subscription the 5h / 7d readings are sized against (`Unlimited` hides them)
-- **5-hour / weekly token budget** — override the estimated limits behind those readings
+- **Plan** — which subscription the 5h / 7d estimates are sized against (`Unlimited` hides the 5h / 7d readings)
+- **5-hour / weekly token budget** — override the estimated limits behind those estimates
 
 ### 🧰 Built-in Agentic Tools
 Claude Code comes with a full suite of agentic tools — file search, code search, file reading/editing, bash commands, web fetching, and sub-agent delegation. The CLI manages all tools natively; VsAgentic displays tool steps inline so you can follow every action.
@@ -40,15 +40,15 @@ Claude Code comes with a full suite of agentic tools — file search, code searc
 The status bar under the chat input shows where your tokens are going:
 
 - **Context** — how full the model's context window is, so a compaction is never a surprise
-- **5h / 7d** — tokens spent in the trailing rate-limit windows, counted across every VsAgentic session on the machine and kept between restarts
+- **5h / 7d** — how much of your plan's 5-hour and weekly limits is used, as Claude Code reports it for your account; the tooltip shows when each window resets and any model-specific weekly limit
 - **Session** — what this conversation has cost so far, broken down by input, output and cache in the tooltip
 - **Model / effort** dropdowns — switch either without leaving the chat; the conversation is resumed, not lost. Effort `Default` sends no level to the CLI
 
 In a narrow pane the readings drop out one by one; the context reading stays longest.
 
-The rate-limit budgets are estimates — Anthropic does not publish the real limits — so the 5h / 7d readings are a gauge, not an authority. Adjust them under **Tools → Options → VsAgentic** if you have measured your own.
+The 5h / 7d percentages come from Claude Code after the first reply in a session, and include everything your account spends: the terminal, other IDEs and claude.ai. They turn amber at 75% and red at 90%. All open sessions share the same reading.
 
-The 5h / 7d readings count what VsAgentic itself has spent. Work done by `claude` in a terminal draws on the same limits but is not counted here, so your real usage can be higher than these numbers show.
+Until then — and with a Claude Code that cannot report plan limits, or when they do not apply to your sign-in — the readings fall back to a local estimate: tokens VsAgentic itself spent in the trailing windows, counted across every session on the machine and kept between restarts. Anthropic does not publish the token budgets behind the limits, so the estimate is a gauge, not an authority. Adjust the budgets under **Tools → Options → VsAgentic** if you have measured your own.
 
 ### 🖼️ Rich Markdown Rendering
 Responses are rendered with full Markdown support — syntax-highlighted code blocks, tables, lists, and inline formatting — via an embedded WebView2 control.

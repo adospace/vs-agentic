@@ -141,6 +141,28 @@ internal static class StreamJsonProtocol
         return Encoding.UTF8.GetString(buffer.ToArray());
     }
 
+    /// <summary>
+    /// Build the control request that asks for the plan rate limits.
+    /// <c>skip_behaviors</c> skips a scan of the last seven days of local
+    /// transcripts that only the /usage dialog needs.
+    /// </summary>
+    public static string BuildGetUsage(string requestId)
+    {
+        using var buffer = new MemoryStream();
+        using (var w = new Utf8JsonWriter(buffer))
+        {
+            w.WriteStartObject();
+            w.WriteString("type", "control_request");
+            w.WriteString("request_id", requestId);
+            w.WriteStartObject("request");
+            w.WriteString("subtype", "get_usage");
+            w.WriteBoolean("skip_behaviors", true);
+            w.WriteEndObject();
+            w.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
     private static void WriteStringOrNull(Utf8JsonWriter w, string name, string? value)
     {
         if (value is null) w.WriteNull(name);

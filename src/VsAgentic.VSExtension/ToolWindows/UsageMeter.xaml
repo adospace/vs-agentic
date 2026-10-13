@@ -105,11 +105,28 @@
                        VerticalAlignment="Center"
                        FontSize="10"
                        Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+            <!-- Same levels as the bar, on the text: a reading near its
+                 limit warns without a bar to colour. -->
             <TextBlock Text="{Binding ValueText, ElementName=Root}"
                        Margin="5,0,0,0"
                        VerticalAlignment="Center"
-                       FontSize="10"
-                       Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                       FontSize="10">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Foreground"
+                                Value="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Level, ElementName=Root}" Value="Warning">
+                                <Setter Property="Foreground" Value="{DynamicResource UsageWarningBrush}"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding Level, ElementName=Root}" Value="Critical">
+                                <Setter Property="Foreground"
+                                        Value="{DynamicResource {x:Static platformui:EnvironmentColors.ToolWindowValidationErrorTextBrushKey}}"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
         </StackPanel>
     </Grid>
 </UserControl>

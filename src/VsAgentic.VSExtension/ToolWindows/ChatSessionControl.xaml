@@ -530,13 +530,18 @@
                                                 HorizontalAlignment="Right"
                                                 VerticalAlignment="Center">
 
-                                        <!-- The 5h and 7d budgets are estimates, so
-                                             these are plain text: a bar would claim a
-                                             precision the numbers do not have. -->
+                                        <!-- Plain text, not bars. Without a reading
+                                             from the CLI the 5h and 7d budgets are
+                                             estimates, and a bar would claim a
+                                             precision they do not have. With one, the
+                                             percentage is short and the colour warns;
+                                             a bar would also cost width these cells
+                                             do not have. -->
                                         <StackPanel Orientation="Horizontal"
                                                     Visibility="{Binding HasWindowMeters, Converter={StaticResource BoolToVis}}">
                                             <local:UsageMeter Caption="7d"
                                                               ValueText="{Binding LongWindowDisplay}"
+                                                              Level="{Binding LongWindowLevel}"
                                                               ShowBar="False"
                                                               ToolTip="{Binding LongWindowTooltip}"
                                                               Visibility="{Binding ActualWidth, ElementName=StatusInfo,
@@ -544,6 +549,7 @@
                                                                            ConverterParameter=255}"/>
                                             <local:UsageMeter Caption="5h"
                                                               ValueText="{Binding ShortWindowDisplay}"
+                                                              Level="{Binding ShortWindowLevel}"
                                                               ShowBar="False"
                                                               ToolTip="{Binding ShortWindowTooltip}"
                                                               Visibility="{Binding ActualWidth, ElementName=StatusInfo,

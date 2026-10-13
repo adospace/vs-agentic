@@ -566,6 +566,12 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         try
         {
             await _sessionStore.EnsureWorkspaceAsync(_solutionDirectory);
+
+            // The clean-up at start-up only covered the folder known when the
+            // package loaded. That is the user profile when the package loads
+            // before the solution, which is the usual order.
+            await PurgeOldSessionsAsync();
+
             _sessionListViewModel.Initialize(_sessionStore, _solutionDirectory);
             await _sessionListViewModel.LoadSessionsAsync();
         }

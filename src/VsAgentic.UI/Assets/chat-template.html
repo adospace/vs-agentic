@@ -402,6 +402,8 @@ html, body {
     padding: 2px 0;
 }
 .activity-items.visible { display: block; }
+/* A subagent's row, inside its Agent step and lined up with the step's body. */
+.activity.subagent { margin: 4px 0 0 18px; }
 
 /* Streaming indicator */
 .streaming-cursor::after {
@@ -761,8 +763,9 @@ function activityDetailFrom(body) {
 
 // `before` is the message the row has to open above: a group born of text that
 // is only now shown to have been commentary belongs where that text was, not
-// at the end of the chat.
-function createActivityGroup(before) {
+// at the end of the chat. `host` is where a row without `before` goes; the
+// chat, unless it is a subagent's row inside its Agent step.
+function createActivityGroup(before, host) {
     var group = document.createElement('div');
     group.className = 'activity running';
     group._tools = [];
@@ -813,7 +816,7 @@ function createActivityGroup(before) {
     group.appendChild(header);
     group.appendChild(items);
     if (before) _container.insertBefore(group, before);
-    else _container.appendChild(group);
+    else (host || _container).appendChild(group);
     return group;
 }
 
@@ -827,9 +830,11 @@ function absorbPendingText() {
     _activityGroup.querySelector('.activity-items').appendChild(text);
 }
 
-function addToActivityGroup(div, type, data) {
-    if (!_activityGroup) _activityGroup = createActivityGroup();
-    var group = _activityGroup;
+function addToActivityGroup(div, type, data, group) {
+    if (!group) {
+        if (!_activityGroup) _activityGroup = createActivityGroup();
+        group = _activityGroup;
+    }
 
     group.querySelector('.activity-items').appendChild(div);
     group._count++;
@@ -840,7 +845,10 @@ function addToActivityGroup(div, type, data) {
     // restored session, which is why the dot never turned red on one.
     if (data.Status === 'Error') group.classList.add('has-error');
 
-    var tool = type === 'Thinking' ? 'Thinking' : (data.ToolName || 'tool');
+    // A subagent goes by its description, so the row names which one ran.
+    var tool = type === 'Thinking' ? 'Thinking'
+             : (data.ToolName === 'Agent' && data.Title) ? data.Title
+             : (data.ToolName || 'tool');
     var seen = group._tools.indexOf(tool);
     if (seen >= 0) group._tools.splice(seen, 1);
     group._tools.push(tool);
@@ -852,6 +860,101 @@ function addToActivityGroup(div, type, data) {
         setActivityLabel(group, data.Title || ('Using ' + tool));
         setActivityDetail(group, activityDetailFrom(data.Body));
     }
+}
+
+// --- Subagent steps ---
+// A subagent's steps go under the Agent step that started it, in a folded row
+// of their own like the turn's. A subagent can start one in turn, so rows nest.
+// The row is live while the Agent step or any step in it is still running; a
+// background subagent outlives its Agent step, and its row comes back to life
+// with each step it sends.
+
+// Steps whose Agent step is not on the page yet, by the Agent step's id. A
+// step is saved when it completes, and an Agent step completes after its own
+// steps, so a restored transcript lists them first.
+var _orphanSteps = {};
+
+function addSubagentStep(div, type, data) {
+    // The Agent step may itself still wait for its own: an inner subagent's
+    // steps are saved before the inner Agent step, and that before the outer.
+    var agent = messageElement(data.ParentId);
+    if (!agent) {
+        (_orphanSteps[data.ParentId] = _orphanSteps[data.ParentId] || []).push({ div: div, type: type, data: data });
+        return;
+    }
+
+    var group = agent._subagentGroup;
+    if (!group) {
+        group = createActivityGroup(null, agent);
+        group.classList.add('subagent');
+        group._subagent = true;
+        agent._subagentGroup = group;
+    }
+
+    if (type === 'Assistant') {
+        // The subagent's report. Not a step, so it neither counts nor names
+        // the row, but it is part of what the subagent did.
+        group.querySelector('.activity-items').appendChild(div);
+    } else {
+        addToActivityGroup(div, type, data, group);
+    }
+    refreshSubagentGroup(group);
+}
+
+// A message by id, also one still waiting for its Agent step, or inside one
+// that is: a restored transcript sets the body of a step right after adding
+// it, and nests steps before their outer Agent step has arrived.
+function messageElement(id) {
+    var el = document.getElementById('msg-' + id);
+    if (el) return el;
+    for (var parentId in _orphanSteps) {
+        if (!_orphanSteps.hasOwnProperty(parentId)) continue;
+        var waiting = _orphanSteps[parentId];
+        for (var i = 0; i < waiting.length; i++) {
+            var div = waiting[i].div;
+            if (div.id === 'msg-' + id) return div;
+            var inner = div.querySelector('#msg-' + id);
+            if (inner) return inner;
+        }
+    }
+    return null;
+}
+
+function adoptOrphanSteps(id) {
+    var waiting = _orphanSteps[id];
+    if (!waiting) return;
+    delete _orphanSteps[id];
+    for (var i = 0; i < waiting.length; i++) {
+        addSubagentStep(waiting[i].div, waiting[i].type, waiting[i].data);
+    }
+}
+
+// Steps whose Agent step never arrived, in a transcript saved while one was
+// still running. Shown with the turn's other steps rather than lost.
+function releaseOrphanSteps() {
+    var waiting = _orphanSteps;
+    _orphanSteps = {};
+    for (var parentId in waiting) {
+        if (!waiting.hasOwnProperty(parentId)) continue;
+        for (var i = 0; i < waiting[parentId].length; i++) {
+            var o = waiting[parentId][i];
+            o.data.ParentId = null;
+            placeMessage(o.div, o.type, o.data);
+        }
+    }
+}
+
+function refreshSubagentGroup(group) {
+    var agent = group.parentNode;
+    var running = agent.dataset.status === 'Pending'
+        || !!group.querySelector('.activity-items .msg[data-status="Pending"]');
+    if (running) {
+        group.classList.add('running');
+        return;
+    }
+    group.classList.remove('running');
+    setActivityLabel(group, activitySummary(group));
+    setActivityDetail(group, '');
 }
 
 function closeActivityGroup() {
@@ -881,6 +984,8 @@ function addMessage(id, type, dataJson) {
     div.id = 'msg-' + id;
     div.className = 'msg';
     div.dataset.type = type;
+    // Read by a subagent's row to tell whether anything in it still runs.
+    div.dataset.status = data.Status || 'Pending';
 
     if (type === 'User') {
         div.classList.add('msg-user');
@@ -949,6 +1054,10 @@ function addMessage(id, type, dataJson) {
         var nameSpan = document.createElement('span');
         nameSpan.className = 'toolstep-name';
         nameSpan.textContent = '[' + (data.ToolName || '') + ']';
+        // An Agent step's title is the description the model gave its
+        // subagent. The expander that shows it is hidden once the step is
+        // done, and without it two subagents cannot be told apart.
+        if (data.ToolName === 'Agent' && data.Title) nameSpan.textContent += ' ' + data.Title;
         header.appendChild(statusSpan);
         header.appendChild(nameSpan);
         div.appendChild(header);
@@ -1052,7 +1161,15 @@ function addMessage(id, type, dataJson) {
         div.appendChild(content);
     }
 
-    if (type === 'User') {
+    placeMessage(div, type, data);
+    adoptOrphanSteps(id);
+}
+
+function placeMessage(div, type, data) {
+    if (data.ParentId) {
+        addSubagentStep(div, type, data);
+        maybeScrollToBottom();
+    } else if (type === 'User') {
         // A new prompt ends the previous turn's row for good.
         closeActivityGroup();
         _container.appendChild(div);
@@ -1113,6 +1230,7 @@ function updateContent(id, contentMarkdown) {
 function updateStatus(id, status, expanderTitle) {
     var el = document.getElementById('msg-' + id);
     if (!el) return;
+    el.dataset.status = status;
     var st = el.querySelector('.msg-status');
     if (st) {
         st.textContent = STATUS_SYMBOLS[status] || STATUS_SYMBOLS.Pending;
@@ -1123,18 +1241,21 @@ function updateStatus(id, status, expanderTitle) {
         if (et) et.textContent = expanderTitle;
     }
 
+    if (el._subagentGroup) refreshSubagentGroup(el._subagentGroup);
+
     // The folded row speaks for whichever step is in flight, so a title that
     // moves on (thinking counting its seconds) has to move the row with it.
     var group = el.closest('.activity');
     if (!group) return;
     if (status === 'Error') group.classList.add('has-error');
+    if (group._subagent) refreshSubagentGroup(group);
     if (!group.classList.contains('running') || !expanderTitle) return;
     var items = group.querySelector('.activity-items');
     if (items.lastElementChild === el) setActivityLabel(group, expanderTitle);
 }
 
 function setBody(id, bodyContent, bodyMode) {
-    var el = document.getElementById('msg-' + id);
+    var el = messageElement(id);
     if (!el) return;
     var body = el.querySelector('.msg-body');
     if (!body) return;
@@ -1174,9 +1295,10 @@ function applyBodyCap(el, body) {
         body.classList.remove('capped');
         return;
     }
-    // Add show more link if not already present
-    var existing = el.querySelector('.show-more-link');
-    if (existing) return;
+    // Add show more link if not already present. Only the body's own: an
+    // Agent step also holds the links of its subagent's steps.
+    var existing = body.nextElementSibling;
+    if (existing && existing.classList.contains('show-more-link')) return;
     var link = document.createElement('span');
     link.className = 'show-more-link';
     link.textContent = 'Show more';
@@ -1192,12 +1314,15 @@ function applyPendingBodyCaps(items) {
     var pending = items.querySelectorAll('.msg-body[data-cap-pending]');
     for (var i = 0; i < pending.length; i++) {
         var body = pending[i];
+        // Still hidden in a subagent's row that stays shut; measured when
+        // that row opens.
+        if (body.offsetParent === null) continue;
         applyBodyCap(body.closest('.msg'), body);
     }
 }
 
 function completeMessage(id) {
-    var el = document.getElementById('msg-' + id);
+    var el = messageElement(id);
     if (!el) return;
     var type = el.dataset.type;
 
@@ -1216,6 +1341,7 @@ function clearAll() {
     if (_container) _container.innerHTML = '';
     _activityGroup = null;
     _pendingText = null;
+    _orphanSteps = {};
     _userScrolledUp = false;
     updateScrollButton();
 }
@@ -1234,6 +1360,7 @@ function loadMessages(jsonArray) {
             completeMessage(m.Id);
         }
     }
+    releaseOrphanSteps();
     // Nothing in a restored transcript is still running, including a run of
     // steps that the session ended on.
     closeActivityGroup();

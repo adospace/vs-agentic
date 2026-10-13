@@ -391,6 +391,7 @@ public partial class ChatWebView : UserControl
             BodyMode = data.BodyMode,
             Body = data.Body,
             IsStreaming = data.IsStreaming,
+            ParentId = data.ParentId,
             Images = urls
         };
     }

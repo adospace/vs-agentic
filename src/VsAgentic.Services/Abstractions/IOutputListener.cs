@@ -23,6 +23,13 @@ public record OutputItem
     public OutputBodyMode BodyMode { get; set; } = OutputBodyMode.Markdown;
     public string? Body { get; set; }
     public string? Delta { get; set; }
+
+    /// <summary>
+    /// The id of the Agent step this step ran under, when a subagent produced
+    /// it. Null for steps of the main conversation. Subagents can start
+    /// subagents of their own, so the parent may itself have a parent.
+    /// </summary>
+    public string? ParentId { get; init; }
 }
 
 public interface IOutputListener

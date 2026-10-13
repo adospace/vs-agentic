@@ -473,6 +473,17 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             var messages = await store.GetMessagesAsync(folder, sessionId.Value);
             var restoreData = new List<ChatMessageData>();
             var msgIndex = 0;
+
+            // Restored messages get ids of their own, so a subagent's step has
+            // to find its Agent step's new id. The Agent step is saved after
+            // its steps, hence the lookup over all messages first.
+            var restoredIds = new Dictionary<string, string>(StringComparer.Ordinal);
+            for (var i = 0; i < messages.Count; i++)
+            {
+                if (messages[i].StepId is { } stepId)
+                    restoredIds[stepId] = $"restore-{i}";
+            }
+
             foreach (var msg in messages)
             {
                 var type = ParseEnum<ChatItemType>(msg.ItemType);
@@ -527,7 +538,10 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                     ExpanderTitle = msg.ExpanderTitle ?? "",
                     Status = msg.StatusText,
                     IsStreaming = false,
-                    Images = imageDataUris is { Count: > 0 } ? imageDataUris : null
+                    Images = imageDataUris is { Count: > 0 } ? imageDataUris : null,
+                    ParentId = msg.ParentId is { } parent && restoredIds.TryGetValue(parent, out var restoredParent)
+                        ? restoredParent
+                        : null
                 });
             }
             if (restoreData.Count > 0)
@@ -848,7 +862,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 // read, the command being run. The folded row takes its first
                 // line, which is what turns "Using Read" into something worth
                 // reading while the task is still going.
-                Body = type == ChatItemType.ToolStep ? item.Body : null
+                Body = type == ChatItemType.ToolStep ? item.Body : null,
+                ParentId = item.ParentId
             });
 
             _currentStep = expanderTitle;
@@ -934,6 +949,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                     BodyMode = vm.BodyMode.ToString(),
                     ExpanderTitle = vm.ExpanderTitle,
                     StatusText = vm.Status.ToString(),
+                    StepId = item.Id,
+                    ParentId = item.ParentId,
                     CreatedUtc = DateTime.UtcNow
                 });
             }

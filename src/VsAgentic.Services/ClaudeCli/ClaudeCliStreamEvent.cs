@@ -12,7 +12,7 @@ namespace VsAgentic.Services.ClaudeCli;
 ///   {"type":"assistant","message":{...},  "session_id":"..."}
 ///   {"type":"user",    "message":{...},  "session_id":"..."}
 ///   {"type":"result",  "subtype":"success|error", "result":"...", "session_id":"...",
-///        "cost_usd":0.005, "is_error":false, "duration_ms":3500, "num_turns":1}
+///        "total_cost_usd":0.005, "is_error":false, "duration_ms":3500, "num_turns":1}
 /// </summary>
 public sealed class ClaudeCliStreamEvent
 {
@@ -43,7 +43,7 @@ public sealed class ClaudeCliStreamEvent
     [JsonPropertyName("result")]
     public string? Result { get; set; }
 
-    [JsonPropertyName("cost_usd")]
+    [JsonPropertyName("total_cost_usd")]
     public decimal? CostUsd { get; set; }
 
     [JsonPropertyName("is_error")]

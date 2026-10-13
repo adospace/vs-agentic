@@ -622,13 +622,16 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 _outputListener.OnStepCompleted(errorItem);
             }
         }
-        else
+
+        // The CLI reports the session's running total, not the cost of this
+        // turn, and a process started with --resume carries the earlier turns
+        // in it. So the value replaces ours. A failed turn is billed too.
+        if (evt.TryGetProperty("total_cost_usd", out var cost)
+            && cost.ValueKind == JsonValueKind.Number
+            && cost.TryGetDecimal(out var totalCost))
         {
-            if (evt.TryGetProperty("cost_usd", out var cost) && cost.ValueKind == JsonValueKind.Number)
-            {
-                _cumulativeCostUsd += cost.GetDecimal();
-                RaiseUsageChanged();
-            }
+            _cumulativeCostUsd = totalCost;
+            RaiseUsageChanged();
         }
 
         // Signal SendMessageAsync to return.

@@ -277,11 +277,12 @@ public partial class ChatSessionViewModel
         : SelectedModel?.DisplayName ?? ClaudeModelCatalog.Default.DisplayName;
 
     /// <summary>
-    /// Follows the model rather than the usage snapshot: the ceiling is a
-    /// property of the model id, and only the id the CLI reports carries the
-    /// <c>[1m]</c> suffix.
+    /// The window the CLI reported for this session's model. Before it has,
+    /// the window is estimated from the model id, which only recognizes the
+    /// <c>[1m]</c> suffix and so reads too low for models with a long default.
     /// </summary>
-    public int ContextWindowTokens => ClaudeModelCatalog.ContextWindowFor(ModelId);
+    public long ContextWindowTokens =>
+        Usage.ContextWindowTokens ?? ClaudeModelCatalog.ContextWindowFor(ModelId);
 
     public double ContextFraction => SessionUsage.Fraction(Usage.ContextTokens, ContextWindowTokens);
 

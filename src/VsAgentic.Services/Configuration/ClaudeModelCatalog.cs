@@ -64,7 +64,7 @@ public sealed class ClaudeModelInfo
 
 public static class ClaudeModelCatalog
 {
-    /// <summary>Context window every current model ships with by default.</summary>
+    /// <summary>Context window assumed for a model id without a <c>[1m]</c> suffix.</summary>
     public const int StandardContextWindowTokens = 200_000;
 
     /// <summary>
@@ -95,6 +95,9 @@ public static class ClaudeModelCatalog
     /// <c>system/init</c> event. We read it off the id rather than the selected
     /// alias because the alias resolves server-side — the init event is the
     /// only place that names what is actually running.
+    ///
+    /// This is only an estimate for the time before the CLI reports the window
+    /// in its first result event (<see cref="Abstractions.SessionUsage.ContextWindowTokens"/>).
     /// </summary>
     public static int ContextWindowFor(string? reportedModelId) =>
         !string.IsNullOrEmpty(reportedModelId)

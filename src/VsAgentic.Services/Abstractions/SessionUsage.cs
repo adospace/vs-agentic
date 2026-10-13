@@ -53,12 +53,16 @@ public record SessionUsage
     /// Tokens the last API call carried into the model: fresh input, plus both
     /// halves of the cache, plus what came back out. This is the number that has
     /// to stay under the model's context window.
-    ///
-    /// The window itself is not part of this snapshot. It follows the model, and
-    /// the model has its own source (<see cref="IChatService.CurrentModel"/>,
-    /// or a preview of it before the first turn), so the host pairs the two.
     /// </summary>
     public long ContextTokens { get; init; }
+
+    /// <summary>
+    /// The context window the CLI applies to the session's model, as reported
+    /// in the last result event. Null before the first result and after a
+    /// model change; the host then estimates the window from the model id
+    /// (<see cref="IChatService.CurrentModel"/>, or a preview of it).
+    /// </summary>
+    public long? ContextWindowTokens { get; init; }
 
     // ── Rolling rate-limit windows ────────────────────────────────────────
 

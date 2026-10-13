@@ -46,8 +46,18 @@ public sealed class ClaudeCliProcessHost : IDisposable
     private Task? _readerTask;
     private Task? _stderrTask;
     private PermissionPipeServer? _pipeServer;
+    private ProcessTreeJob? _processTree;
     private string? _resumeSessionId;
     private string? _mcpConfigTempPath;
+
+    // The shutdown of the previous run. A new run waits for it, because the
+    // old CLI may still be writing the conversation the new one resumes.
+    private Task _shutdown = Task.CompletedTask;
+
+    // Measured with CLI 2.1.296: an idle CLI exits about 0.7 s after stdin
+    // closes. Mid-turn, or with a background command running, it does not
+    // exit at all, so waiting longer gains nothing.
+    private const int GracefulExitTimeoutMs = 2000;
 
     private readonly object _lifecycleLock = new object();
 
@@ -80,13 +90,21 @@ public sealed class ClaudeCliProcessHost : IDisposable
         _resumeSessionId = sessionId;
     }
 
-    public Task EnsureStartedAsync(CancellationToken cancellationToken)
+    public async Task EnsureStartedAsync(CancellationToken cancellationToken)
     {
+        Task shutdown;
         lock (_lifecycleLock)
         {
-            if (IsRunning) return Task.CompletedTask;
+            if (IsRunning) return;
+            shutdown = _shutdown;
+        }
+
+        await shutdown.ConfigureAwait(false);
+
+        lock (_lifecycleLock)
+        {
+            if (IsRunning) return;
             StartLocked();
-            return Task.CompletedTask;
         }
     }
 
@@ -154,9 +172,15 @@ public sealed class ClaudeCliProcessHost : IDisposable
         // Capture a local reference so the lambda completes THIS run's channel,
         // not a newer one created by a subsequent StartLocked() call.
         var channelForThisRun = _stdoutChannel;
+        var process = _process;
         _process.Exited += (_, __) =>
         {
-            _logger.LogInformation("[ClaudeCli] Process exited with code {Code}", _process?.ExitCode);
+            // This run's process, not _process: by now the field may hold the
+            // next run, whose ExitCode throws while it is running. The shutdown
+            // may also have disposed this one.
+            int? exitCode = null;
+            try { exitCode = process.ExitCode; } catch { }
+            _logger.LogInformation("[ClaudeCli] Process exited with code {Code}", exitCode);
             // Tear down the channel so any blocked reader unblocks.
             try { channelForThisRun.Writer.TryComplete(); } catch { }
         };
@@ -165,6 +189,9 @@ public sealed class ClaudeCliProcessHost : IDisposable
         // Assign to a Win32 Job Object so the child is killed if the IDE
         // crashes or is force-terminated without a chance to run cleanup.
         ChildProcessTracker.AddProcess(_process);
+        _processTree = ProcessTreeJob.TryCreate(_process);
+        if (_processTree == null)
+            _logger.LogWarning("[ClaudeCli] No job object for this run; stopping it ends the CLI but not its child processes");
 
         _writerTask = Task.Run(() => StdinWriterLoopAsync(_runCts.Token));
         _readerTask = Task.Run(() => StdoutReaderLoopAsync(_runCts.Token));
@@ -443,25 +470,26 @@ public sealed class ClaudeCliProcessHost : IDisposable
     private void TearDownLocked()
     {
         try { _runCts?.Cancel(); } catch { }
-        try
+
+        // The wait for the CLI to exit happens off the caller's thread, which
+        // is often the UI thread. The next start waits for it instead.
+        var process = _process;
+        var processTree = _processTree;
+        var pipeServer = _pipeServer;
+        var mcpConfigPath = _mcpConfigTempPath;
+        if (process != null || pipeServer != null || mcpConfigPath != null)
         {
-            if (_process is { HasExited: false })
+            var previous = _shutdown;
+            _shutdown = Task.Run(async () =>
             {
-                try { _process.StandardInput.Close(); } catch { }
-                try { _process.Kill(); } catch { }
-            }
+                await previous.ConfigureAwait(false);
+                ShutDown(process, processTree, pipeServer, mcpConfigPath);
+            });
         }
-        catch { }
-        try { _process?.Dispose(); } catch { }
-        try { _pipeServer?.Dispose(); } catch { }
-        try
-        {
-            if (!string.IsNullOrEmpty(_mcpConfigTempPath) && File.Exists(_mcpConfigTempPath))
-                File.Delete(_mcpConfigTempPath);
-        }
-        catch { }
+
         _mcpConfigTempPath = null;
         _process = null;
+        _processTree = null;
         _pipeServer = null;
         _runCts = null;
         _writerTask = null;
@@ -469,6 +497,42 @@ public sealed class ClaudeCliProcessHost : IDisposable
         _stderrTask = null;
         _stdinChannel = null;
         _stdoutChannel = null;
+    }
+
+    private void ShutDown(Process? process, ProcessTreeJob? processTree, PermissionPipeServer? pipeServer, string? mcpConfigPath)
+    {
+        if (process != null)
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    // End of input is the CLI's signal to finish: it writes out
+                    // what it still holds and stops its MCP servers. Killing it
+                    // at once loses that.
+                    try { process.StandardInput.Close(); } catch { }
+                    if (!process.WaitForExit(GracefulExitTimeoutMs))
+                        _logger.LogInformation("[ClaudeCli] CLI still running {Ms} ms after its input closed; ending its process tree", GracefulExitTimeoutMs);
+                }
+            }
+            catch { }
+
+            // Also after a clean exit: a background command can outlive the CLI.
+            if (processTree != null)
+                processTree.Dispose();
+            else
+                try { if (!process.HasExited) process.Kill(); } catch { }
+
+            try { process.Dispose(); } catch { }
+        }
+
+        try { pipeServer?.Dispose(); } catch { }
+        try
+        {
+            if (!string.IsNullOrEmpty(mcpConfigPath) && File.Exists(mcpConfigPath))
+                File.Delete(mcpConfigPath);
+        }
+        catch { }
     }
 
     public void Dispose() => Stop();

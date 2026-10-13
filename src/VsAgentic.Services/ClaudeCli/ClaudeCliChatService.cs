@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -141,7 +142,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "[ClaudeCli] Failed to start CLI process");
-            EmitFatalError($"Failed to start Claude CLI: {ex.Message}\n\nMake sure 'claude' is installed and on your PATH.\nInstall with: npm install -g @anthropic-ai/claude-code");
+            EmitFatalError(DescribeStartFailure(ex));
             yield break;
         }
 
@@ -218,6 +219,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     private async Task DispatcherLoopAsync()
     {
+        CliProcessExitedException? exit = null;
         try
         {
             var reader = _host.EventReader;
@@ -233,6 +235,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 }
             }
         }
+        catch (CliProcessExitedException ex)
+        {
+            exit = ex;
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[ClaudeCli] dispatcher loop crashed");
@@ -245,6 +251,13 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             if (turn != null)
             {
                 FinalizeOpenBlocks(turn);
+
+                // A CLI that dies before it writes a result (a bad argument, a
+                // crash, an older CLI refusing to start) would otherwise end
+                // the turn with nothing on screen.
+                if (exit != null && !turn.ResultReceived)
+                    EmitFatalError(DescribeExit(exit));
+
                 turn.TextDeltas.Writer.TryComplete();
             }
 
@@ -394,11 +407,25 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // is a steadier signal than the wording. Do not render the text: the
         // result event that follows raises the login banner.
         if (evt.TryGetProperty("error", out var errorProp)
-            && errorProp.ValueKind == JsonValueKind.String
-            && errorProp.GetString() == "authentication_failed")
+            && errorProp.ValueKind == JsonValueKind.String)
         {
-            turn.AuthFailed = true;
-            return;
+            var errorKind = errorProp.GetString();
+            if (errorKind == "authentication_failed")
+            {
+                turn.AuthFailed = true;
+                return;
+            }
+
+            // Other API failures (rate_limit, overloaded, model_not_found ...)
+            // arrive the same way: a message the CLI wrote itself, not the
+            // model. Its text is also the result text, so rendering it here
+            // would show the error twice, once as if Claude had said it.
+            if (IsSyntheticMessage(evt, msg))
+            {
+                turn.ApiError = errorKind;
+                turn.ApiErrorText = JoinTextBlocks(msg);
+                return;
+            }
         }
 
         if (!msg.TryGetProperty("content", out var contentArr)) return;
@@ -592,11 +619,15 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (turn == null) return;
 
         FinalizeOpenBlocks(turn);
+        turn.ResultReceived = true;
 
-        var isError = evt.TryGetProperty("is_error", out var ie) && ie.ValueKind == JsonValueKind.True;
+        // A synthetic error message counts even if the result is not flagged:
+        // its text was held back from the transcript and has to land somewhere.
+        var isError = (evt.TryGetProperty("is_error", out var ie) && ie.ValueKind == JsonValueKind.True)
+            || turn.ApiError != null;
         if (isError)
         {
-            var resultText = evt.TryGetProperty("result", out var rp) ? rp.GetString() : null;
+            var resultText = DescribeResultError(evt, turn.ApiErrorText);
             _logger.LogWarning("[ClaudeCli] CLI returned error result: {Result}", resultText);
 
             // Surface authentication failures via the LoginRequired event
@@ -614,9 +645,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 {
                     Id = Guid.NewGuid().ToString("N"),
                     ToolName = "ClaudeCli",
-                    Title = "Error",
+                    Title = DescribeErrorTitle(evt, turn.ApiError),
                     Status = OutputItemStatus.Error,
-                    Body = resultText ?? "Unknown CLI error"
+                    Body = resultText
                 };
                 _outputListener.OnStepStarted(errorItem);
                 _outputListener.OnStepCompleted(errorItem);
@@ -704,6 +735,117 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         };
         _outputListener.OnStepStarted(errorItem);
         _outputListener.OnStepCompleted(errorItem);
+    }
+
+    // ── Error descriptions ────────────────────────────────────────────────
+
+    // Win32 error codes Process.Start reports for a missing executable.
+    private const int ErrorFileNotFound = 2;
+    private const int ErrorPathNotFound = 3;
+
+    private string DescribeStartFailure(Exception ex)
+    {
+        // Process.Start reports a missing working directory with the same
+        // exception type as a missing executable. Only the second one needs
+        // the install hint.
+        var workingDirectory = _options.WorkingDirectory;
+        if (!string.IsNullOrEmpty(workingDirectory) && !Directory.Exists(workingDirectory))
+            return $"Failed to start Claude CLI: the working directory '{workingDirectory}' does not exist.";
+
+        if (ex is Win32Exception { NativeErrorCode: ErrorFileNotFound or ErrorPathNotFound })
+            return $"Failed to start Claude CLI: {ex.Message}\n\nMake sure 'claude' is installed and on your PATH.\nInstall with: npm install -g @anthropic-ai/claude-code";
+
+        return $"Failed to start Claude CLI: {ex.Message}";
+    }
+
+    private static string DescribeExit(CliProcessExitedException exit)
+    {
+        var head = exit.ExitCode is { } code
+            ? $"Claude CLI exited with code {code} before it finished the turn."
+            : "Claude CLI closed its output before it finished the turn.";
+        return string.IsNullOrWhiteSpace(exit.StderrTail)
+            ? head
+            : $"{head}\n\n{exit.StderrTail}";
+    }
+
+    /// <summary>
+    /// The text of an error result. Where it sits depends on the kind of
+    /// failure: <c>result</c> for an API error, <c>errors[]</c> for
+    /// error_during_execution (no <c>result</c> at all), and the synthetic
+    /// assistant message when the result carries neither.
+    /// </summary>
+    internal static string DescribeResultError(JsonElement evt, string? apiErrorText)
+    {
+        if (evt.TryGetProperty("result", out var rp) && rp.ValueKind == JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(rp.GetString()))
+            return rp.GetString()!;
+
+        if (evt.TryGetProperty("errors", out var errors) && errors.ValueKind == JsonValueKind.Array)
+        {
+            var lines = new List<string>();
+            foreach (var e in errors.EnumerateArray())
+            {
+                if (e.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(e.GetString()))
+                    lines.Add(e.GetString()!);
+            }
+            if (lines.Count > 0) return string.Join("\n", lines);
+        }
+
+        if (!string.IsNullOrWhiteSpace(apiErrorText)) return apiErrorText!;
+
+        var subtype = evt.TryGetProperty("subtype", out var st) ? st.GetString() : null;
+        return string.IsNullOrEmpty(subtype)
+            ? "Claude CLI reported an error without a message."
+            : $"Claude CLI reported an error ({subtype}) without a message.";
+    }
+
+    internal static string DescribeErrorTitle(JsonElement evt, string? apiError)
+    {
+        if (evt.TryGetProperty("startup_failure_reason", out var reason) && reason.ValueKind == JsonValueKind.String)
+            return "Claude CLI did not start";
+
+        switch (evt.TryGetProperty("subtype", out var st) ? st.GetString() : null)
+        {
+            case "error_max_turns": return "Turn limit reached";
+            case "error_max_budget_usd": return "Budget limit reached";
+        }
+
+        return apiError switch
+        {
+            null => "Error",
+            "rate_limit" => "Rate limit reached",
+            "overloaded" => "API overloaded",
+            "billing_error" => "Billing error",
+            "model_not_found" => "Model not available",
+            "server_error" => "API server error",
+            "max_output_tokens" => "Output token limit reached",
+            "invalid_request" => "Invalid request",
+            _ => "API error",
+        };
+    }
+
+    // The CLI marks the messages it writes itself on behalf of a failed API
+    // call. Older versions only name the model "<synthetic>".
+    private static bool IsSyntheticMessage(JsonElement evt, JsonElement msg)
+        => (evt.TryGetProperty("is_api_error_message", out var api) && api.ValueKind == JsonValueKind.True)
+           || (msg.TryGetProperty("model", out var model) && model.ValueKind == JsonValueKind.String
+               && model.GetString() == "<synthetic>");
+
+    private static string? JoinTextBlocks(JsonElement msg)
+    {
+        if (!msg.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Array)
+            return null;
+        var sb = new StringBuilder();
+        foreach (var block in content.EnumerateArray())
+        {
+            if (block.TryGetProperty("type", out var t) && t.GetString() == "text"
+                && block.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String)
+            {
+                if (sb.Length > 0) sb.Append('\n');
+                sb.Append(text.GetString());
+            }
+        }
+        return sb.Length > 0 ? sb.ToString() : null;
     }
 
     // ── Formatting helpers ────────────────────────────────────────────────
@@ -1300,6 +1442,15 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
         // Set when the CLI flags an assistant message as "authentication_failed".
         public bool AuthFailed;
+
+        // Kind and text of a synthetic error message the CLI wrote for a
+        // failed API call (rate_limit, overloaded ...). Shown by the result.
+        public string? ApiError;
+        public string? ApiErrorText;
+
+        // Set when the result event arrives, so a process exit right after
+        // it is not reported as a second failure.
+        public bool ResultReceived;
 
         // tool_use ids whose tool_result should be skipped (e.g. AskUserQuestion,
         // which we hide from the UI step list).

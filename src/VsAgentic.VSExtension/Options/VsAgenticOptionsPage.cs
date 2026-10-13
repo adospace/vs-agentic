@@ -38,6 +38,12 @@ public class VsAgenticOptionsPage : DialogPage
     public ClaudeEffort Effort { get; set; } = ClaudeEffort.Default;
 
     [Category("Claude CLI")]
+    [DisplayName("Use Claude-configured MCP servers")]
+    [Description("False (default): the CLI loads only VsAgentic's own MCP server, which asks you before gated tools run. True: the CLI also loads the MCP servers from your Claude Code configuration (user settings, the project's .mcp.json, claude.ai connectors), and VsAgentic's server is added alongside them. Servers that do not connect are listed in the chat. Applies to sessions started after the change.")]
+    [DefaultValue(false)]
+    public bool UseClaudeMcpServers { get; set; }
+
+    [Category("Claude CLI")]
     [DisplayName("Check for CLI updates")]
     [Description("On startup, compare the Claude Code CLI against the latest release published on the npm registry and show a banner when a newer one exists. The banner offers to run 'claude update' in a console window. Nothing is installed without a click.")]
     [DefaultValue(true)]

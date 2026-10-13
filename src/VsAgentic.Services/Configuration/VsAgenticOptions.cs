@@ -33,6 +33,13 @@ public class VsAgenticOptions
     public ClaudeEffort Effort { get; set; } = ClaudeEffort.Default;
 
     /// <summary>
+    /// Also load the MCP servers from the user's Claude Code configuration.
+    /// False passes <c>--strict-mcp-config</c>, so the CLI loads only our
+    /// permission server. Our server is added either way.
+    /// </summary>
+    public bool UseClaudeMcpServers { get; set; }
+
+    /// <summary>
     /// Subscription the rolling usage meters are sized against. Display only —
     /// nothing here reaches the CLI.
     /// </summary>

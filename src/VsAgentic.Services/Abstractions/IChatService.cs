@@ -10,6 +10,11 @@ public interface IChatService
     /// which keeps the wire format identical to what it was before images
     /// existed.
     /// </param>
+    /// <param name="cancellationToken">
+    /// Stops the turn. The CLI is told to abort it too, and the call throws
+    /// <see cref="OperationCanceledException"/> once the CLI has closed the
+    /// turn, or after a short wait if it does not.
+    /// </param>
     IAsyncEnumerable<string> SendMessageAsync(
         string userMessage,
         IReadOnlyList<ChatImageAttachment>? images = null,

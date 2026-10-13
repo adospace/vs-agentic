@@ -285,6 +285,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         chatService.BackgroundTasksChanged += OnChatServiceBackgroundTasksChanged;
 
         InitializeUsage(chatService, options.Value);
+        InitializePermissionMode(chatService);
     }
 
     // ── Background tasks ──────────────────────────────────────────────────
@@ -416,8 +417,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         ActiveBanner = null;
         UpdateActivityIndicator();
+        AddNotice(notice, "dismissed");
+    }
 
-        var noticeId = $"dismissed-{++_userMsgCounter}";
+    /// <summary>Leaves a row in the chat that is not part of the conversation.
+    /// Must run on the UI thread.</summary>
+    private void AddNotice(string notice, string idPrefix = "notice")
+    {
+        var noticeId = $"{idPrefix}-{++_userMsgCounter}";
         Items.Add(new ChatItemViewModel
         {
             Type = ChatItemType.Assistant,

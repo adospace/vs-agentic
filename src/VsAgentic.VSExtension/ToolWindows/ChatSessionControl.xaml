@@ -610,6 +610,25 @@
                                                   Visibility="{Binding ActualWidth, ElementName=StatusInfo,
                                                                Converter={StaticResource MinWidth},
                                                                ConverterParameter=480}"/>
+
+                                        <!-- Permission mode of this chat. An
+                                             ItemTemplate for the same reason as the
+                                             model picker: the CLI setting row renames
+                                             itself to the mode the CLI reports. -->
+                                        <ComboBox Style="{StaticResource StatusComboStyle}"
+                                                  ItemContainerStyle="{StaticResource StatusComboItemStyle}"
+                                                  ItemsSource="{Binding PermissionModeOptions}"
+                                                  SelectedItem="{Binding SelectedPermissionMode}"
+                                                  ToolTip="{Binding PermissionModeTooltip}"
+                                                  Visibility="{Binding ActualWidth, ElementName=StatusInfo,
+                                                               Converter={StaticResource MinWidth},
+                                                               ConverterParameter=575}">
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding DisplayName}"/>
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
                                     </StackPanel>
                                 </Grid>
 

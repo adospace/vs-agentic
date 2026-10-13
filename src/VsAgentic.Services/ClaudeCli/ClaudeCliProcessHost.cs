@@ -178,14 +178,15 @@ public sealed class ClaudeCliProcessHost : IDisposable
         // The stream-json input/output flags only apply in print mode.
         sb.Append("-p --input-format stream-json --output-format stream-json --verbose");
 
-        var permFlag = _options.CliPermissionMode switch
+        // Sent only for a mode the user picked. Any --permission-mode, also
+        // "default", overrides permissions.defaultMode from the user's own CLI
+        // settings. A change in the chat window goes to a running process as a
+        // control request (ClaudeCliChatService.ApplyPermissionMode).
+        if (_options.CliPermissionMode.ToCliValue() is { } permFlag)
         {
-            CliPermissionMode.BypassPermissions => "bypassPermissions",
-            CliPermissionMode.AcceptEdits => "acceptEdits",
-            _ => "default",
-        };
-        sb.Append(" --permission-mode ");
-        sb.Append(permFlag);
+            sb.Append(" --permission-mode ");
+            sb.Append(permFlag);
+        }
 
         // Model and effort are start-up flags. A change in the chat window goes
         // to a running process as a control request instead (see

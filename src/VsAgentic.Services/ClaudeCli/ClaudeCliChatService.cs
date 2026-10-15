@@ -270,8 +270,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
             case "user":
                 // The CLI echoes user messages and tool_results. The echo is
-                // where a failed tool call announces itself, so it is not
-                // entirely noise — see HandleUserEvent.
+                // where a failed tool call announces itself, and where an MCP
+                // tool's returned files arrive, so it is not entirely noise —
+                // see HandleUserEvent.
                 HandleUserEvent(evt);
                 return;
 
@@ -545,6 +546,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (!msg.TryGetProperty("content", out var contentArr)) return;
         if (contentArr.ValueKind != JsonValueKind.Array) return;
 
+        AttachResourceLinks(turn, evt, contentArr);
+
         foreach (var block in contentArr.EnumerateArray())
         {
             if (!block.TryGetProperty("type", out var bt)) continue;
@@ -560,6 +563,41 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
             CompleteToolItem(turn, OutputItemStatus.Error);
         }
+    }
+
+    /// <summary>
+    /// Adds the files an MCP tool returned by reference to the body of its step.
+    /// The CLI lists them in <c>tool_use_result.resourceLinks</c>; the result
+    /// text carries them only as prose for the model. Like the error flag, this
+    /// reaches only the open step: the step closes when the next block starts,
+    /// so a call made in parallel with another one is already closed.
+    /// </summary>
+    private void AttachResourceLinks(TurnState turn, JsonElement evt, JsonElement contentArr)
+    {
+        var step = turn.ToolItem;
+        if (step == null) return;
+        if (!evt.TryGetProperty("tool_use_result", out var toolUseResult)) return;
+        if (toolUseResult.ValueKind != JsonValueKind.Object) return;
+        if (!toolUseResult.TryGetProperty("resourceLinks", out var linksProp)) return;
+
+        var forOpenStep = false;
+        foreach (var block in contentArr.EnumerateArray())
+        {
+            if (block.TryGetProperty("type", out var bt) && bt.GetString() == "tool_result"
+                && block.TryGetProperty("tool_use_id", out var tp) && tp.GetString() == step.Id)
+            {
+                forOpenStep = true;
+                break;
+            }
+        }
+        if (!forOpenStep) return;
+
+        var links = McpResourceLink.ParseList(linksProp);
+        if (links.Count == 0) return;
+
+        var list = McpResourceLink.FormatMarkdown(links);
+        step.Body = string.IsNullOrEmpty(step.Body) ? list : step.Body + "\n\n" + list;
+        _logger.LogInformation("[ClaudeCli] {Tool} returned {Count} resource link(s)", step.ToolName, links.Count);
     }
 
     private void HandleToolResultBlock(TurnState turn, JsonElement block)

@@ -23,12 +23,19 @@ internal static class StreamJsonProtocol
 
     /// <summary>
     /// Build the JSON line for a plain-text user message sent to the CLI over stdin.
+    ///
+    /// <paramref name="uuid"/> names the message. The CLI repeats it in the
+    /// <c>command_lifecycle</c> events for the message and in the
+    /// <c>user_message_uuids</c> of the turn's result, which is how a result is
+    /// matched to the message that started the turn. A CLI that predates the
+    /// field ignores it.
     /// </summary>
-    public static string BuildUserTextMessage(string text)
+    public static string BuildUserTextMessage(string text, string uuid)
     {
         var msg = new
         {
             type = "user",
+            uuid,
             message = new
             {
                 role = "user",
@@ -45,10 +52,12 @@ internal static class StreamJsonProtocol
     ///
     /// Images come before the text: the API reads a prompt that refers to
     /// "this screenshot" more reliably when the image is already in context.
+    /// <paramref name="uuid"/> is as in <see cref="BuildUserTextMessage"/>.
     /// </summary>
     public static string BuildUserMessageWithImages(
         string text,
-        IReadOnlyList<ChatImageAttachment> images)
+        IReadOnlyList<ChatImageAttachment> images,
+        string uuid)
     {
         var content = new List<object>(images.Count + 1);
 
@@ -75,6 +84,7 @@ internal static class StreamJsonProtocol
         var msg = new
         {
             type = "user",
+            uuid,
             message = new
             {
                 role = "user",
@@ -111,17 +121,17 @@ internal static class StreamJsonProtocol
     }
 
     /// <summary>
-    /// Build the control request that changes the model and/or effort of the
-    /// running process. A setting is sent only when its <c>include</c> flag is
-    /// set; a null value then returns it to the CLI default.
+    /// Build one control request line:
+    /// <c>{"type":"control_request","request_id":…,"request":{"subtype":…, …}}</c>.
+    /// <paramref name="writeFields"/> adds the request's own fields after the
+    /// subtype.
     ///
     /// Written by hand rather than through <see cref="SerializerOptions"/>,
-    /// because that drops null values and the null is the message here.
+    /// because that drops null values, and for some requests the null is the
+    /// message.
     /// </summary>
-    public static string BuildApplyFlagSettings(
-        string requestId,
-        bool includeModel, string? model,
-        bool includeEffort, string? effort)
+    public static string BuildControlRequest(
+        string requestId, string subtype, Action<Utf8JsonWriter>? writeFields = null)
     {
         using var buffer = new MemoryStream();
         using (var w = new Utf8JsonWriter(buffer))
@@ -130,16 +140,55 @@ internal static class StreamJsonProtocol
             w.WriteString("type", "control_request");
             w.WriteString("request_id", requestId);
             w.WriteStartObject("request");
-            w.WriteString("subtype", "apply_flag_settings");
-            w.WriteStartObject("settings");
-            if (includeModel) WriteStringOrNull(w, "model", model);
-            if (includeEffort) WriteStringOrNull(w, "effortLevel", effort);
-            w.WriteEndObject();
+            w.WriteString("subtype", subtype);
+            writeFields?.Invoke(w);
             w.WriteEndObject();
             w.WriteEndObject();
         }
         return Encoding.UTF8.GetString(buffer.ToArray());
     }
+
+    /// <summary>
+    /// Build the <c>initialize</c> request. It registers nothing: no hooks, no
+    /// SDK MCP servers, no prompt changes. The point is the answer, which
+    /// describes the process (see <see cref="CliProcessInfo"/>).
+    /// </summary>
+    public static string BuildInitialize(string requestId) =>
+        BuildControlRequest(requestId, "initialize");
+
+    /// <summary>
+    /// Build the <c>interrupt</c> request, which aborts the running turn.
+    /// <c>cancel_queued</c> also drops the messages still waiting in the CLI's
+    /// queue, so Stop leaves nothing behind that would start on its own. A CLI
+    /// that predates the field ignores it.
+    /// </summary>
+    public static string BuildInterrupt(string requestId) =>
+        BuildControlRequest(requestId, "interrupt", w => w.WriteBoolean("cancel_queued", true));
+
+    /// <summary>
+    /// Build the <c>cancel_async_message</c> request, which takes a message out
+    /// of the CLI's queue before a turn has read it. The answer's
+    /// <c>cancelled</c> is false when the message was no longer queued.
+    /// </summary>
+    public static string BuildCancelAsyncMessage(string requestId, string messageUuid) =>
+        BuildControlRequest(requestId, "cancel_async_message", w => w.WriteString("message_uuid", messageUuid));
+
+    /// <summary>
+    /// Build the control request that changes the model and/or effort of the
+    /// running process. A setting is sent only when its <c>include</c> flag is
+    /// set; a null value then returns it to the CLI default.
+    /// </summary>
+    public static string BuildApplyFlagSettings(
+        string requestId,
+        bool includeModel, string? model,
+        bool includeEffort, string? effort) =>
+        BuildControlRequest(requestId, "apply_flag_settings", w =>
+        {
+            w.WriteStartObject("settings");
+            if (includeModel) WriteStringOrNull(w, "model", model);
+            if (includeEffort) WriteStringOrNull(w, "effortLevel", effort);
+            w.WriteEndObject();
+        });
 
     private static void WriteStringOrNull(Utf8JsonWriter w, string name, string? value)
     {

@@ -10,10 +10,52 @@ public interface IChatService
     /// which keeps the wire format identical to what it was before images
     /// existed.
     /// </param>
+    /// <param name="messageId">
+    /// The id the message carries, so the caller can follow it through
+    /// <see cref="MessageStarted"/> and cancel it with
+    /// <see cref="CancelQueuedMessageAsync"/>. A new one is made when null.
+    /// </param>
+    /// <param name="cancellationToken">
+    /// Stops the turn. The CLI is told to abort it too, and the call throws
+    /// <see cref="OperationCanceledException"/> once the CLI has closed the
+    /// turn, or after a short wait if it does not. Messages still queued are
+    /// cancelled with it.
+    /// </param>
+    /// <remarks>
+    /// A second call while a turn runs is allowed only when
+    /// <see cref="CanQueueMessages"/> is true. The message then waits in the
+    /// CLI, and the call returns when the turn that read it ends. A message
+    /// cancelled before a turn read it returns with no output and no
+    /// <see cref="MessageStarted"/>.
+    /// </remarks>
     IAsyncEnumerable<string> SendMessageAsync(
         string userMessage,
         IReadOnlyList<ChatImageAttachment>? images = null,
+        string? messageId = null,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Whether a message can be sent while a turn runs. True when the running
+    /// CLI reports message lifecycles: it then queues the message and reads it
+    /// into the running turn at the next step, or starts a turn for it after
+    /// the running one. False before the first turn of a process has reported
+    /// its capabilities, and on a CLI that predates them.
+    /// </summary>
+    bool CanQueueMessages { get; }
+
+    /// <summary>
+    /// Takes a queued message out of the CLI's queue. Returns false when a
+    /// turn has already read it, or the CLI did not answer; the message then
+    /// runs as sent.
+    /// </summary>
+    Task<bool> CancelQueuedMessageAsync(string messageId);
+
+    /// <summary>
+    /// Raised with a message's id when a turn reads it: at once for a message
+    /// sent while idle, and at the next step of the running turn for a queued
+    /// one. Raised on a background thread; hosts must marshal to the UI thread.
+    /// </summary>
+    event Action<string>? MessageStarted;
     Task<string> GenerateTitleAsync(string userMessage, CancellationToken cancellationToken = default);
     void ClearHistory();
 

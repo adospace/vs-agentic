@@ -259,14 +259,6 @@
             </Setter>
         </Style>
 
-        <Style x:Key="SendButtonStyle" TargetType="Button" BasedOn="{StaticResource IconButtonStyle}">
-            <Style.Triggers>
-                <DataTrigger Binding="{Binding IsBusy}" Value="True">
-                    <Setter Property="Visibility" Value="Collapsed"/>
-                </DataTrigger>
-            </Style.Triggers>
-        </Style>
-
         <Style x:Key="StopButtonStyle" TargetType="Button" BasedOn="{StaticResource IconButtonStyle}">
             <Setter Property="Visibility" Value="Collapsed"/>
             <Style.Triggers>
@@ -613,11 +605,13 @@
                                     </StackPanel>
                                 </Grid>
 
-                                <!-- Send / Stop buttons -->
-                                <Grid Grid.Column="2" Margin="2">
-                                    <Button Style="{StaticResource SendButtonStyle}"
+                                <!-- Send / Stop buttons. Send stays while Claude
+                                     works: the message then waits until Claude
+                                     reads it at its next step. -->
+                                <StackPanel Grid.Column="2" Margin="2" Orientation="Horizontal">
+                                    <Button Style="{StaticResource IconButtonStyle}"
                                             Command="{Binding SendCommand}"
-                                            ToolTip="Send (Ctrl+Enter)">
+                                            ToolTip="Send (Ctrl+Enter).&#x0a;While Claude works, the message waits and Claude reads it at its next step.">
                                         <imaging:CrispImage Width="16" Height="16"
                                                             Moniker="{x:Static catalog:KnownMonikers.Send}"/>
                                     </Button>
@@ -627,7 +621,7 @@
                                         <imaging:CrispImage Width="16" Height="16"
                                                             Moniker="{x:Static catalog:KnownMonikers.Stop}"/>
                                     </Button>
-                                </Grid>
+                                </StackPanel>
                             </Grid>
                         </Border>
 
@@ -646,6 +640,61 @@
                 </Border>
             </Grid>
         </Border>
+
+        <!-- Messages sent while Claude works. They wait in the CLI until the
+             running turn reaches its next step and reads them; then they move
+             into the chat. The cross takes one back into the input box. -->
+        <ItemsControl DockPanel.Dock="Bottom"
+                      LayoutTransform="{StaticResource ChromeZoom}"
+                      Margin="6,4,6,0"
+                      ItemsSource="{Binding QueuedMessages}"
+                      Focusable="False">
+            <ItemsControl.Style>
+                <Style TargetType="ItemsControl">
+                    <Setter Property="Visibility" Value="Visible"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding QueuedMessages.Count}" Value="0">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ItemsControl.Style>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                    <Border Margin="0,0,0,4"
+                            Padding="8,2,2,2"
+                            CornerRadius="4"
+                            BorderThickness="1"
+                            BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBorderKey}}"
+                            Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}"
+                            ToolTip="Waiting. Claude reads this message at its next step.">
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right"
+                                    Style="{StaticResource IconButtonStyle}"
+                                    Command="{Binding DataContext.CancelQueuedCommand,
+                                              RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                    CommandParameter="{Binding}"
+                                    IsEnabled="{Binding CanCancel}"
+                                    ToolTip="Take this message back into the input box">
+                                <imaging:CrispImage Width="12" Height="12"
+                                                    Moniker="{x:Static catalog:KnownMonikers.Close}"/>
+                            </Button>
+                            <TextBlock DockPanel.Dock="Left"
+                                       Text="Queued"
+                                       Margin="0,0,8,0"
+                                       VerticalAlignment="Center"
+                                       FontSize="12" FontStyle="Italic"
+                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                            <TextBlock Text="{Binding DisplayText}"
+                                       VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                        </DockPanel>
+                    </Border>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
 
         <!-- Busy indicator -->
         <Border DockPanel.Dock="Bottom"

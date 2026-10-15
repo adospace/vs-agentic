@@ -76,13 +76,16 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     private readonly object _activeTurnLock = new object();
 
     // ── Control requests ──────────────────────────────────────────────────
-    // A model or effort change goes to the running process as a control
-    // request. The dispatcher completes the matching entry when the CLI
-    // answers; the result is the error text, or null on success.
-    private readonly Dictionary<string, TaskCompletionSource<string?>> _pendingControl =
-        new Dictionary<string, TaskCompletionSource<string?>>(StringComparer.Ordinal);
-    private int _controlRequestSeq;
-    private static readonly TimeSpan ControlRequestTimeout = TimeSpan.FromSeconds(10);
+    // Everything we ask the running process (initialize, a model or effort
+    // change) goes through one channel. The dispatcher hands it each
+    // control_response. Replaced on every process start.
+    private volatile CliControlChannel _control;
+
+    // What the running process said about itself: its initialize answer,
+    // and the capabilities from the last system/init. The capabilities are
+    // cleared on every process start; the CLI repeats them with each turn.
+    private volatile CliProcessInfo? _processInfo;
+    private volatile CliCapabilities _capabilities = CliCapabilities.None;
 
     // Set when the running process could not take a change. The next message
     // then restarts it, so the change still lands — but never mid-turn.
@@ -98,7 +101,26 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         _outputListener = outputListener;
         _host = host;
         _logger = logger;
+        _control = NewControlChannel();
     }
+
+    private CliControlChannel NewControlChannel() =>
+        new CliControlChannel(line => _host.WriteLineAsync(line, CancellationToken.None));
+
+    /// <summary>
+    /// What the running CLI reported about itself in its answer to
+    /// <c>initialize</c>. Null until the first process has answered, and kept
+    /// from the last process after it stops.
+    /// </summary>
+    public CliProcessInfo? ProcessInfo => _processInfo;
+
+    /// <summary>
+    /// The protocol features of the running CLI. Check these before using a
+    /// request or field that older CLIs do not know, instead of comparing
+    /// version numbers. Empty from a process start until the first turn's
+    /// <c>system/init</c>.
+    /// </summary>
+    public CliCapabilities Capabilities => _capabilities;
 
     /// <summary>
     /// Keeps an inherited <c>ANTHROPIC_API_KEY</c> out of a CLI we are about to
@@ -134,9 +156,17 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 _logger.LogInformation("[ClaudeCli] Restarting CLI to apply a model/effort change");
             }
 
+            var wasRunning = _host.IsRunning;
             _host.SetResumeSessionId(_cliSessionId);
             await _host.EnsureStartedAsync(cancellationToken).ConfigureAwait(false);
+            if (!wasRunning)
+            {
+                _control = NewControlChannel();
+                _capabilities = CliCapabilities.None;
+            }
             EnsureDispatcherStarted();
+            if (!wasRunning)
+                InitializeProcess();
         }
         catch (Exception ex)
         {
@@ -212,11 +242,12 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         lock (_dispatcherLock)
         {
             if (_dispatcherTask is { IsCompleted: false }) return;
-            _dispatcherTask = Task.Run(DispatcherLoopAsync);
+            var control = _control;
+            _dispatcherTask = Task.Run(() => DispatcherLoopAsync(control));
         }
     }
 
-    private async Task DispatcherLoopAsync()
+    private async Task DispatcherLoopAsync(CliControlChannel control)
     {
         try
         {
@@ -250,7 +281,149 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
             // Background tasks are children of the CLI and end with it.
             SetBackgroundTasks(Array.Empty<BackgroundTask>());
+
+            // So is any answer it still owed us. Only this process's channel:
+            // a new process may already be running with requests of its own.
+            control.FailAll("process exited");
         }
+    }
+
+    /// <summary>
+    /// Sends <c>initialize</c> to a process that has just started, without
+    /// waiting for the answer.
+    ///
+    /// Called before the first user message is written. The request goes
+    /// into the stdin queue synchronously, so the CLI reads it first; the
+    /// answer arrives while the turn runs.
+    ///
+    /// Fast mode, when the user asked for it, follows the same way: a new
+    /// process starts without it, and the request has to be read before the
+    /// message for the first turn to run fast.
+    /// </summary>
+    private void InitializeProcess()
+    {
+        _ = InitializeProcessAsync();
+        if (_fastModeRequested)
+            _ = SendFastModeAsync(true);
+    }
+
+    private async Task InitializeProcessAsync()
+    {
+        var reply = await _control.SendAsync(StreamJsonProtocol.BuildInitialize).ConfigureAwait(false);
+        if (!reply.Succeeded || reply.Response is not { } body)
+        {
+            // Not fatal: the turn runs the same without the answer, and
+            // system/init still reports the capabilities.
+            _logger.LogWarning("[ClaudeCli] initialize failed: {Error}", reply.Error ?? "empty answer");
+            return;
+        }
+
+        var info = CliProcessInfo.Read(body);
+        _processInfo = info;
+        _logger.LogInformation(
+            "[ClaudeCli] CLI {Version}: {Models} models, {Commands} commands",
+            info.Version ?? "(version unknown)", info.Models.Count, info.Commands.Count);
+
+        try { ClaudeModelCatalog.SetReported(CliModelInfo.ToCatalog(info.Models)); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] Model list handler threw"); }
+
+        if (info.FastMode is { } fast)
+            SetFastModeStatus(fast);
+
+        await RefreshAppliedEffortAsync().ConfigureAwait(false);
+    }
+
+    // ── Fast mode ─────────────────────────────────────────────────────────
+    // What the user asked for is kept apart from what the CLI reports. The
+    // request lasts for the session and is sent again to every new process;
+    // the status says whether the CLI actually serves fast, which depends on
+    // the model, the plan and the account.
+
+    private volatile bool _fastModeRequested;
+    private FastModeStatus _fastMode = FastModeStatus.Unknown;
+
+    public bool FastModeRequested => _fastModeRequested;
+
+    public FastModeStatus FastMode => _fastMode;
+
+    public event Action<FastModeStatus>? FastModeChanged;
+
+    public void SetFastMode(bool on)
+    {
+        if (_fastModeRequested == on) return;
+        _fastModeRequested = on;
+
+        if (_host.IsRunning)
+            _ = SendFastModeAsync(on);
+        else
+            _logger.LogInformation("[ClaudeCli] Fast mode {State}; applies when the CLI starts", on ? "on" : "off");
+    }
+
+    /// <summary>
+    /// Sends the fast mode setting as <c>apply_flag_settings</c>. Flag settings
+    /// live in the process only; nothing is written to the user's settings
+    /// files. The CLI reports the resulting state in the next
+    /// <c>system/init</c>, not in this answer.
+    /// </summary>
+    private async Task SendFastModeAsync(bool on)
+    {
+        EnsureDispatcherStarted();
+        var reply = await _control.SendAsync(requestId => StreamJsonProtocol.BuildFastMode(requestId, on))
+            .ConfigureAwait(false);
+
+        if (reply.Succeeded)
+            _logger.LogInformation("[ClaudeCli] Fast mode {State} sent to the CLI", on ? "on" : "off");
+        else
+            _logger.LogWarning("[ClaudeCli] CLI did not take fast mode {State}: {Error}", on ? "on" : "off", reply.Error);
+    }
+
+    private void SetFastModeStatus(FastModeStatus status)
+    {
+        if (_fastMode.SameAs(status)) return;
+        _fastMode = status;
+        _logger.LogInformation("[ClaudeCli] Fast mode: {Status}", status);
+
+        try { FastModeChanged?.Invoke(status); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] FastModeChanged handler threw"); }
+    }
+
+    /// <summary>
+    /// Asks the CLI which effort its next request will use. The answer
+    /// accounts for what VsAgentic cannot see: the user's own CLI settings,
+    /// environment overrides, and levels the model does not support.
+    /// </summary>
+    private async Task RefreshAppliedEffortAsync()
+    {
+        var reply = await _control.SendAsync(StreamJsonProtocol.BuildGetSettings).ConfigureAwait(false);
+        if (!reply.Succeeded || reply.Response is not { } body)
+        {
+            _logger.LogDebug("[ClaudeCli] get_settings failed: {Error}", reply.Error ?? "empty answer");
+            SetAppliedEffort(null);
+            return;
+        }
+
+        // A model without effort reads null, and so does a CLI that predates
+        // the field.
+        var effort = body.TryGetProperty("applied", out var applied) && applied.ValueKind == JsonValueKind.Object
+            ? ClaudeEffortExtensions.FromCliValue(CliProcessInfo.ReadString(applied, "effort"))
+            : null;
+        SetAppliedEffort(effort);
+    }
+
+    private ClaudeEffort? _appliedEffort;
+
+    public ClaudeEffort? AppliedEffort => _appliedEffort;
+
+    public event Action<ClaudeEffort?>? AppliedEffortChanged;
+
+    private void SetAppliedEffort(ClaudeEffort? effort)
+    {
+        if (_appliedEffort == effort) return;
+        _appliedEffort = effort;
+        _logger.LogInformation("[ClaudeCli] Applied effort: {Effort}", effort?.ToCliValue() ?? "(none)");
+
+        try { AppliedEffortChanged?.Invoke(effort); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] AppliedEffortChanged handler threw"); }
     }
 
     private async Task DispatchEventAsync(JsonElement evt)
@@ -280,67 +453,61 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 return;
 
             case "control_response":
-                HandleControlResponse(evt);
+                if (!_control.TryComplete(evt))
+                    _logger.LogDebug("[ClaudeCli] control_response for a request no one waits for");
                 return;
         }
     }
 
-    private void HandleControlResponse(JsonElement evt)
-    {
-        if (!evt.TryGetProperty("response", out var response)) return;
-        var requestId = response.TryGetProperty("request_id", out var id) ? id.GetString() : null;
-        if (requestId is null) return;
-
-        TaskCompletionSource<string?>? pending;
-        lock (_pendingControl)
-        {
-            if (!_pendingControl.TryGetValue(requestId, out pending)) return;
-            _pendingControl.Remove(requestId);
-        }
-
-        var ok = response.TryGetProperty("subtype", out var st) && st.GetString() == "success";
-        var error = ok ? null
-            : response.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String
-                ? e.GetString() ?? "error"
-                : "error";
-        pending.TrySetResult(error);
-    }
-
+    /// <summary>
+    /// The one place <c>system</c> events are told apart. A new subtype gets
+    /// a case here and a handler of its own, not a check inside another
+    /// handler.
+    /// </summary>
     private void HandleSystemEvent(JsonElement evt)
     {
-        var subtype = evt.TryGetProperty("subtype", out var s) ? s.GetString() : null;
-        if (subtype == "background_tasks_changed")
+        switch (CliProcessInfo.ReadString(evt, "subtype"))
         {
-            HandleBackgroundTasksChanged(evt);
-            return;
+            case "init":
+                HandleInit(CliInitEvent.Read(evt));
+                return;
+
+            case "background_tasks_changed":
+                HandleBackgroundTasksChanged(evt);
+                return;
         }
-        if (subtype != "init") return;
-        if (evt.TryGetProperty("session_id", out var sid))
+    }
+
+    private void HandleInit(CliInitEvent init)
+    {
+        if (init.SessionId is not null)
         {
-            _cliSessionId = sid.GetString();
+            _cliSessionId = init.SessionId;
             _logger.LogDebug("[ClaudeCli] Session started: {SessionId}", _cliSessionId);
         }
+
+        // A CLI that predates the list sends none, which reads as no
+        // capabilities.
+        if (init.Capabilities.ToString() != _capabilities.ToString())
+            _logger.LogInformation("[ClaudeCli] CLI {Version} capabilities: {Capabilities}",
+                init.Version ?? "(version unknown)", init.Capabilities);
+        _capabilities = init.Capabilities;
 
         // The alias we pass to --model resolves server-side, so this init event
         // is the only place that names the model actually serving the session —
         // and the only place the [1m] variants announce themselves. It can differ
         // between process starts (a model switch, a changed default), so raise on
         // every change.
-        if (evt.TryGetProperty("model", out var modelProp) && modelProp.ValueKind == JsonValueKind.String)
-            SetCurrentModel(modelProp.GetString());
+        if (init.Model is not null)
+            SetCurrentModel(init.Model);
+
+        if (init.FastMode is { } fast)
+            SetFastModeStatus(fast);
+
         // Diagnostic: dump the available tool names so we can verify whether
         // AskUserQuestion is registered in headless mode.
-        if (evt.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array)
-        {
-            var names = new List<string>();
-            foreach (var t in tools.EnumerateArray())
-            {
-                if (t.ValueKind == JsonValueKind.String) names.Add(t.GetString() ?? "");
-                else if (t.ValueKind == JsonValueKind.Object && t.TryGetProperty("name", out var n))
-                    names.Add(n.GetString() ?? "");
-            }
-            _logger.LogInformation("[ClaudeCli] Available tools ({Count}): {Tools}", names.Count, string.Join(", ", names));
-        }
+        if (init.Tools.Count > 0)
+            _logger.LogInformation("[ClaudeCli] Available tools ({Count}): {Tools}", init.Tools.Count, string.Join(", ", init.Tools));
     }
 
     // The event carries the whole list of running tasks, not a change, so the
@@ -587,6 +754,11 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     private void HandleResultEvent(JsonElement evt)
     {
+        // Before the turn check: the state can change during a turn (a rate
+        // limit starts a cooldown), whoever the result belongs to.
+        if (FastModeStatus.Read(evt) is { } fast)
+            SetFastModeStatus(fast);
+
         TurnState? turn;
         lock (_activeTurnLock) { turn = _activeTurn; }
         if (turn == null) return;
@@ -1109,6 +1281,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             _logger.LogInformation(
                 "[ClaudeCli] Model/effort set to '{Model}'/'{Effort}'; applies when the CLI starts",
                 alias.Length == 0 ? "(cli default)" : alias, effort);
+
+            // Read again when the process starts.
+            SetAppliedEffort(null);
         }
 
         // The model reported so far no longer describes what the next turn runs
@@ -1119,44 +1294,52 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     }
 
     /// <summary>
-    /// Sends a model/effort change to the running CLI as an
-    /// <c>apply_flag_settings</c> control request. The CLI applies it from its
-    /// next API request on, which within a turn means the next step.
+    /// Sends a model/effort change to the running CLI. The CLI applies it from
+    /// its next API request on, which within a turn means the next step.
     ///
-    /// A null value returns the setting to the CLI default — the Default entry
-    /// in either picker. Only changed settings are sent, so an effort change
-    /// does not count as a model switch on the CLI side.
+    /// The model goes as <c>set_model</c>, the request the CLI has for it; the
+    /// effort as <c>apply_flag_settings</c>, since there is no request of its
+    /// own for effort. A null value returns the setting to the CLI default —
+    /// the Default entry in either picker. Only changed settings are sent, so
+    /// an effort change does not count as a model switch on the CLI side.
     ///
-    /// The CLI answers success even for a value it ignores, so a success only
-    /// means the request was understood. An error or no answer means a CLI that
-    /// does not know the request; the change then waits for a restart before the
-    /// next message, which is the old behavior without the mid-turn kill.
+    /// A CLI that does not know <c>set_model</c> gets the model through
+    /// <c>apply_flag_settings</c>, as before. Any other error, or no answer,
+    /// leaves the change to a restart before the next message. That includes
+    /// <c>set_model</c> refusing a model it does not know (a typo in the Model
+    /// option): the restart passes it as <c>--model</c>, and the CLI fails there
+    /// as it did before this request was used.
+    ///
+    /// <c>apply_flag_settings</c> answers success even for a value it ignores,
+    /// so a success only means the request was understood. What the CLI then
+    /// uses is read back with <c>get_settings</c>.
     /// </summary>
     private async Task ApplyToRunningProcessAsync(
         bool includeModel, string? model, bool includeEffort, string? effort)
     {
-        var requestId = "vsagentic-" + Interlocked.Increment(ref _controlRequestSeq);
-        var pending = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (_pendingControl) { _pendingControl[requestId] = pending; }
+        EnsureDispatcherStarted();
 
-        string? error;
-        try
-        {
-            EnsureDispatcherStarted();
-            var line = StreamJsonProtocol.BuildApplyFlagSettings(
-                requestId, includeModel, model, includeEffort, effort);
-            await _host.WriteLineAsync(line, CancellationToken.None).ConfigureAwait(false);
+        string? error = null;
+        var modelThroughFlags = false;
 
-            var done = await Task.WhenAny(pending.Task, Task.Delay(ControlRequestTimeout)).ConfigureAwait(false);
-            error = done == pending.Task ? pending.Task.Result : "no response";
-        }
-        catch (Exception ex)
+        if (includeModel)
         {
-            error = ex.Message;
+            var reply = await _control.SendAsync(requestId => StreamJsonProtocol.BuildSetModel(requestId, model))
+                .ConfigureAwait(false);
+            error = reply.Error;
+            if (error is not null && IsUnknownRequest(error))
+            {
+                _logger.LogInformation("[ClaudeCli] CLI does not know set_model; sending the model as a flag setting");
+                modelThroughFlags = true;
+                error = null;
+            }
         }
-        finally
+
+        if (error is null && (includeEffort || modelThroughFlags))
         {
-            lock (_pendingControl) { _pendingControl.Remove(requestId); }
+            var reply = await _control.SendAsync(requestId => StreamJsonProtocol.BuildApplyFlagSettings(
+                requestId, modelThroughFlags, model, includeEffort, effort)).ConfigureAwait(false);
+            error = reply.Error;
         }
 
         if (error is null)
@@ -1165,6 +1348,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 "[ClaudeCli] Model/effort applied to the running CLI: model {Model}, effort {Effort}",
                 includeModel ? model ?? "(cli default)" : "(unchanged)",
                 includeEffort ? effort ?? "(cli default)" : "(unchanged)");
+
+            // A new model can change the effort in force: a level it does not
+            // support is lowered, and one without effort sends none.
+            await RefreshAppliedEffortAsync().ConfigureAwait(false);
             return;
         }
 
@@ -1173,6 +1360,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             "[ClaudeCli] CLI did not take the model/effort change ({Error}); restarting before the next message",
             error);
     }
+
+    // The CLI's answer to a control request subtype it does not have.
+    private static bool IsUnknownRequest(string error) =>
+        error.IndexOf("Unsupported control request subtype", StringComparison.OrdinalIgnoreCase) >= 0;
 
     public void ClearHistory()
     {
@@ -1190,6 +1381,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         lock (_dispatcherLock) { _dispatcherTask = null; }
         _logger.LogInformation("[ClaudeCli] Session cleared (process killed)");
         SetCurrentModel(null);
+        SetAppliedEffort(null);
+        // The request stays: it is the user's choice for the session, and the
+        // next process gets it. The status comes from that process.
+        SetFastModeStatus(FastModeStatus.Unknown);
         RaiseUsageChanged();
     }
 

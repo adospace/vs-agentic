@@ -111,17 +111,17 @@ internal static class StreamJsonProtocol
     }
 
     /// <summary>
-    /// Build the control request that changes the model and/or effort of the
-    /// running process. A setting is sent only when its <c>include</c> flag is
-    /// set; a null value then returns it to the CLI default.
+    /// Build one control request line:
+    /// <c>{"type":"control_request","request_id":…,"request":{"subtype":…, …}}</c>.
+    /// <paramref name="writeFields"/> adds the request's own fields after the
+    /// subtype.
     ///
     /// Written by hand rather than through <see cref="SerializerOptions"/>,
-    /// because that drops null values and the null is the message here.
+    /// because that drops null values, and for some requests the null is the
+    /// message.
     /// </summary>
-    public static string BuildApplyFlagSettings(
-        string requestId,
-        bool includeModel, string? model,
-        bool includeEffort, string? effort)
+    public static string BuildControlRequest(
+        string requestId, string subtype, Action<Utf8JsonWriter>? writeFields = null)
     {
         using var buffer = new MemoryStream();
         using (var w = new Utf8JsonWriter(buffer))
@@ -130,16 +130,69 @@ internal static class StreamJsonProtocol
             w.WriteString("type", "control_request");
             w.WriteString("request_id", requestId);
             w.WriteStartObject("request");
-            w.WriteString("subtype", "apply_flag_settings");
-            w.WriteStartObject("settings");
-            if (includeModel) WriteStringOrNull(w, "model", model);
-            if (includeEffort) WriteStringOrNull(w, "effortLevel", effort);
-            w.WriteEndObject();
+            w.WriteString("subtype", subtype);
+            writeFields?.Invoke(w);
             w.WriteEndObject();
             w.WriteEndObject();
         }
         return Encoding.UTF8.GetString(buffer.ToArray());
     }
+
+    /// <summary>
+    /// Build the <c>initialize</c> request. It registers nothing: no hooks, no
+    /// SDK MCP servers, no prompt changes. The point is the answer, which
+    /// describes the process (see <see cref="CliProcessInfo"/>).
+    /// </summary>
+    public static string BuildInitialize(string requestId) =>
+        BuildControlRequest(requestId, "initialize");
+
+    /// <summary>
+    /// Build the <c>set_model</c> request. A null model returns the session to
+    /// the account's default model, not to the <c>--model</c> the process was
+    /// started with (measured on CLI 2.1.296).
+    /// </summary>
+    public static string BuildSetModel(string requestId, string? model) =>
+        BuildControlRequest(requestId, "set_model", w => WriteStringOrNull(w, "model", model));
+
+    /// <summary>
+    /// Build the <c>get_settings</c> request. Its answer carries, under
+    /// <c>applied</c>, the model and effort the next request will use.
+    /// </summary>
+    public static string BuildGetSettings(string requestId) =>
+        BuildControlRequest(requestId, "get_settings");
+
+    /// <summary>
+    /// Build the control request that changes the model and/or effort of the
+    /// running process. A setting is sent only when its <c>include</c> flag is
+    /// set; a null value then returns it to the CLI default.
+    ///
+    /// The model goes through <see cref="BuildSetModel"/>; this carries it only
+    /// for a CLI that does not know that request.
+    /// </summary>
+    public static string BuildApplyFlagSettings(
+        string requestId,
+        bool includeModel, string? model,
+        bool includeEffort, string? effort) =>
+        BuildControlRequest(requestId, "apply_flag_settings", w =>
+        {
+            w.WriteStartObject("settings");
+            if (includeModel) WriteStringOrNull(w, "model", model);
+            if (includeEffort) WriteStringOrNull(w, "effortLevel", effort);
+            w.WriteEndObject();
+        });
+
+    /// <summary>
+    /// Build the request that turns fast mode on or off:
+    /// <c>apply_flag_settings {fastMode}</c>. There is no request of its own
+    /// for it; the SDK's flag-settings example uses this key.
+    /// </summary>
+    public static string BuildFastMode(string requestId, bool on) =>
+        BuildControlRequest(requestId, "apply_flag_settings", w =>
+        {
+            w.WriteStartObject("settings");
+            w.WriteBoolean("fastMode", on);
+            w.WriteEndObject();
+        });
 
     private static void WriteStringOrNull(Utf8JsonWriter w, string name, string? value)
     {

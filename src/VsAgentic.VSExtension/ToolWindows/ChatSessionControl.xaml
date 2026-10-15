@@ -118,6 +118,46 @@
             </Style.Triggers>
         </Style>
 
+        <!-- The Fast switch: the same flat chrome as the pickers. Checked keeps
+             the pressed fill, so "on" reads at a glance without a colour of
+             its own. -->
+        <Style x:Key="StatusToggleStyle" TargetType="ToggleButton">
+            <Setter Property="Margin" Value="4,0,0,0"/>
+            <Setter Property="Height" Value="19"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Foreground"
+                    Value="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="Chrome"
+                                Background="Transparent"
+                                CornerRadius="3"
+                                Padding="6,0"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Chrome" Property="Background"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseDownBackgroundGradientKey}}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5"/>
+                                <Setter Property="Cursor" Value="Arrow"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="StatusComboItemStyle" TargetType="ComboBoxItem">
             <Setter Property="Padding" Value="8,3"/>
             <Setter Property="FontSize" Value="11"/>
@@ -580,7 +620,6 @@
                                              closed box would draw ToString() once and
                                              keep showing "Default". -->
                                         <ComboBox Style="{StaticResource StatusComboStyle}"
-                                                  ItemContainerStyle="{StaticResource StatusComboItemStyle}"
                                                   ItemsSource="{Binding ModelOptions}"
                                                   SelectedItem="{Binding SelectedModel}"
                                                   Visibility="{Binding ActualWidth, ElementName=StatusInfo,
@@ -595,6 +634,16 @@
                                                 <TextBlock Text="{Binding ModelDisplay,
                                                            StringFormat='Model: {0}&#x0a;Takes effect on the next request, also during a reply.'}"/>
                                             </ComboBox.ToolTip>
+                                            <!-- The CLI's description of each model, on the
+                                                 row in the open list. Not on the template:
+                                                 that also draws the closed box and would
+                                                 cover the tooltip above. -->
+                                            <ComboBox.ItemContainerStyle>
+                                                <Style TargetType="ComboBoxItem"
+                                                       BasedOn="{StaticResource StatusComboItemStyle}">
+                                                    <Setter Property="ToolTip" Value="{Binding Description}"/>
+                                                </Style>
+                                            </ComboBox.ItemContainerStyle>
                                             <ComboBox.ItemTemplate>
                                                 <DataTemplate>
                                                     <TextBlock Text="{Binding DisplayName}"/>
@@ -602,14 +651,45 @@
                                             </ComboBox.ItemTemplate>
                                         </ComboBox>
 
+                                        <!-- The levels come from the selected model; a
+                                             model without effort disables the box. -->
                                         <ComboBox Style="{StaticResource StatusComboStyle}"
                                                   ItemContainerStyle="{StaticResource StatusComboItemStyle}"
                                                   ItemsSource="{Binding EffortOptions}"
-                                                  SelectedItem="{Binding SelectedEffort}"
-                                                  ToolTip="Reasoning effort. Default sends no level to the CLI.&#x0a;Takes effect on the next request, also during a reply."
+                                                  SelectedItem="{Binding SelectedEffortOption}"
+                                                  IsEnabled="{Binding HasEffort}"
+                                                  ToolTipService.ShowOnDisabled="True"
                                                   Visibility="{Binding ActualWidth, ElementName=StatusInfo,
                                                                Converter={StaticResource MinWidth},
-                                                               ConverterParameter=480}"/>
+                                                               ConverterParameter=480}">
+                                            <ComboBox.ToolTip>
+                                                <TextBlock Text="{Binding EffortTooltip}"/>
+                                            </ComboBox.ToolTip>
+                                            <ComboBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding DisplayName}"/>
+                                                </DataTemplate>
+                                            </ComboBox.ItemTemplate>
+                                        </ComboBox>
+
+                                        <!-- Only for a model the CLI offers fast mode for.
+                                             Two conditions, so two elements: the width
+                                             rule on the wrapper, the model rule on the
+                                             switch. -->
+                                        <Border Visibility="{Binding ActualWidth, ElementName=StatusInfo,
+                                                             Converter={StaticResource MinWidth},
+                                                             ConverterParameter=525}">
+                                            <ToggleButton Style="{StaticResource StatusToggleStyle}"
+                                                          Content="Fast"
+                                                          IsChecked="{Binding IsFastModeOn}"
+                                                          IsEnabled="{Binding CanToggleFastMode}"
+                                                          ToolTipService.ShowOnDisabled="True"
+                                                          Visibility="{Binding ShowFastMode, Converter={StaticResource BoolToVis}}">
+                                                <ToggleButton.ToolTip>
+                                                    <TextBlock Text="{Binding FastModeTooltip}"/>
+                                                </ToggleButton.ToolTip>
+                                            </ToggleButton>
+                                        </Border>
                                     </StackPanel>
                                 </Grid>
 

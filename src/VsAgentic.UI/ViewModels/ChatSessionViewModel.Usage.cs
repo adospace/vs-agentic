@@ -55,21 +55,86 @@ public partial class ChatSessionViewModel
     /// Per-session copies rather than the shared catalog, because the entry for
     /// "whatever the CLI picks" relabels itself to the model that actually
     /// turned up — and two sessions can be on different models.
+    ///
+    /// The rows are the models the CLI offered (<see cref="ClaudeModelCatalog.Reported"/>),
+    /// or the built-in aliases until a CLI has answered.
     /// </summary>
     public IReadOnlyList<ModelOption> ModelOptions => _modelOptions;
 
-    private readonly List<ModelOption> _modelOptions =
-        ClaudeModelCatalog.All.Select(m => new ModelOption(m)).ToList();
+    private List<ModelOption> _modelOptions = BuildModelOptions(null);
 
-    public IReadOnlyList<ClaudeEffort> EffortOptions { get; } =
-        (ClaudeEffort[])Enum.GetValues(typeof(ClaudeEffort));
+    // The reported list the rows were built from; null for the built-in one.
+    private IReadOnlyList<ClaudeModelInfo>? _modelOptionsSource;
+
+    private static List<ModelOption> BuildModelOptions(IReadOnlyList<ClaudeModelInfo>? reported)
+    {
+        var rows = (reported ?? ClaudeModelCatalog.All).Select(m => new ModelOption(m)).ToList();
+
+        // Default goes first, and must exist: a configured empty alias selects it.
+        var cliDefault = rows.FirstOrDefault(r => r.IsCliDefault) ?? new ModelOption(ClaudeModelCatalog.Default);
+        rows.Remove(cliDefault);
+        rows.Insert(0, cliDefault);
+        return rows;
+    }
+
+    /// <summary>
+    /// The levels the selected model accepts, after Default. The selected
+    /// level stays in the list even when the model does not accept it, so
+    /// switching models does not quietly change the user's choice; the CLI
+    /// lowers it, and <see cref="EffortTooltip"/> says to what.
+    /// </summary>
+    public IReadOnlyList<EffortOption> EffortOptions => _effortOptions;
+
+    private IReadOnlyList<EffortOption> _effortOptions = Array.Empty<EffortOption>();
+
+    // One instance per level, so the dropdown keeps its selection when the
+    // list is rebuilt.
+    private readonly Dictionary<ClaudeEffort, EffortOption> _effortOptionCache = new();
+
+    private EffortOption OptionOf(ClaudeEffort effort)
+    {
+        if (!_effortOptionCache.TryGetValue(effort, out var option))
+            _effortOptionCache[effort] = option = new EffortOption(effort);
+        return option;
+    }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ModelDisplay))]
     private ModelOption _selectedModel = null!;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SelectedEffortOption))]
     private ClaudeEffort _selectedEffort = ClaudeEffort.Default;
+
+    /// <summary>The dropdown's view of <see cref="SelectedEffort"/>.</summary>
+    public EffortOption SelectedEffortOption
+    {
+        get => OptionOf(SelectedEffort);
+        // Null while the dropdown swaps its list; not a choice.
+        set { if (value is not null) SelectedEffort = value.Value; }
+    }
+
+    /// <summary>
+    /// False for a model the CLI reports without effort levels (Haiku 4.5 on
+    /// CLI 2.1.296). The dropdown is then disabled rather than offering levels
+    /// the CLI would drop.
+    /// </summary>
+    public bool HasEffort => SelectedModel?.SupportedEfforts is not { Count: 0 };
+
+    /// <summary>
+    /// The level the CLI uses, as it reports it. Null while not known, and for
+    /// a model without effort.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(EffortTooltip))]
+    private ClaudeEffort? _appliedEffort;
+
+    public string EffortTooltip =>
+        !HasEffort
+            ? "This model has no reasoning effort setting."
+            : "Reasoning effort. Default sends no level to the CLI."
+              + (AppliedEffort is { } applied ? $"\nIn use: {applied.ToCliValue()}" : "")
+              + "\nTakes effect on the next request, also during a reply.";
 
     /// <summary>
     /// Set while seeding the pickers from saved settings, so restoring a value
@@ -89,6 +154,9 @@ public partial class ChatSessionViewModel
     partial void OnSelectedModelChanged(ModelOption value)
     {
         RefreshResolvedModelLabel();
+        RefreshEffortOptions();
+        OnPropertyChanged(nameof(ShowFastMode));
+        OnPropertyChanged(nameof(FastModeTooltip));
         if (_suppressModelEffortApply) return;
 
         ApplyModelAndEffort();
@@ -98,9 +166,50 @@ public partial class ChatSessionViewModel
         RefreshModelPreview();
     }
 
-    partial void OnSelectedEffortChanged(ClaudeEffort value) => ApplyModelAndEffort();
+    partial void OnSelectedEffortChanged(ClaudeEffort value)
+    {
+        RefreshEffortOptions();
+        RefreshDefaultEffortLabel();
+        ApplyModelAndEffort();
+    }
 
     partial void OnModelIdChanged(string? value) => RefreshResolvedModelLabel();
+
+    partial void OnAppliedEffortChanged(ClaudeEffort? value) => RefreshDefaultEffortLabel();
+
+    private void RefreshEffortOptions()
+    {
+        var levels = SelectedModel?.SupportedEfforts
+            ?? ((ClaudeEffort[])Enum.GetValues(typeof(ClaudeEffort))).Where(e => e != ClaudeEffort.Default).ToList();
+
+        var shown = new[] { ClaudeEffort.Default }
+            .Concat(levels)
+            .Append(SelectedEffort)
+            .Distinct()
+            .OrderBy(e => e)
+            .Select(OptionOf)
+            .ToList();
+
+        if (!shown.SequenceEqual(_effortOptions))
+        {
+            _effortOptions = shown;
+            OnPropertyChanged(nameof(EffortOptions));
+            // The dropdown drops its selection when its list is replaced.
+            OnPropertyChanged(nameof(SelectedEffortOption));
+        }
+
+        OnPropertyChanged(nameof(HasEffort));
+        OnPropertyChanged(nameof(EffortTooltip));
+    }
+
+    /// <summary>
+    /// Names the level Default stands for, as the model row names the model:
+    /// "Default (medium)". Only while the CLI has said.
+    /// </summary>
+    private void RefreshDefaultEffortLabel() =>
+        OptionOf(ClaudeEffort.Default).DisplayName = AppliedEffort is { } applied && SelectedEffort == ClaudeEffort.Default
+            ? $"Default ({applied.ToCliValue()})"
+            : EffortOption.DefaultLabel;
 
     private void ApplyModelAndEffort()
     {
@@ -130,6 +239,9 @@ public partial class ChatSessionViewModel
     /// </summary>
     private void InitializeUsage(IChatService chatService, VsAgenticOptions options)
     {
+        _modelOptionsSource = ClaudeModelCatalog.Reported;
+        _modelOptions = BuildModelOptions(_modelOptionsSource);
+
         _suppressModelEffortApply = true;
         try
         {
@@ -146,6 +258,103 @@ public partial class ChatSessionViewModel
 
         chatService.ModelChanged += OnChatServiceModelChanged;
         RefreshModelPreview();
+
+        chatService.AppliedEffortChanged += OnChatServiceAppliedEffortChanged;
+        AppliedEffort = chatService.AppliedEffort;
+
+        chatService.FastModeChanged += OnChatServiceFastModeChanged;
+        FastModeStatus = chatService.FastMode;
+        IsFastModeOn = chatService.FastModeRequested;
+
+        ClaudeModelCatalog.ReportedChanged += OnReportedModelsChanged;
+        // The list may have arrived between building ours and subscribing.
+        if (!ReferenceEquals(_modelOptionsSource, ClaudeModelCatalog.Reported))
+            RebuildModelOptions();
+    }
+
+    private void OnChatServiceAppliedEffortChanged(ClaudeEffort? effort) => Dispatch(() => AppliedEffort = effort);
+
+    private void OnChatServiceFastModeChanged(FastModeStatus status) => Dispatch(() => FastModeStatus = status);
+
+    // ── Fast mode ─────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The user's switch. For this session only: fast mode costs more, so a
+    /// new session does not inherit it.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowFastMode))]
+    [NotifyPropertyChangedFor(nameof(CanToggleFastMode))]
+    [NotifyPropertyChangedFor(nameof(FastModeTooltip))]
+    private bool _isFastModeOn;
+
+    /// <summary>What the CLI reports, which can differ from the switch.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanToggleFastMode))]
+    [NotifyPropertyChangedFor(nameof(FastModeTooltip))]
+    private FastModeStatus _fastModeStatus = FastModeStatus.Unknown;
+
+    partial void OnIsFastModeOnChanged(bool value)
+    {
+        try { _chatService?.SetFastMode(value); }
+        catch (Exception ex) { _logger.LogError(ex, "[VM] Could not change fast mode"); }
+    }
+
+    /// <summary>
+    /// Shown for a model the CLI offers fast mode for, and while it is on, so
+    /// it can be turned off after a switch to a model without it.
+    /// </summary>
+    public bool ShowFastMode => SelectedModel?.SupportsFastMode == true || IsFastModeOn;
+
+    /// <summary>
+    /// Off only when something outside VsAgentic blocks fast mode and it is
+    /// not on; turning it off always works.
+    /// </summary>
+    public bool CanToggleFastMode => IsFastModeOn || !FastModeStatus.IsBlocked;
+
+    public string FastModeTooltip
+    {
+        get
+        {
+            var text = "Fast mode: faster output from the same model, billed at a higher rate.\n"
+                       + "For this session only. Takes effect on the next request.";
+
+            if (FastModeStatus.BlockedText is { } blocked)
+                return text + "\n\n" + blocked;
+            if (!IsFastModeOn)
+                return text;
+            if (FastModeStatus.IsCoolingDown)
+                return text + "\n\nPaused after a rate limit. Requests run at standard speed until it resumes.";
+            if (SelectedModel?.SupportsFastMode == false)
+                return text + "\n\nThe selected model has no fast mode. It applies again on a model that has.";
+            if (FastModeStatus.IsOn)
+                return text + "\n\nOn.";
+            return text;
+        }
+    }
+
+    private void OnReportedModelsChanged(IReadOnlyList<ClaudeModelInfo> models) => Dispatch(RebuildModelOptions);
+
+    /// <summary>
+    /// Replaces the rows with the list the CLI reported, keeping the selection
+    /// on the same alias. Not a user choice, so nothing is sent to the CLI.
+    /// </summary>
+    private void RebuildModelOptions()
+    {
+        var alias = SelectedModel?.Alias ?? "";
+
+        _suppressModelEffortApply = true;
+        try
+        {
+            _modelOptionsSource = ClaudeModelCatalog.Reported;
+            _modelOptions = BuildModelOptions(_modelOptionsSource);
+            OnPropertyChanged(nameof(ModelOptions));
+            SelectedModel = OptionFor(alias);
+        }
+        finally
+        {
+            _suppressModelEffortApply = false;
+        }
     }
 
     /// <summary>
@@ -383,12 +592,47 @@ public partial class ModelOption : ObservableObject
     public ModelOption(ClaudeModelInfo info)
     {
         Alias = info.Alias;
+        Description = info.Description;
+        SupportedEfforts = info.SupportedEfforts;
+        SupportsFastMode = info.SupportsFastMode;
         _displayName = info.IsCliDefault ? UnresolvedLabel : info.DisplayName;
     }
 
     public string Alias { get; }
 
+    /// <summary>The CLI's description of the model, shown as the row's tooltip.</summary>
+    public string? Description { get; }
+
+    /// <inheritdoc cref="ClaudeModelInfo.SupportedEfforts"/>
+    public IReadOnlyList<ClaudeEffort>? SupportedEfforts { get; }
+
+    /// <inheritdoc cref="ClaudeModelInfo.SupportsFastMode"/>
+    public bool SupportsFastMode { get; }
+
     public bool IsCliDefault => Alias.Length == 0;
+
+    [ObservableProperty]
+    private string _displayName;
+
+    public override string ToString() => DisplayName;
+}
+
+/// <summary>
+/// One row of the effort dropdown. An object rather than the bare enum for
+/// the same reason as <see cref="ModelOption"/>: the Default row names the
+/// level the CLI uses once it has said.
+/// </summary>
+public partial class EffortOption : ObservableObject
+{
+    public const string DefaultLabel = "Default";
+
+    public EffortOption(ClaudeEffort value)
+    {
+        Value = value;
+        _displayName = value == ClaudeEffort.Default ? DefaultLabel : value.ToString();
+    }
+
+    public ClaudeEffort Value { get; }
 
     [ObservableProperty]
     private string _displayName;

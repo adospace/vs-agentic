@@ -1070,8 +1070,12 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             {
                 _chatService.UsageChanged -= OnChatServiceUsageChanged;
                 _chatService.ModelChanged -= OnChatServiceModelChanged;
+                _chatService.AppliedEffortChanged -= OnChatServiceAppliedEffortChanged;
+                _chatService.FastModeChanged -= OnChatServiceFastModeChanged;
                 _chatService.BackgroundTasksChanged -= OnChatServiceBackgroundTasksChanged;
             }
+            // Static: without this, a closed session stays reachable from the catalog.
+            ClaudeModelCatalog.ReportedChanged -= OnReportedModelsChanged;
         }
         catch { }
         try { (_chatService as IDisposable)?.Dispose(); } catch { }

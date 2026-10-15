@@ -80,6 +80,20 @@ public interface IChatService
     void ApplyModelAndEffort(string modelAlias, ClaudeEffort effort);
 
     /// <summary>
+    /// The effort level the CLI will send on its next request, as it reports
+    /// it — what <see cref="ClaudeEffort.Default"/> resolves to, or the chosen
+    /// level after the CLI lowered it for a model that does not support it.
+    /// Null when not known yet, and when the model has no effort setting.
+    /// </summary>
+    ClaudeEffort? AppliedEffort { get; }
+
+    /// <summary>
+    /// Raised when <see cref="AppliedEffort"/> changes. Raised on a background
+    /// thread; hosts must marshal to the UI thread.
+    /// </summary>
+    event Action<ClaudeEffort?>? AppliedEffortChanged;
+
+    /// <summary>
     /// Raised when the underlying CLI returned an authentication / login-required
     /// error. The string argument is the original error text from the CLI so the
     /// host can surface it to the user. Hosts should respond by showing a login

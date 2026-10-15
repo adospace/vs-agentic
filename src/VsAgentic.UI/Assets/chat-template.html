@@ -229,6 +229,51 @@ html, body {
 .toolstep-status { font-size: 10px; }
 .toolstep-name { color: var(--text-muted); }
 
+/* Mark on a step whose work runs on in the background (run_in_background).
+   The step itself completes at once; this follows the work it started. */
+.toolstep-bg {
+    font-size: 11px;
+    padding: 0 6px;
+    border: 1px solid currentColor;
+    border-radius: 8px;
+    cursor: default;
+}
+.toolstep-bg-Running { color: var(--info); animation: bg-pulse 1.6s ease-in-out infinite; }
+.toolstep-bg-Completed { color: var(--success); }
+.toolstep-bg-Failed { color: var(--error); }
+.toolstep-bg-Stopped { color: var(--text-muted); }
+@keyframes bg-pulse { 50% { opacity: 0.45; } }
+
+/* "Run in background" on a step whose command or subagent still holds the
+   turn. Shaped like the mark it turns into. */
+.toolstep-bgbtn {
+    font: inherit;
+    font-size: 11px;
+    padding: 0 6px;
+    color: var(--info);
+    background: transparent;
+    border: 1px solid currentColor;
+    border-radius: 8px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.toolstep-bgbtn:hover { background: var(--bg-input); }
+.toolstep-bgbtn:disabled { opacity: 0.5; cursor: default; }
+
+/* Notice: a one-line event from the extension, e.g. a background command that
+   ended. Indented like a step, in muted text, with a colored outcome icon. */
+.msg-notice {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.notice-icon { font-weight: bold; }
+.notice-Success .notice-icon { color: var(--success); }
+.notice-Error .notice-icon { color: var(--error); }
+.notice-Info .notice-icon { color: var(--text-muted); }
+
 .toolstep-expander {
     margin: 4px 0 0 18px;
     font-size: 11px;
@@ -990,6 +1035,28 @@ function addMessage(id, type, dataJson) {
         body.style.display = 'none';
         div.appendChild(body);
     }
+    else if (type === 'Notice') {
+        div.classList.add('msg-notice', 'notice-' + (data.Status || 'Info'));
+        var icon = document.createElement('span');
+        icon.className = 'notice-icon';
+        icon.textContent = NOTICE_ICONS[data.Status] || NOTICE_ICONS.Info;
+        var text = document.createElement('span');
+        text.className = 'notice-text';
+        text.textContent = data.Content || '';
+        div.appendChild(icon);
+        div.appendChild(text);
+        // A shell command that ran in the background: the file the CLI wrote
+        // its output to. It opens like any other file link.
+        if (data.Body) {
+            var output = document.createElement('a');
+            output.href = '#';
+            output.className = 'file-link';
+            output.dataset.path = data.Body;
+            output.title = data.Body;
+            output.textContent = 'Open output';
+            div.appendChild(output);
+        }
+    }
     else if (type === 'Thinking') {
         div.classList.add('msg-thinking');
         var header = document.createElement('div');
@@ -1062,6 +1129,14 @@ function addMessage(id, type, dataJson) {
         _userScrolledUp = false;
         scrollToBottom();
         updateScrollButton();
+    } else if (type === 'Notice') {
+        // Background work ending is a boundary like a prompt: the CLI wakes up
+        // after it and starts a turn of its own. Close the row so that turn's
+        // steps do not fold into the last one, nor take its reply with them,
+        // and leave the notice standing.
+        closeActivityGroup();
+        _container.appendChild(div);
+        maybeScrollToBottom();
     } else if (isTurnFailure(type, data)) {
         // Left standing, and the text before it left alone: when a turn ends in
         // an error, that text is usually as far as the answer got, and folding
@@ -1122,6 +1197,7 @@ function updateStatus(id, status, expanderTitle) {
         var et = el.querySelector('.msg-expander-title');
         if (et) et.textContent = expanderTitle;
     }
+    if (status !== 'Pending') removeMoveToBackground(id);
 
     // The folded row speaks for whichever step is in flight, so a title that
     // moves on (thinking counting its seconds) has to move the row with it.
@@ -1131,6 +1207,73 @@ function updateStatus(id, status, expanderTitle) {
     if (!group.classList.contains('running') || !expanderTitle) return;
     var items = group.querySelector('.activity-items');
     if (items.lastElementChild === el) setActivityLabel(group, expanderTitle);
+}
+
+var NOTICE_ICONS = { Success: '✓', Error: '✗', Info: '■' };
+
+var BG_LABELS = {
+    Running: '⧗ running in background',
+    Completed: '✓ background done',
+    Failed: '✗ background failed',
+    Stopped: '■ background stopped'
+};
+
+// Marks a tool step whose work runs on in the background. Called again with
+// the outcome when the CLI reports the work ended; the summary (e.g. the exit
+// code) goes into the tooltip.
+function setBackgroundState(id, state, summary) {
+    removeMoveToBackground(id);
+    var el = document.getElementById('msg-' + id);
+    if (!el) return;
+    var header = el.querySelector('.toolstep-header');
+    if (!header) return;
+    var badge = header.querySelector('.toolstep-bg');
+    if (!badge) {
+        badge = document.createElement('span');
+        header.appendChild(badge);
+    }
+    badge.className = 'toolstep-bg toolstep-bg-' + state;
+    badge.textContent = BG_LABELS[state] || state;
+    badge.title = summary || '';
+}
+
+// Offers "Run in background" on a step whose command or subagent holds the
+// turn. The CLI makes that possible a few seconds into the step. While the
+// step runs it is usually folded into the activity row, so the button goes on
+// the row's header, which is what the user sees; a step outside a row gets it
+// on its own header.
+function setCanMoveToBackground(id) {
+    var el = document.getElementById('msg-' + id);
+    if (!el || el.dataset.done || moveToBackgroundButton(id)) return;
+    var group = el.closest('.activity');
+    var host = group ? group.querySelector('.activity-header') : el.querySelector('.toolstep-header');
+    if (!host) return;
+
+    var btn = document.createElement('button');
+    btn.className = 'toolstep-bgbtn';
+    btn.dataset.bgStep = id;
+    btn.textContent = 'Run in background';
+    btn.title = 'Let ' + (el.querySelector('.toolstep-name') || {textContent: 'this step'}).textContent +
+        ' go on in the background and continue the turn';
+    btn.addEventListener('click', function(e) {
+        // The row header opens and closes the row on a click.
+        e.stopPropagation();
+        btn.disabled = true;
+        window.chrome.webview.postMessage(JSON.stringify({type:'moveToBackground', id:id}));
+    });
+    host.insertBefore(btn, group ? host.querySelector('.activity-count') : null);
+}
+
+function moveToBackgroundButton(id) {
+    var buttons = document.querySelectorAll('.toolstep-bgbtn');
+    for (var i = 0; i < buttons.length; i++)
+        if (buttons[i].dataset.bgStep === id) return buttons[i];
+    return null;
+}
+
+function removeMoveToBackground(id) {
+    var btn = moveToBackgroundButton(id);
+    if (btn) btn.remove();
 }
 
 function setBody(id, bodyContent, bodyMode) {
@@ -1209,6 +1352,9 @@ function completeMessage(id) {
     if (type === 'ToolStep') {
         var exp = el.querySelector('.msg-expander');
         if (exp) exp.style.display = 'none';
+        // The offer can arrive just after the step ended; it must not stand.
+        el.dataset.done = '1';
+        removeMoveToBackground(id);
     }
 }
 
@@ -1319,6 +1465,9 @@ function getMessageText(msgEl) {
     } else if (type === 'Thinking') {
         var tc = msgEl.querySelector('.thinking-content');
         return tc ? tc.textContent : '';
+    } else if (type === 'Notice') {
+        var nt = msgEl.querySelector('.notice-text');
+        return nt ? nt.textContent : '';
     }
     return '';
 }

@@ -48,6 +48,12 @@ public partial class ChatWebView : UserControl
     /// </summary>
     public event Action<int>? ZoomChangeRequested;
 
+    /// <summary>
+    /// Raised when the user presses "Run in background" on a running step.
+    /// The argument is the step id.
+    /// </summary>
+    public event Action<string>? MoveToBackgroundRequested;
+
     private bool _isWebViewReady;
     private double _zoomFactor = ZoomLevels.Default;
     private readonly ConcurrentQueue<Func<Task>> _pendingOps = new();
@@ -514,6 +520,12 @@ public partial class ChatWebView : UserControl
             {
                 ZoomChangeRequested?.Invoke(root.GetProperty("step").GetInt32());
             }
+            else if (type == "moveToBackground")
+            {
+                var id = root.GetProperty("id").GetString();
+                if (!string.IsNullOrEmpty(id))
+                    MoveToBackgroundRequested?.Invoke(id!);
+            }
         }
         catch
         {
@@ -543,6 +555,22 @@ public partial class ChatWebView : UserControl
     {
         return ExecuteOrQueueAsync(
             $"updateStatus({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(status.ToString())}, {JsonSerializer.Serialize(expanderTitle)})");
+    }
+
+    public Task SetBackgroundStateAsync(string id, BackgroundStepState state, string? summary)
+    {
+        return ExecuteOrQueueAsync(
+            $"setBackgroundState({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(state.ToString())}, {JsonSerializer.Serialize(summary)})");
+    }
+
+    /// <summary>
+    /// Offers "Run in background" on a step that is still running. The page
+    /// takes the button away when the step completes or moves.
+    /// </summary>
+    public Task SetCanMoveToBackgroundAsync(string id)
+    {
+        return ExecuteOrQueueAsync(
+            $"setCanMoveToBackground({JsonSerializer.Serialize(id)})");
     }
 
     public Task SetBodyAsync(string id, string body, OutputBodyMode bodyMode)

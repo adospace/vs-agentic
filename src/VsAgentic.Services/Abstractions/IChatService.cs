@@ -10,6 +10,11 @@ public interface IChatService
     /// which keeps the wire format identical to what it was before images
     /// existed.
     /// </param>
+    /// <param name="cancellationToken">
+    /// Stops the turn. The CLI is told to abort it too, and the call throws
+    /// <see cref="OperationCanceledException"/> once the CLI has closed the
+    /// turn, or after a short wait if it does not.
+    /// </param>
     IAsyncEnumerable<string> SendMessageAsync(
         string userMessage,
         IReadOnlyList<ChatImageAttachment>? images = null,
@@ -94,6 +99,46 @@ public interface IChatService
     /// new credentials.
     /// </summary>
     void LaunchLogin();
+
+    /// <summary>
+    /// Raised when the work a tool step moved to the background starts or
+    /// ends. Arguments: the step id (the same id the output listener used for
+    /// the step), the new state, the CLI's summary when the work ended,
+    /// e.g. <c>Background command "…" failed with exit code 3</c>, and the
+    /// file the CLI wrote a shell command's output to (null for other work).
+    /// Can fire between turns. Raised on a background thread; hosts must
+    /// marshal to the UI thread.
+    /// </summary>
+    event Action<string, BackgroundStepState, string?, string?>? StepBackgroundStateChanged;
+
+    /// <summary>
+    /// Raised when a step's command or subagent, still running in the
+    /// foreground, can be moved to the background with
+    /// <see cref="MoveStepToBackgroundAsync"/>. The CLI reports this a few
+    /// seconds after the tool call starts. The argument is the step id.
+    /// Raised on a background thread; hosts must marshal to the UI thread.
+    /// </summary>
+    event Action<string>? StepCanMoveToBackground;
+
+    /// <summary>
+    /// Moves the command or subagent of a running step to the background. The
+    /// tool call returns at once and the turn goes on. Returns false when the
+    /// step no longer runs in the foreground, or when no CLI process runs.
+    /// </summary>
+    Task<bool> MoveStepToBackgroundAsync(string stepId);
+
+    /// <summary>
+    /// Stops one of the <see cref="BackgroundTasks"/>. The other tasks and the
+    /// turn, if one runs, go on. Returns false when the CLI did not take the
+    /// request.
+    /// </summary>
+    Task<bool> StopBackgroundTaskAsync(string taskId);
+
+    /// <summary>
+    /// The end of what a background shell task has written so far. Null when
+    /// the CLI could not say, e.g. for a subagent task.
+    /// </summary>
+    Task<BackgroundTaskOutput?> GetBackgroundTaskOutputAsync(string taskId);
 
     /// <summary>
     /// The tasks the CLI is running in the background right now. Empty when

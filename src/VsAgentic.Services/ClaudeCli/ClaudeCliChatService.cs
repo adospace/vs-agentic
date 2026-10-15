@@ -76,13 +76,16 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     private readonly object _activeTurnLock = new object();
 
     // ── Control requests ──────────────────────────────────────────────────
-    // A model or effort change goes to the running process as a control
-    // request. The dispatcher completes the matching entry when the CLI
-    // answers; the result is the error text, or null on success.
-    private readonly Dictionary<string, TaskCompletionSource<string?>> _pendingControl =
-        new Dictionary<string, TaskCompletionSource<string?>>(StringComparer.Ordinal);
-    private int _controlRequestSeq;
-    private static readonly TimeSpan ControlRequestTimeout = TimeSpan.FromSeconds(10);
+    // Everything we ask the running process (initialize, a model or effort
+    // change) goes through one channel. The dispatcher hands it each
+    // control_response. Replaced on every process start.
+    private volatile CliControlChannel _control;
+
+    // What the running process said about itself: its initialize answer,
+    // and the capabilities from the last system/init. The capabilities are
+    // cleared on every process start; the CLI repeats them with each turn.
+    private volatile CliProcessInfo? _processInfo;
+    private volatile CliCapabilities _capabilities = CliCapabilities.None;
 
     // Set when the running process could not take a change. The next message
     // then restarts it, so the change still lands — but never mid-turn.
@@ -98,7 +101,26 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         _outputListener = outputListener;
         _host = host;
         _logger = logger;
+        _control = NewControlChannel();
     }
+
+    private CliControlChannel NewControlChannel() =>
+        new CliControlChannel(line => _host.WriteLineAsync(line, CancellationToken.None));
+
+    /// <summary>
+    /// What the running CLI reported about itself in its answer to
+    /// <c>initialize</c>. Null until the first process has answered, and kept
+    /// from the last process after it stops.
+    /// </summary>
+    public CliProcessInfo? ProcessInfo => _processInfo;
+
+    /// <summary>
+    /// The protocol features of the running CLI. Check these before using a
+    /// request or field that older CLIs do not know, instead of comparing
+    /// version numbers. Empty from a process start until the first turn's
+    /// <c>system/init</c>.
+    /// </summary>
+    public CliCapabilities Capabilities => _capabilities;
 
     /// <summary>
     /// Keeps an inherited <c>ANTHROPIC_API_KEY</c> out of a CLI we are about to
@@ -134,9 +156,17 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 _logger.LogInformation("[ClaudeCli] Restarting CLI to apply a model/effort change");
             }
 
+            var wasRunning = _host.IsRunning;
             _host.SetResumeSessionId(_cliSessionId);
             await _host.EnsureStartedAsync(cancellationToken).ConfigureAwait(false);
+            if (!wasRunning)
+            {
+                _control = NewControlChannel();
+                _capabilities = CliCapabilities.None;
+            }
             EnsureDispatcherStarted();
+            if (!wasRunning)
+                InitializeProcess();
         }
         catch (Exception ex)
         {
@@ -171,21 +201,14 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         var reader = turn.TextDeltas.Reader;
         while (true)
         {
-            ValueTask<bool> wait;
-            try
-            {
-                wait = reader.WaitToReadAsync(cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                ClearActiveTurn(turn);
-                throw;
-            }
-
             bool more;
-            try { more = await wait.ConfigureAwait(false); }
+            try { more = await reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false); }
             catch (OperationCanceledException)
             {
+                // Stop. Cancelling only our side would leave the CLI running
+                // the turn, tools included, with nothing on screen; and its
+                // last events would land in the next turn.
+                await InterruptTurnAsync(turn).ConfigureAwait(false);
                 ClearActiveTurn(turn);
                 throw;
             }
@@ -197,6 +220,41 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
         ClearActiveTurn(turn);
     }
+
+    /// <summary>
+    /// Aborts the turn in the CLI and waits until the CLI has closed it.
+    ///
+    /// The CLI answers the interrupt at once and then sends the turn's result,
+    /// so waiting for the result means the turn is over: no tool runs on, and
+    /// the next message starts a clean turn. If the CLI does not answer, or
+    /// the result does not follow in time, we stop waiting and return, which
+    /// is where Stop used to leave things.
+    /// </summary>
+    private async Task InterruptTurnAsync(TurnState turn)
+    {
+        if (!_host.IsRunning || turn.Ended.Task.IsCompleted) return;
+
+        // Set before the request goes out: the result can arrive before the
+        // answer to the interrupt has been read.
+        turn.Interrupted = true;
+
+        var reply = await _control.SendAsync(StreamJsonProtocol.BuildInterrupt).ConfigureAwait(false);
+        if (!reply.Succeeded)
+        {
+            _logger.LogWarning("[ClaudeCli] interrupt failed: {Error}", reply.Error);
+            return;
+        }
+
+        var done = await Task.WhenAny(turn.Ended.Task, Task.Delay(InterruptResultTimeout)).ConfigureAwait(false);
+        if (done == turn.Ended.Task)
+            _logger.LogInformation("[ClaudeCli] Turn interrupted");
+        else
+            _logger.LogWarning("[ClaudeCli] interrupt answered, but the turn did not end within {Timeout}", InterruptResultTimeout);
+    }
+
+    // The CLI writes the interrupted turn's result right after its answer to
+    // the interrupt; a measured gap is a few milliseconds.
+    private static readonly TimeSpan InterruptResultTimeout = TimeSpan.FromSeconds(5);
 
     private void ClearActiveTurn(TurnState turn)
     {
@@ -212,11 +270,12 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         lock (_dispatcherLock)
         {
             if (_dispatcherTask is { IsCompleted: false }) return;
-            _dispatcherTask = Task.Run(DispatcherLoopAsync);
+            var control = _control;
+            _dispatcherTask = Task.Run(() => DispatcherLoopAsync(control));
         }
     }
 
-    private async Task DispatcherLoopAsync()
+    private async Task DispatcherLoopAsync(CliControlChannel control)
     {
         try
         {
@@ -245,12 +304,244 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             if (turn != null)
             {
                 FinalizeOpenBlocks(turn);
-                turn.TextDeltas.Writer.TryComplete();
+                turn.End();
             }
 
             // Background tasks are children of the CLI and end with it.
             SetBackgroundTasks(Array.Empty<BackgroundTask>());
+
+            // The work ends without a notification, so mark the steps here.
+            string[] cutOff;
+            lock (_runningBackgroundSteps)
+            {
+                cutOff = _runningBackgroundSteps.ToArray();
+                _runningBackgroundSteps.Clear();
+            }
+            lock (_tasks) { _tasks.Clear(); }
+            foreach (var stepId in cutOff)
+                RaiseStepBackgroundStateChanged(stepId, BackgroundStepState.Stopped, "Ended with the Claude CLI process.", null);
+
+            // So is any answer it still owed us. Only this process's channel:
+            // a new process may already be running with requests of its own.
+            control.FailAll("process exited");
         }
+    }
+
+    /// <summary>
+    /// Sends <c>initialize</c> to a process that has just started, without
+    /// waiting for the answer.
+    ///
+    /// Called before the first user message is written. The request goes
+    /// into the stdin queue synchronously, so the CLI reads it first; the
+    /// answer arrives while the turn runs.
+    /// </summary>
+    private void InitializeProcess() => _ = InitializeProcessAsync();
+
+    private async Task InitializeProcessAsync()
+    {
+        var reply = await _control.SendAsync(StreamJsonProtocol.BuildInitialize).ConfigureAwait(false);
+        if (!reply.Succeeded || reply.Response is not { } body)
+        {
+            // Not fatal: the turn runs the same without the answer, and
+            // system/init still reports the capabilities.
+            _logger.LogWarning("[ClaudeCli] initialize failed: {Error}", reply.Error ?? "empty answer");
+            return;
+        }
+
+        var info = CliProcessInfo.Read(body);
+        _processInfo = info;
+        _logger.LogInformation(
+            "[ClaudeCli] CLI {Version}: {Models} models, {Commands} commands",
+            info.Version ?? "(version unknown)", info.Models.Count, info.Commands.Count);
+    }
+
+    // ── Background steps ──────────────────────────────────────────────────
+    // A tool call with run_in_background completes at once; the CLI then
+    // reports the work it started with task_started and, possibly turns
+    // later, task_notification. Both carry the tool_use_id, which is also the
+    // step id, so the transcript can mark the step. Handled without an
+    // active turn, since the notification usually arrives between turns.
+
+    private readonly HashSet<string> _runningBackgroundSteps = new HashSet<string>(StringComparer.Ordinal);
+
+    // Every task the CLI announced with task_started, by task id, until its
+    // task_notification. Foreground tasks too: the CLI can move one to the
+    // background later, and says so by task id alone (task_updated).
+    private readonly Dictionary<string, CliTask> _tasks = new Dictionary<string, CliTask>(StringComparer.Ordinal);
+
+    private sealed class CliTask
+    {
+        public string? StepId;
+        public string? Type;
+        public string? Description;
+    }
+
+    public event Action<string, BackgroundStepState, string?, string?>? StepBackgroundStateChanged;
+
+    public event Action<string>? StepCanMoveToBackground;
+
+    private void HandleTaskStarted(JsonElement evt)
+    {
+        var taskId = CliProcessInfo.ReadString(evt, "task_id");
+        var stepId = CliProcessInfo.ReadString(evt, "tool_use_id");
+        if (taskId is not null)
+        {
+            lock (_tasks)
+            {
+                _tasks[taskId] = new CliTask
+                {
+                    StepId = stepId,
+                    Type = CliProcessInfo.ReadString(evt, "task_type"),
+                    Description = CliProcessInfo.ReadString(evt, "description"),
+                };
+            }
+        }
+        if (string.IsNullOrEmpty(stepId)) return;
+
+        // Foreground tasks (a subagent the turn waits on, a command that has
+        // run for a few seconds) report here too. Those the turn itself
+        // started can be moved to the background; one a subagent started
+        // belongs to a step the transcript does not show.
+        if (!evt.TryGetProperty("is_backgrounded", out var bg) || bg.ValueKind != JsonValueKind.True)
+        {
+            if (CliProcessInfo.ReadString(evt, "parent_task_id") is null)
+                RaiseStepCanMoveToBackground(stepId!);
+            return;
+        }
+
+        MarkStepInBackground(stepId!);
+    }
+
+    // A foreground task the user (or Ctrl+B in another client) moved to the
+    // background. Only this event says so; task_started came earlier, with
+    // is_backgrounded false.
+    private void HandleTaskUpdated(JsonElement evt)
+    {
+        if (!evt.TryGetProperty("patch", out var patch) || patch.ValueKind != JsonValueKind.Object) return;
+        if (!patch.TryGetProperty("is_backgrounded", out var bg) || bg.ValueKind != JsonValueKind.True) return;
+
+        var taskId = CliProcessInfo.ReadString(evt, "task_id");
+        string? stepId = null;
+        lock (_tasks)
+        {
+            if (taskId is not null && _tasks.TryGetValue(taskId, out var task))
+                stepId = task.StepId;
+        }
+        if (!string.IsNullOrEmpty(stepId))
+            MarkStepInBackground(stepId!);
+    }
+
+    private void MarkStepInBackground(string stepId)
+    {
+        lock (_runningBackgroundSteps)
+        {
+            if (!_runningBackgroundSteps.Add(stepId)) return;
+        }
+        RaiseStepBackgroundStateChanged(stepId, BackgroundStepState.Running, null, null);
+    }
+
+    private void HandleTaskNotification(JsonElement evt)
+    {
+        var taskId = CliProcessInfo.ReadString(evt, "task_id");
+        CliTask? task = null;
+        lock (_tasks)
+        {
+            if (taskId is not null && _tasks.TryGetValue(taskId, out task))
+                _tasks.Remove(taskId);
+        }
+
+        var stepId = CliProcessInfo.ReadString(evt, "tool_use_id");
+        if (string.IsNullOrEmpty(stepId)) return;
+
+        lock (_runningBackgroundSteps)
+        {
+            // Not one we marked as running: a foreground task, or one from
+            // before the session was reopened.
+            if (!_runningBackgroundSteps.Remove(stepId!)) return;
+        }
+
+        var status = CliProcessInfo.ReadString(evt, "status");
+        var state = status switch
+        {
+            "completed" => BackgroundStepState.Completed,
+            "failed" => BackgroundStepState.Failed,
+            _ => BackgroundStepState.Stopped,
+        };
+        var summary = CliProcessInfo.ReadString(evt, "summary");
+
+        // For a task that was stopped, the CLI's summary is the task's
+        // description and nothing else, which reads as if it were still
+        // running.
+        if (state == BackgroundStepState.Stopped && summary is not null && summary == task?.Description)
+            summary = "Stopped: " + summary;
+
+        // A subagent's output file holds nothing a user would read (it was
+        // empty when measured); its steps are in the transcript.
+        var outputFile = task?.Type == "local_bash" ? CliProcessInfo.ReadString(evt, "output_file") : null;
+        if (string.IsNullOrEmpty(outputFile)) outputFile = null;
+
+        RaiseStepBackgroundStateChanged(stepId!, state, summary, outputFile);
+    }
+
+    private void RaiseStepBackgroundStateChanged(string stepId, BackgroundStepState state, string? summary, string? outputFile)
+    {
+        _logger.LogInformation("[ClaudeCli] Background step {Id}: {State}", stepId, state);
+        try { StepBackgroundStateChanged?.Invoke(stepId, state, summary, outputFile); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] StepBackgroundStateChanged handler threw"); }
+    }
+
+    private void RaiseStepCanMoveToBackground(string stepId)
+    {
+        try { StepCanMoveToBackground?.Invoke(stepId); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] StepCanMoveToBackground handler threw"); }
+    }
+
+    public async Task<bool> MoveStepToBackgroundAsync(string stepId)
+    {
+        if (!_host.IsRunning) return false;
+
+        var reply = await _control.SendAsync(id => StreamJsonProtocol.BuildBackgroundTask(id, stepId)).ConfigureAwait(false);
+        if (!reply.Succeeded)
+        {
+            _logger.LogWarning("[ClaudeCli] background_tasks failed: {Error}", reply.Error);
+            return false;
+        }
+
+        // False when the step had finished, or was in the background already.
+        var moved = reply.Response is { ValueKind: JsonValueKind.Object } body
+            && body.TryGetProperty("backgrounded", out var b) && b.ValueKind == JsonValueKind.True;
+        _logger.LogInformation("[ClaudeCli] Move step {Id} to background: {Moved}", stepId, moved);
+        return moved;
+    }
+
+    public async Task<bool> StopBackgroundTaskAsync(string taskId)
+    {
+        if (!_host.IsRunning) return false;
+
+        // The CLI answers success for any id, known or not. The task's
+        // task_notification is what says it stopped.
+        var reply = await _control.SendAsync(id => StreamJsonProtocol.BuildStopTask(id, taskId)).ConfigureAwait(false);
+        if (!reply.Succeeded)
+            _logger.LogWarning("[ClaudeCli] stop_task failed: {Error}", reply.Error);
+        else
+            _logger.LogInformation("[ClaudeCli] Stop requested for background task {Id}", taskId);
+        return reply.Succeeded;
+    }
+
+    public async Task<BackgroundTaskOutput?> GetBackgroundTaskOutputAsync(string taskId)
+    {
+        if (!_host.IsRunning) return null;
+
+        var reply = await _control.SendAsync(id => StreamJsonProtocol.BuildGetTaskOutput(id, taskId)).ConfigureAwait(false);
+        if (!reply.Succeeded || reply.Response is not { ValueKind: JsonValueKind.Object } body)
+        {
+            _logger.LogDebug("[ClaudeCli] get_task_output failed: {Error}", reply.Error ?? "empty answer");
+            return null;
+        }
+
+        var output = CliProcessInfo.ReadString(body, "output") ?? "";
+        var truncated = body.TryGetProperty("truncated", out var t) && t.ValueKind == JsonValueKind.True;
+        return new BackgroundTaskOutput(output, truncated);
     }
 
     private async Task DispatchEventAsync(JsonElement evt)
@@ -280,67 +571,70 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 return;
 
             case "control_response":
-                HandleControlResponse(evt);
+                if (!_control.TryComplete(evt))
+                    _logger.LogDebug("[ClaudeCli] control_response for a request no one waits for");
                 return;
         }
     }
 
-    private void HandleControlResponse(JsonElement evt)
-    {
-        if (!evt.TryGetProperty("response", out var response)) return;
-        var requestId = response.TryGetProperty("request_id", out var id) ? id.GetString() : null;
-        if (requestId is null) return;
-
-        TaskCompletionSource<string?>? pending;
-        lock (_pendingControl)
-        {
-            if (!_pendingControl.TryGetValue(requestId, out pending)) return;
-            _pendingControl.Remove(requestId);
-        }
-
-        var ok = response.TryGetProperty("subtype", out var st) && st.GetString() == "success";
-        var error = ok ? null
-            : response.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String
-                ? e.GetString() ?? "error"
-                : "error";
-        pending.TrySetResult(error);
-    }
-
+    /// <summary>
+    /// The one place <c>system</c> events are told apart. A new subtype gets
+    /// a case here and a handler of its own, not a check inside another
+    /// handler.
+    /// </summary>
     private void HandleSystemEvent(JsonElement evt)
     {
-        var subtype = evt.TryGetProperty("subtype", out var s) ? s.GetString() : null;
-        if (subtype == "background_tasks_changed")
+        switch (CliProcessInfo.ReadString(evt, "subtype"))
         {
-            HandleBackgroundTasksChanged(evt);
-            return;
+            case "init":
+                HandleInit(CliInitEvent.Read(evt));
+                return;
+
+            case "background_tasks_changed":
+                HandleBackgroundTasksChanged(evt);
+                return;
+
+            case "task_started":
+                HandleTaskStarted(evt);
+                return;
+
+            case "task_updated":
+                HandleTaskUpdated(evt);
+                return;
+
+            case "task_notification":
+                HandleTaskNotification(evt);
+                return;
         }
-        if (subtype != "init") return;
-        if (evt.TryGetProperty("session_id", out var sid))
+    }
+
+    private void HandleInit(CliInitEvent init)
+    {
+        if (init.SessionId is not null)
         {
-            _cliSessionId = sid.GetString();
+            _cliSessionId = init.SessionId;
             _logger.LogDebug("[ClaudeCli] Session started: {SessionId}", _cliSessionId);
         }
+
+        // A CLI that predates the list sends none, which reads as no
+        // capabilities.
+        if (init.Capabilities.ToString() != _capabilities.ToString())
+            _logger.LogInformation("[ClaudeCli] CLI {Version} capabilities: {Capabilities}",
+                init.Version ?? "(version unknown)", init.Capabilities);
+        _capabilities = init.Capabilities;
 
         // The alias we pass to --model resolves server-side, so this init event
         // is the only place that names the model actually serving the session —
         // and the only place the [1m] variants announce themselves. It can differ
         // between process starts (a model switch, a changed default), so raise on
         // every change.
-        if (evt.TryGetProperty("model", out var modelProp) && modelProp.ValueKind == JsonValueKind.String)
-            SetCurrentModel(modelProp.GetString());
+        if (init.Model is not null)
+            SetCurrentModel(init.Model);
+
         // Diagnostic: dump the available tool names so we can verify whether
         // AskUserQuestion is registered in headless mode.
-        if (evt.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array)
-        {
-            var names = new List<string>();
-            foreach (var t in tools.EnumerateArray())
-            {
-                if (t.ValueKind == JsonValueKind.String) names.Add(t.GetString() ?? "");
-                else if (t.ValueKind == JsonValueKind.Object && t.TryGetProperty("name", out var n))
-                    names.Add(n.GetString() ?? "");
-            }
-            _logger.LogInformation("[ClaudeCli] Available tools ({Count}): {Tools}", names.Count, string.Join(", ", names));
-        }
+        if (init.Tools.Count > 0)
+            _logger.LogInformation("[ClaudeCli] Available tools ({Count}): {Tools}", init.Tools.Count, string.Join(", ", init.Tools));
     }
 
     // The event carries the whole list of running tasks, not a change, so the
@@ -594,7 +888,18 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         FinalizeOpenBlocks(turn);
 
         var isError = evt.TryGetProperty("is_error", out var ie) && ie.ValueKind == JsonValueKind.True;
-        if (isError)
+
+        // An interrupted turn ends with an error result (CLI 2.1.296:
+        // error_during_execution, terminal_reason "aborted_tools" or
+        // "aborted_streaming"). The user asked for that, so it is not shown as
+        // a failure; the chat says the turn was stopped. Other errors still are.
+        if (isError && turn.Interrupted
+            && CliProcessInfo.ReadString(evt, "subtype") == "error_during_execution")
+        {
+            _logger.LogInformation("[ClaudeCli] Interrupted turn ended ({Reason})",
+                CliProcessInfo.ReadString(evt, "terminal_reason") ?? "no reason given");
+        }
+        else if (isError)
         {
             var resultText = evt.TryGetProperty("result", out var rp) ? rp.GetString() : null;
             _logger.LogWarning("[ClaudeCli] CLI returned error result: {Result}", resultText);
@@ -632,7 +937,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         }
 
         // Signal SendMessageAsync to return.
-        turn.TextDeltas.Writer.TryComplete();
+        turn.End();
     }
 
     // ── Finalization helpers ───────────────────────────────────────────────
@@ -1135,29 +1440,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     private async Task ApplyToRunningProcessAsync(
         bool includeModel, string? model, bool includeEffort, string? effort)
     {
-        var requestId = "vsagentic-" + Interlocked.Increment(ref _controlRequestSeq);
-        var pending = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (_pendingControl) { _pendingControl[requestId] = pending; }
-
-        string? error;
-        try
-        {
-            EnsureDispatcherStarted();
-            var line = StreamJsonProtocol.BuildApplyFlagSettings(
-                requestId, includeModel, model, includeEffort, effort);
-            await _host.WriteLineAsync(line, CancellationToken.None).ConfigureAwait(false);
-
-            var done = await Task.WhenAny(pending.Task, Task.Delay(ControlRequestTimeout)).ConfigureAwait(false);
-            error = done == pending.Task ? pending.Task.Result : "no response";
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-        }
-        finally
-        {
-            lock (_pendingControl) { _pendingControl.Remove(requestId); }
-        }
+        EnsureDispatcherStarted();
+        var reply = await _control.SendAsync(requestId => StreamJsonProtocol.BuildApplyFlagSettings(
+            requestId, includeModel, model, includeEffort, effort)).ConfigureAwait(false);
+        var error = reply.Error;
 
         if (error is null)
         {
@@ -1185,6 +1471,11 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             _contextTokens = 0;
             _countedMessageIds.Clear();
         }
+
+        // Forget the running steps before the process goes, or the dispatcher
+        // reports them as stopped into the transcript that was just cleared.
+        lock (_runningBackgroundSteps) { _runningBackgroundSteps.Clear(); }
+        lock (_tasks) { _tasks.Clear(); }
 
         _host.Stop();
         lock (_dispatcherLock) { _dispatcherTask = null; }
@@ -1305,10 +1596,26 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // which we hide from the UI step list).
         public HashSet<string> SuppressedToolUseIds { get; } = new HashSet<string>(StringComparer.Ordinal);
 
+        // Set by Stop before the interrupt goes to the CLI, so the error
+        // result that closes an interrupted turn is not shown as a failure.
+        public volatile bool Interrupted;
+
         public Channel<string> TextDeltas { get; } = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
         {
             SingleReader = true,
             SingleWriter = true,
         });
+
+        // Completes when the turn's result arrives or the process exits.
+        // Unlike TextDeltas.Reader.Completion it does not wait for the reader
+        // to drain the text, which a stopped turn never does.
+        public TaskCompletionSource<bool> Ended { get; } =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void End()
+        {
+            TextDeltas.Writer.TryComplete();
+            Ended.TrySetResult(true);
+        }
     }
 }

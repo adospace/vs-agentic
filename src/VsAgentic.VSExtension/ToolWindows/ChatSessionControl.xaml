@@ -659,42 +659,68 @@
                        FontSize="12" FontStyle="Italic"/>
         </Border>
 
-        <!-- Background tasks: commands started with run_in_background. They
-             outlive the turn, so this strip stays up between turns until the
-             CLI reports them done. The pulse uses opacity only, so it needs no
-             accent color from the theme. -->
+        <!-- Background tasks: commands and subagents the CLI runs in the
+             background. They outlive the turn, so this strip stays up between
+             turns until the CLI reports them done. One row per task, each with
+             its own Stop; a shell command's tooltip shows the end of its
+             output. The pulse uses opacity only, so it needs no accent color
+             from the theme. -->
         <Border DockPanel.Dock="Bottom"
                 LayoutTransform="{StaticResource ChromeZoom}"
                 Margin="6,4,6,0"
-                Padding="8,4"
+                Padding="8,2"
                 CornerRadius="4"
                 BorderThickness="1"
                 BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBorderKey}}"
                 Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}"
-                ToolTip="{Binding BackgroundTasksTooltip}"
                 Visibility="{Binding HasBackgroundTasks, Converter={StaticResource BoolToVis}}">
-            <DockPanel>
-                <Ellipse DockPanel.Dock="Left"
-                         Width="8" Height="8"
-                         Margin="0,0,8,0"
-                         VerticalAlignment="Center"
-                         Fill="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}">
-                    <Ellipse.Triggers>
-                        <EventTrigger RoutedEvent="FrameworkElement.Loaded">
-                            <BeginStoryboard>
-                                <Storyboard RepeatBehavior="Forever" AutoReverse="True">
-                                    <DoubleAnimation Storyboard.TargetProperty="Opacity"
-                                                     From="1" To="0.2" Duration="0:0:0.8"/>
-                                </Storyboard>
-                            </BeginStoryboard>
-                        </EventTrigger>
-                    </Ellipse.Triggers>
-                </Ellipse>
-                <TextBlock Text="{Binding BackgroundTasksText}"
-                           TextTrimming="CharacterEllipsis"
-                           FontSize="12"
-                           Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
-            </DockPanel>
+            <ItemsControl ItemsSource="{Binding BackgroundTaskItems}" Focusable="False">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <DockPanel>
+                            <Button DockPanel.Dock="Right"
+                                    Style="{StaticResource IconButtonStyle}"
+                                    Padding="4,2"
+                                    Command="{Binding StopCommand}"
+                                    ToolTip="Stop this task"
+                                    AutomationProperties.Name="Stop background task">
+                                <imaging:CrispImage Width="14" Height="14"
+                                                    Moniker="{x:Static catalog:KnownMonikers.Stop}"/>
+                            </Button>
+                            <Ellipse DockPanel.Dock="Left"
+                                     Width="8" Height="8"
+                                     Margin="0,0,8,0"
+                                     VerticalAlignment="Center"
+                                     Fill="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}">
+                                <Ellipse.Triggers>
+                                    <EventTrigger RoutedEvent="FrameworkElement.Loaded">
+                                        <BeginStoryboard>
+                                            <Storyboard RepeatBehavior="Forever" AutoReverse="True">
+                                                <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                 From="1" To="0.2" Duration="0:0:0.8"/>
+                                            </Storyboard>
+                                        </BeginStoryboard>
+                                    </EventTrigger>
+                                </Ellipse.Triggers>
+                            </Ellipse>
+                            <TextBlock Text="{Binding Description, StringFormat='Running in background: {0}'}"
+                                       VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"
+                                       FontSize="12"
+                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"
+                                       ToolTipOpening="BackgroundTask_ToolTipOpening">
+                                <TextBlock.ToolTip>
+                                    <ToolTip>
+                                        <TextBlock Text="{Binding ToolTipText}"
+                                                   FontFamily="Consolas"
+                                                   TextWrapping="NoWrap"/>
+                                    </ToolTip>
+                                </TextBlock.ToolTip>
+                            </TextBlock>
+                        </DockPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
         </Border>
 
         <!-- Banner host: permission / question / login banner. The DataTemplates

@@ -379,11 +379,32 @@
                                          KeyDown="RenameBox_KeyDown"
                                          LostKeyboardFocus="RenameBox_LostKeyboardFocus" />
                             </Grid>
-                            <TextBlock FontSize="11" Opacity="0.7"
-                                       TextTrimming="CharacterEllipsis">
-                                <Run Text="Last activity " />
-                                <Run Text="{Binding LastActivityDisplay, Mode=OneWay}" />
-                            </TextBlock>
+                            <!-- While the session works, waits or runs background
+                                 tasks, the second line says so instead of the
+                                 time. The name above never changes, so the
+                                 list does not flicker. -->
+                            <DockPanel>
+                                <imaging:CrispImage x:Name="ActivityIcon"
+                                                    DockPanel.Dock="Left"
+                                                    Width="12" Height="12"
+                                                    Margin="0,0,4,0"
+                                                    VerticalAlignment="Center"
+                                                    Visibility="Collapsed"
+                                                    IsHitTestVisible="False" />
+                                <Grid>
+                                    <TextBlock x:Name="LastActivityText"
+                                               FontSize="11" Opacity="0.7"
+                                               TextTrimming="CharacterEllipsis">
+                                        <Run Text="Last activity " />
+                                        <Run Text="{Binding LastActivityDisplay, Mode=OneWay}" />
+                                    </TextBlock>
+                                    <TextBlock x:Name="ActivityText"
+                                               FontSize="11" Opacity="0.7"
+                                               Visibility="Collapsed"
+                                               TextTrimming="CharacterEllipsis"
+                                               Text="{Binding ActivityStatus, Mode=OneWay}" />
+                                </Grid>
+                            </DockPanel>
                         </StackPanel>
 
                         <!-- Quiet marker so a pinned row reads as pinned while
@@ -423,6 +444,29 @@
                     <!-- Order matters: later triggers win where they overlap,
                          so hover hides the pin marker and renaming hides both. -->
                     <DataTemplate.Triggers>
+                        <!-- Activity: later triggers win, so a turn in flight
+                             outranks background tasks and waiting for the user
+                             outranks both. -->
+                        <DataTrigger Binding="{Binding HasBackgroundTasks}" Value="True">
+                            <Setter TargetName="ActivityIcon" Property="Visibility" Value="Visible" />
+                            <Setter TargetName="ActivityIcon" Property="Moniker" Value="{x:Static catalog:KnownMonikers.StatusRunningNoColor}" />
+                            <Setter TargetName="LastActivityText" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="ActivityText" Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Activity}" Value="Busy">
+                            <Setter TargetName="ActivityIcon" Property="Visibility" Value="Visible" />
+                            <Setter TargetName="ActivityIcon" Property="Moniker" Value="{x:Static catalog:KnownMonikers.StatusRunning}" />
+                            <Setter TargetName="LastActivityText" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="ActivityText" Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Activity}" Value="AwaitingUser">
+                            <Setter TargetName="ActivityIcon" Property="Visibility" Value="Visible" />
+                            <Setter TargetName="ActivityIcon" Property="Moniker" Value="{x:Static catalog:KnownMonikers.StatusHelp}" />
+                            <Setter TargetName="LastActivityText" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="ActivityText" Property="Visibility" Value="Visible" />
+                            <Setter TargetName="ActivityText" Property="Opacity" Value="1" />
+                            <Setter TargetName="ActivityText" Property="FontWeight" Value="SemiBold" />
+                        </DataTrigger>
                         <DataTrigger Binding="{Binding IsPinned}" Value="True">
                             <Setter TargetName="PinIndicator" Property="Visibility" Value="Visible" />
                             <Setter TargetName="PinIcon" Property="Moniker" Value="{x:Static catalog:KnownMonikers.Unpin}" />

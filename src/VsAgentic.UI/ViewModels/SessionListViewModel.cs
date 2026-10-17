@@ -109,6 +109,27 @@ public partial class SessionInfo : ObservableObject
 
     partial void OnSessionCostChanged(decimal? value)
         => OnPropertyChanged(nameof(SessionCostDisplay));
+
+    /// <summary>
+    /// What the open session is doing right now. Copied from its
+    /// <see cref="ChatSessionViewModel"/>; Idle for a session with no window.
+    /// </summary>
+    [ObservableProperty]
+    private SessionActivity _activity;
+
+    /// <summary>
+    /// The line the row shows instead of "Last activity" while the session
+    /// works, waits or runs background tasks. While a turn runs it is the same
+    /// text as the bar under the chat.
+    /// </summary>
+    [ObservableProperty]
+    private string _activityStatus = string.Empty;
+
+    /// <summary>
+    /// Commands started with run_in_background still run after the turn.
+    /// </summary>
+    [ObservableProperty]
+    private bool _hasBackgroundTasks;
 }
 
 public partial class SessionListViewModel : ObservableObject

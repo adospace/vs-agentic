@@ -24,6 +24,7 @@ Settings are available in the Visual Studio **Tools → Options → VsAgentic** 
 - **Claude CLI Path** — path to the `claude` executable (defaults to `claude` on PATH)
 - **CLI Permission Mode** — controls how the CLI handles tool permissions
 - **Model** / **Reasoning effort** — remembered from the dropdowns under the chat input
+- **Background command limit** — most time Claude may give a background command (dev server, watcher) before the CLI stops it; defaults to 24 hours instead of the CLI's 2 hours
 - **Plan** — which subscription the 5h / 7d readings are sized against (`Unlimited` hides them)
 - **5-hour / weekly token budget** — override the estimated limits behind those readings
 

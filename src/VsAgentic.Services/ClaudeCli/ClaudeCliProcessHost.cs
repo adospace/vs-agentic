@@ -283,9 +283,12 @@ public sealed class ClaudeCliProcessHost : IDisposable
         }
 
         // Wire the MCP permission tool so the CLI asks us before running gated tools.
-        // --strict-mcp-config prevents user-level MCP config from polluting the session.
-        sb.Append(" --permission-prompt-tool mcp__vsagentic__approval_prompt");
-        sb.Append(" --strict-mcp-config");
+        // --strict-mcp-config limits the session to our server. Without it the
+        // CLI also loads the user's own servers (user, project .mcp.json,
+        // claude.ai connectors), and ours is added alongside them.
+        sb.Append(" --permission-prompt-tool mcp__").Append(PermissionServerName).Append("__approval_prompt");
+        if (!_options.UseClaudeMcpServers)
+            sb.Append(" --strict-mcp-config");
         sb.Append(" --mcp-config ");
         sb.Append(EscapeArgument(mcpConfigPath));
 
@@ -316,17 +319,25 @@ public sealed class ClaudeCliProcessHost : IDisposable
         "options, prefer AskUserQuestion over inline plain-text questions. For " +
         "open-ended or multi-axis questions, plain prose is still the right choice.";
 
+    /// <summary>The name our MCP helper is registered under in <c>--mcp-config</c>.</summary>
+    internal const string PermissionServerName = "vsagentic";
+
+    /// <summary>Where the MCP helper writes its log.</summary>
+    internal static string HelperLogDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "VsAgentic", "logs");
+
     private static string BuildMcpConfigJson(string helperExePath, string pipeName, string secret)
     {
         // The CLI spawns our helper exe as a stdio MCP server named "vsagentic"
         // and passes the pipe name + secret via env vars.
-        var logDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "VsAgentic", "logs");
+        var logDir = HelperLogDirectory;
         try { Directory.CreateDirectory(logDir); } catch { }
 
         var sb = new StringBuilder();
-        sb.Append("{\"mcpServers\":{\"vsagentic\":{\"command\":");
+        sb.Append("{\"mcpServers\":{");
+        sb.Append(JsonSerializer.Serialize(PermissionServerName));
+        sb.Append(":{\"command\":");
         sb.Append(JsonSerializer.Serialize(helperExePath));
         sb.Append(",\"args\":[],\"env\":{\"VSAGENTIC_PERMISSION_PIPE\":");
         sb.Append(JsonSerializer.Serialize(pipeName));

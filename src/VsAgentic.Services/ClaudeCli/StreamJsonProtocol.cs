@@ -171,6 +171,14 @@ internal static class StreamJsonProtocol
         BuildControlRequest(requestId, "interrupt", w => w.WriteBoolean("cancel_queued", true));
 
     /// <summary>
+    /// Build the <c>cancel_async_message</c> request, which takes a message out
+    /// of the CLI's queue before a turn has read it. The answer's
+    /// <c>cancelled</c> is false when the message was no longer queued.
+    /// </summary>
+    public static string BuildCancelAsyncMessage(string requestId, string messageUuid) =>
+        BuildControlRequest(requestId, "cancel_async_message", w => w.WriteString("message_uuid", messageUuid));
+
+    /// <summary>
     /// Build the <c>set_model</c> request. A null model returns the session to
     /// the account's default model, not to the <c>--model</c> the process was
     /// started with (measured on CLI 2.1.296).

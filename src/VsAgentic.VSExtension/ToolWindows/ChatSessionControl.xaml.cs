@@ -30,6 +30,16 @@ public partial class ChatSessionControl : UserControl
     public ChatSessionControl()
     {
         InitializeComponent();
+
+        // The model panel opens above its button with their right edges in
+        // line. The button sits near the right of the status bar, so a panel
+        // aligned to its left edge would run past the window. Above or, if
+        // there is no room, below.
+        ModelPickerPopup.CustomPopupPlacementCallback = (popupSize, targetSize, offset) => new[]
+        {
+            new CustomPopupPlacement(new Point(targetSize.Width - popupSize.Width, -popupSize.Height), PopupPrimaryAxis.Horizontal),
+            new CustomPopupPlacement(new Point(targetSize.Width - popupSize.Width, targetSize.Height), PopupPrimaryAxis.Horizontal),
+        };
     }
 
     public void Initialize(ChatSessionViewModel viewModel)
@@ -680,6 +690,8 @@ public partial class ChatSessionControl : UserControl
     {
         if (_suppressTextChanged) return;
 
+        UpdateSlashPopup();
+
         var text = InputTextBox.Text ?? "";
         var caret = InputTextBox.CaretIndex;
 
@@ -718,6 +730,10 @@ public partial class ChatSessionControl : UserControl
 
     private void InputTextBox_SelectionChanged(object sender, RoutedEventArgs e)
     {
+        // Moving the caret out of the command's name closes the menu.
+        if (SlashPopup.IsOpen && !TryGetSlashToken(InputTextBox.Text ?? "", InputTextBox.CaretIndex, out _))
+            CloseSlashPopup();
+
         if (_mentionStart < 0) return;
 
         var caret = InputTextBox.CaretIndex;
@@ -727,8 +743,9 @@ public partial class ChatSessionControl : UserControl
     private void InputTextBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
         // Don't close if focus moved into the popup (clicking a list item).
-        if (e.NewFocus is DependencyObject d && IsDescendantOf(d, MentionPopup.Child)) return;
+        if (e.NewFocus is DependencyObject d && (IsDescendantOf(d, MentionPopup.Child) || IsDescendantOf(d, SlashPopup.Child))) return;
         CloseMentionPopup();
+        CloseSlashPopup();
     }
 
     private static bool IsDescendantOf(DependencyObject? node, DependencyObject? root)
@@ -765,6 +782,12 @@ public partial class ChatSessionControl : UserControl
                     return;
                 }
             }
+        }
+
+        if (SlashPopup.IsOpen && HandleSlashKey(e))
+        {
+            e.Handled = true;
+            return;
         }
 
         if (!MentionPopup.IsOpen) return;

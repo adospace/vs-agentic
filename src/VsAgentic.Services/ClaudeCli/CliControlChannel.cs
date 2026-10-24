@@ -12,14 +12,23 @@ namespace VsAgentic.Services.ClaudeCli;
 /// </summary>
 internal readonly struct ControlReply
 {
-    public ControlReply(string? error, JsonElement? response)
+    public ControlReply(string? error, JsonElement? response, string? errorCode = null)
     {
         Error = error;
         Response = response;
+        ErrorCode = errorCode;
     }
 
     public string? Error { get; }
     public JsonElement? Response { get; }
+
+    /// <summary>
+    /// Why the request failed, for the failures a host can act on
+    /// (<c>bypass_not_launched</c>, <c>invalid_mode</c> …). Null on success,
+    /// for a failure the CLI gives no code for, and from a CLI that predates
+    /// the field. New values appear over time; treat an unknown one as null.
+    /// </summary>
+    public string? ErrorCode { get; }
 
     public bool Succeeded => Error is null;
 
@@ -120,7 +129,10 @@ internal sealed class CliControlChannel
         var error = response.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String
             ? e.GetString() ?? "error"
             : "error";
-        pending.TrySetResult(ControlReply.Failed(error));
+        var errorCode = response.TryGetProperty("error_code", out var c) && c.ValueKind == JsonValueKind.String
+            ? c.GetString()
+            : null;
+        pending.TrySetResult(new ControlReply(error, null, errorCode));
         return true;
     }
 

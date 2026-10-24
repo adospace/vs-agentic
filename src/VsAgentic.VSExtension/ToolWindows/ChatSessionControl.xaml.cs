@@ -30,6 +30,16 @@ public partial class ChatSessionControl : UserControl
     public ChatSessionControl()
     {
         InitializeComponent();
+
+        // The model panel opens above its button with their right edges in
+        // line. The button sits near the right of the status bar, so a panel
+        // aligned to its left edge would run past the window. Above or, if
+        // there is no room, below.
+        ModelPickerPopup.CustomPopupPlacementCallback = (popupSize, targetSize, offset) => new[]
+        {
+            new CustomPopupPlacement(new Point(targetSize.Width - popupSize.Width, -popupSize.Height), PopupPrimaryAxis.Horizontal),
+            new CustomPopupPlacement(new Point(targetSize.Width - popupSize.Width, targetSize.Height), PopupPrimaryAxis.Horizontal),
+        };
     }
 
     public void Initialize(ChatSessionViewModel viewModel)

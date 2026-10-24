@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -30,11 +32,33 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     [ObservableProperty]
     private string _alternativeText = "";
 
+    // The CLI takes rules back on an allow response and stops asking for
+    // anything they match, so "for this session" is not modelled here: the
+    // rules are handed over and the CLI's own rule engine does the matching.
+    private readonly IReadOnlyList<PermissionRule> _sessionRules;
+
+    /// <summary>Whether this request can be turned into rules at all.</summary>
+    public bool CanAllowForSession => _sessionRules.Count > 0;
+
+    /// <summary>
+    /// Names every rule about to be granted, e.g. <c>Bash(cd:*) Bash(git push:*)</c>.
+    /// This reads on the banner itself, next to the command: a compound command
+    /// can carry several rules, and what a click grants has to be visible
+    /// without hovering anything.
+    /// </summary>
+    public string SessionRulesText => string.Join("   ", _sessionRules.Select(r => r.Display));
+
+    /// <summary>Says how long the rules last, which the line on the banner does not.</summary>
+    public string AllowForSessionTooltip =>
+        "The CLI stops asking for calls these rules match. They live in the CLI "
+        + "process, so they are gone when it restarts and nothing is written to disk.";
+
     public PermissionBannerViewModel(PermissionRequest request, Action<PermissionDecision> onResolved)
     {
         _request = request;
         _onResolved = onResolved;
         BodyText = FormatBody(request);
+        _sessionRules = PermissionRuleBuilder.Build(request.ToolName, request.Input);
     }
 
     partial void OnIsOtherModeChanged(bool value)
@@ -46,13 +70,18 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     partial void OnAlternativeTextChanged(string value) => SubmitCommand.NotifyCanExecuteChanged();
 
     [RelayCommand]
-    private void Allow()
-    {
-        var inputJson = _request.Input.ValueKind == JsonValueKind.Undefined
+    private void Allow() => _onResolved(PermissionDecision.Allow(InputJson()));
+
+    /// <summary>Allow, and stop asking for calls of this shape until the CLI
+    /// process exits.</summary>
+    [RelayCommand]
+    private void AllowForSession() =>
+        _onResolved(PermissionDecision.AllowForSession(InputJson(), _sessionRules));
+
+    private string InputJson() =>
+        _request.Input.ValueKind == JsonValueKind.Undefined
             ? "{}"
             : _request.Input.GetRawText();
-        _onResolved(PermissionDecision.Allow(inputJson));
-    }
 
     [RelayCommand]
     private void Deny()

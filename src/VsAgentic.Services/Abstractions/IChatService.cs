@@ -184,6 +184,16 @@ public interface IChatService
     event Action<string>? StepCanMoveToBackground;
 
     /// <summary>
+    /// Raised when an Edit, MultiEdit or Write call has changed a file.
+    /// Arguments: the step id and the change. Comes after the step started,
+    /// and can come after it completed: when one of several calls in a
+    /// message waits for permission, the CLI starts the next ones first, and
+    /// each closes the step before it. Raised on a background thread; hosts
+    /// must marshal to the UI thread.
+    /// </summary>
+    event Action<string, FileChange>? StepFileChanged;
+
+    /// <summary>
     /// Moves the command or subagent of a running step to the background. The
     /// tool call returns at once and the turn goes on. Returns false when the
     /// step no longer runs in the foreground, or when no CLI process runs.

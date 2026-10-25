@@ -54,6 +54,11 @@ public partial class ChatSessionControl : UserControl
         viewModel.MessageCanMoveToBackground += (id) =>
             _ = ChatWebView.SetCanMoveToBackgroundAsync(id);
 
+        viewModel.MessageFileChangeSet += (id) =>
+            _ = ChatWebView.SetFileChangeAsync(id);
+
+        viewModel.FileDiffRequested += OnFileDiffRequested;
+
         viewModel.MessageCompleted += (id) =>
             _ = ChatWebView.CompleteMessageAsync(id);
 
@@ -83,6 +88,9 @@ public partial class ChatSessionControl : UserControl
 
         // The "Run in background" button on a running step.
         ChatWebView.MoveToBackgroundRequested += OnMoveToBackgroundRequested;
+
+        // The "Diff" button on a step that changed a file.
+        ChatWebView.DiffRequested += OnDiffRequested;
 
         // Zoom is one setting across every chat window, so follow it rather
         // than own it. Applied without the toast here: this is the window
@@ -158,6 +166,7 @@ public partial class ChatSessionControl : UserControl
         ChatZoom.Changed -= OnZoomChanged;
         ChatWebView.ZoomChangeRequested -= OnZoomChangeRequested;
         ChatWebView.MoveToBackgroundRequested -= OnMoveToBackgroundRequested;
+        ChatWebView.DiffRequested -= OnDiffRequested;
         ChatWebView.Clicked -= OnChatClicked;
         ChatWebView.ContentFocusChanged -= OnChatContentFocusChanged;
         IsKeyboardFocusWithinChanged -= OnKeyboardFocusWithinChanged;
@@ -412,6 +421,22 @@ public partial class ChatSessionControl : UserControl
     {
         if (DataContext is ChatSessionViewModel vm)
             _ = vm.MoveStepToBackgroundAsync(stepId);
+    }
+
+    private void OnDiffRequested(string stepId) =>
+        (DataContext as ChatSessionViewModel)?.OpenStepDiff(stepId);
+
+    private void OnFileDiffRequested(FileDiffContent diff)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        try
+        {
+            Editor.FileDiffViewer.Open(diff);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+        {
+            System.Diagnostics.Debug.WriteLine($"VsAgentic: Could not open the diff for {diff.FilePath}: {ex.Message}");
+        }
     }
 
     // Read the output as the tooltip opens rather than on a timer: nobody

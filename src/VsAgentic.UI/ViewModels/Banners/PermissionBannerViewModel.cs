@@ -2,6 +2,7 @@ using System;
 using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.ClaudeCli.Permissions;
 
 namespace VsAgentic.UI.ViewModels.Banners;
@@ -30,11 +31,31 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     [ObservableProperty]
     private string _alternativeText = "";
 
-    public PermissionBannerViewModel(PermissionRequest request, Action<PermissionDecision> onResolved)
+    private readonly FileDiffContent? _diff;
+    private readonly Action<FileDiffContent>? _openDiff;
+
+    /// <summary>True for a file edit whose change can be shown before Allow.</summary>
+    public bool CanViewDiff => _diff is not null && _openDiff is not null;
+
+    public PermissionBannerViewModel(
+        PermissionRequest request,
+        Action<PermissionDecision> onResolved,
+        FileDiffContent? diff = null,
+        Action<FileDiffContent>? openDiff = null)
     {
         _request = request;
         _onResolved = onResolved;
+        _diff = diff;
+        _openDiff = openDiff;
         BodyText = FormatBody(request);
+    }
+
+    /// <summary>Opens the file as it is now against the file with the edit
+    /// applied. The banner stays: the user decides after looking.</summary>
+    [RelayCommand]
+    private void ViewDiff()
+    {
+        if (_diff is not null) _openDiff?.Invoke(_diff);
     }
 
     partial void OnIsOtherModeChanged(bool value)

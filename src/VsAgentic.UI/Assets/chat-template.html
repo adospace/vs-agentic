@@ -316,6 +316,20 @@ html, body {
 .toolstep-bgbtn:hover { background: var(--bg-input); }
 .toolstep-bgbtn:disabled { opacity: 0.5; cursor: default; }
 
+/* "Diff" on a step that changed a file. Same shape as "Run in background". */
+.toolstep-diffbtn {
+    font: inherit;
+    font-size: 11px;
+    padding: 0 6px;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid currentColor;
+    border-radius: 8px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.toolstep-diffbtn:hover { background: var(--bg-input); }
+
 /* Notice: a one-line event from the extension, e.g. a background command that
    ended. Indented like a step, in muted text, with a colored outcome icon. */
 .msg-notice {
@@ -1224,6 +1238,7 @@ function addMessage(id, type, dataJson) {
         header.appendChild(statusSpan);
         header.appendChild(nameSpan);
         div.appendChild(header);
+        if (data.HasFileChange) addDiffButton(header, id);
 
         // Streaming expander
         if (data.IsStreaming) {
@@ -1509,6 +1524,28 @@ function setCanMoveToBackground(id) {
         window.chrome.webview.postMessage(JSON.stringify({type:'moveToBackground', id:id}));
     });
     host.insertBefore(btn, group ? host.querySelector('.activity-count') : null);
+}
+
+// Offers the diff of what an Edit, MultiEdit or Write step did to its file.
+// The host opens it in the Visual Studio diff viewer.
+function setFileChange(id) {
+    var el = messageElement(id);
+    if (!el) return;
+    var header = el.querySelector('.toolstep-header');
+    if (header) addDiffButton(header, id);
+}
+
+function addDiffButton(header, id) {
+    if (header.querySelector('.toolstep-diffbtn')) return;
+    var btn = document.createElement('button');
+    btn.className = 'toolstep-diffbtn';
+    btn.textContent = 'Diff';
+    btn.title = 'Compare the file before and after this change';
+    btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        window.chrome.webview.postMessage(JSON.stringify({type:'diff', id:id}));
+    });
+    header.appendChild(btn);
 }
 
 function moveToBackgroundButton(id) {

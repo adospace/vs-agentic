@@ -46,6 +46,13 @@
                 <Button Content="Other..."
                         Style="{StaticResource SecondaryButtonStyle}"
                         Command="{Binding OtherCommand}"/>
+                <!-- A file edit: compare the file with the edit applied
+                     before deciding. The banner stays open. -->
+                <Button Content="View diff"
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        Command="{Binding ViewDiffCommand}"
+                        ToolTip="Compare the file as it is now with the file after this change"
+                        Visibility="{Binding CanViewDiff, Converter={StaticResource BoolToVis}}"/>
             </StackPanel>
 
             <!-- Other... state: textbox for alternative instructions, Submit

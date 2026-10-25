@@ -39,6 +39,13 @@ public interface ISessionStore
     Task AppendMessageAsync(string folderPath, int sessionId, PersistedMessage message);
 
     /// <summary>
+    /// Adds the file change to the saved step with <paramref name="stepId"/>,
+    /// for a step that was saved before its tool result arrived. Does nothing
+    /// when no such step is saved.
+    /// </summary>
+    Task SetStepFileChangeAsync(string folderPath, int sessionId, string stepId, FileChange change);
+
+    /// <summary>
     /// Finds the sessions whose prompts or replies contain <paramref name="query"/>,
     /// ignoring case. Returns at most one hit per session: the first occurrence.
     /// Tool steps and thinking are not searched.

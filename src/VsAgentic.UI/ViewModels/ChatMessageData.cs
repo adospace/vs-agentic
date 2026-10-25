@@ -30,4 +30,10 @@ public class ChatMessageData
     /// prompt block. Null when the message has none.
     /// </summary>
     public List<string>? Images { get; init; }
+
+    /// <summary>
+    /// True for a step that changed a file, so it offers a diff. Set on
+    /// restore; in a live session the step gets it later.
+    /// </summary>
+    public bool HasFileChange { get; init; }
 }

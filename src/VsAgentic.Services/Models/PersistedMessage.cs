@@ -1,3 +1,5 @@
+using VsAgentic.Services.Abstractions;
+
 namespace VsAgentic.Services.Models;
 
 public class PersistedMessage
@@ -28,6 +30,12 @@ public class PersistedMessage
     /// would otherwise add megabytes per screenshot.
     /// </summary>
     public List<string>? ImageFileNames { get; set; }
+
+    /// <summary>
+    /// What the step's Edit, MultiEdit or Write call did to its file, for the
+    /// step's diff. Null for other steps and in sessions saved before diffs.
+    /// </summary>
+    public FileChange? FileChange { get; set; }
 
     public DateTime CreatedUtc { get; set; }
 }

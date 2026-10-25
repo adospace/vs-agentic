@@ -55,6 +55,12 @@ public partial class ChatWebView : UserControl
     public event Action<string>? MoveToBackgroundRequested;
 
     /// <summary>
+    /// Raised when the user presses "Diff" on a step that changed a file.
+    /// The argument is the step id.
+    /// </summary>
+    public event Action<string>? DiffRequested;
+
+    /// <summary>
     /// Raised when the user presses a pointer button anywhere in the rendered
     /// chat. The transcript is a browser child window, so a click in it is not
     /// a WPF mouse event and need not move WPF focus either — without this
@@ -543,6 +549,12 @@ public partial class ChatWebView : UserControl
                 if (!string.IsNullOrEmpty(id))
                     MoveToBackgroundRequested?.Invoke(id!);
             }
+            else if (type == "diff")
+            {
+                var id = root.GetProperty("id").GetString();
+                if (!string.IsNullOrEmpty(id))
+                    DiffRequested?.Invoke(id!);
+            }
             else if (type == "click")
             {
                 Clicked?.Invoke();
@@ -596,6 +608,15 @@ public partial class ChatWebView : UserControl
     {
         return ExecuteOrQueueAsync(
             $"setCanMoveToBackground({JsonSerializer.Serialize(id)})");
+    }
+
+    /// <summary>
+    /// Offers a diff on a step that changed a file.
+    /// </summary>
+    public Task SetFileChangeAsync(string id)
+    {
+        return ExecuteOrQueueAsync(
+            $"setFileChange({JsonSerializer.Serialize(id)})");
     }
 
     public Task SetBodyAsync(string id, string body, OutputBodyMode bodyMode)

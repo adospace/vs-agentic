@@ -494,6 +494,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         chatService.StepCanMoveToBackground += OnChatServiceStepCanMoveToBackground;
 
         InitializeUsage(chatService, options.Value);
+        InitializePermissionMode(chatService);
     }
 
     // True while a turn the CLI started on its own is running. It holds the
@@ -753,8 +754,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         ActiveBanner = null;
         UpdateActivityIndicator();
+        AddNotice(notice, "dismissed");
+    }
 
-        var noticeId = $"dismissed-{++_userMsgCounter}";
+    /// <summary>Leaves a row in the chat that is not part of the conversation.
+    /// Must run on the UI thread.</summary>
+    private void AddNotice(string notice, string idPrefix = "notice")
+    {
+        var noticeId = $"{idPrefix}-{++_userMsgCounter}";
         Items.Add(new ChatItemViewModel
         {
             Type = ChatItemType.Assistant,
@@ -1478,6 +1485,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 _chatService.AppliedEffortChanged -= OnChatServiceAppliedEffortChanged;
                 _chatService.FastModeChanged -= OnChatServiceFastModeChanged;
                 _chatService.BackgroundTasksChanged -= OnChatServiceBackgroundTasksChanged;
+                _chatService.PermissionModeChanged -= OnChatServicePermissionModeChanged;
+                _chatService.PermissionModeRejected -= OnChatServicePermissionModeRejected;
                 _chatService.StepBackgroundStateChanged -= OnChatServiceStepBackgroundStateChanged;
                 _chatService.StepCanMoveToBackground -= OnChatServiceStepCanMoveToBackground;
             }

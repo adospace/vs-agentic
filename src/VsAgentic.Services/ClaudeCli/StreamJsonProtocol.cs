@@ -254,6 +254,14 @@ internal static class StreamJsonProtocol
         });
 
     /// <summary>
+    /// Build the control request that switches the permission mode of the
+    /// running process. The CLI answers with the mode now in effect and also
+    /// emits <c>system/status</c> with it.
+    /// </summary>
+    public static string BuildSetPermissionMode(string requestId, string mode) =>
+        BuildControlRequest(requestId, "set_permission_mode", w => w.WriteString("mode", mode));
+
+    /// <summary>
     /// Build the request that turns fast mode on or off:
     /// <c>apply_flag_settings {fastMode}</c>. There is no request of its own
     /// for it; the SDK's flag-settings example uses this key.

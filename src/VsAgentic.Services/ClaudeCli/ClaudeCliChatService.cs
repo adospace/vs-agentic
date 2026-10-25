@@ -285,11 +285,21 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // the CLI runs, so a turn it started itself, which our message may
         // wait behind, ends the same way.
         turn.Interrupted = true;
+        TurnState? queued;
         lock (_activeTurnLock)
         {
             if (_cliTurn is { } cliTurn)
                 cliTurn.Interrupted = true;
+            queued = _activeTurn is { Started: false } waiting ? waiting : null;
         }
+
+        // The interrupt aborts the running turn only. Our message waiting in
+        // the queue behind a turn of the CLI's own is listed in its answer
+        // under still_queued and starts about 30 ms later, then runs to the
+        // end. So it leaves the queue first. Both Stop paths (our call and
+        // the CLI's turn) come here; the second request finds it gone.
+        if (queued is not null)
+            await CancelQueuedMessageAsync(queued).ConfigureAwait(false);
 
         var reply = await _control.SendAsync(StreamJsonProtocol.BuildInterrupt).ConfigureAwait(false);
         if (!reply.Succeeded)
@@ -308,6 +318,25 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     // The CLI writes the interrupted turn's result right after its answer to
     // the interrupt; a measured gap is a few milliseconds.
     private static readonly TimeSpan InterruptResultTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Takes our message out of the CLI's queue. The CLI then closes it with
+    /// a "cancelled" lifecycle, which ends its turn (HandleCommandLifecycle).
+    /// The answer says whether the message was still in the queue.
+    /// </summary>
+    private async Task CancelQueuedMessageAsync(TurnState turn)
+    {
+        var reply = await _control.SendAsync(
+            requestId => StreamJsonProtocol.BuildCancelAsyncMessage(requestId, turn.MessageUuid)).ConfigureAwait(false);
+        var cancelled = reply.Response is { ValueKind: JsonValueKind.Object } body
+            && body.TryGetProperty("cancelled", out var c) && c.ValueKind == JsonValueKind.True;
+
+        if (!reply.Succeeded)
+            _logger.LogWarning("[ClaudeCli] cancel_async_message failed: {Error}", reply.Error);
+        else
+            _logger.LogInformation("[ClaudeCli] Queued message {Result} on Stop",
+                cancelled ? "cancelled" : "was no longer queued");
+    }
 
     private void ClearActiveTurn(TurnState turn)
     {
@@ -335,15 +364,41 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
             await InterruptTurnAsync(turn).ConfigureAwait(false);
 
-            // The CLI did not close the turn in time. Stop showing it, so the
-            // session does not stay busy; the rest of it is not shown.
+            // The CLI did not close the turn in time. The session stops being
+            // busy with it, and the rest of it is not shown. The turn itself
+            // stays open until the CLI sends its result: closing it here would
+            // let its next message open a new turn, busy and shown again, and
+            // would close its steps off the dispatcher, which may still be
+            // writing to them.
+            // Without a process no event can follow, so the turn closes here.
             if (!turn.Ended.Task.IsCompleted)
-                EndCliTurn(turn);
+            {
+                if (_host.IsRunning) AbandonCliTurn(turn);
+                else EndCliTurn(turn);
+            }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[ClaudeCli] Stopping the CLI's own turn failed");
         }
+    }
+
+    private void AbandonCliTurn(TurnState turn)
+    {
+        lock (_activeTurnLock)
+        {
+            if (!ReferenceEquals(_cliTurn, turn) || turn.Abandoned) return;
+            turn.Abandoned = true;
+        }
+
+        _logger.LogWarning("[ClaudeCli] CLI's own turn did not end on Stop; the rest of it is not shown");
+        RaiseUnsolicitedTurnCompleted();
+    }
+
+    private void RaiseUnsolicitedTurnCompleted()
+    {
+        try { UnsolicitedTurnCompleted?.Invoke(); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] UnsolicitedTurnCompleted handler threw"); }
     }
 
     /// <summary>
@@ -372,8 +427,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
         FinalizeOpenBlocks(turn);
         turn.End();
-        try { UnsolicitedTurnCompleted?.Invoke(); }
-        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] UnsolicitedTurnCompleted handler threw"); }
+
+        // An abandoned turn has been reported as ended already.
+        if (!turn.Abandoned)
+            RaiseUnsolicitedTurnCompleted();
     }
 
     private void EnsureDispatcherStarted()
@@ -1013,10 +1070,13 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     }
 
     // Session notices go to the turn that runs, and to ours while it waits.
+    // Not to a turn Stop gave up on: nothing of it is shown any more.
     private TurnState? ActiveTurn()
     {
         lock (_activeTurnLock)
-            return _activeTurn is { Started: true, ResultReceived: false } turn ? turn : _cliTurn ?? _activeTurn;
+            return _activeTurn is { Started: true, ResultReceived: false } turn
+                ? turn
+                : (_cliTurn is { Abandoned: false } cliTurn ? cliTurn : null) ?? _activeTurn;
     }
 
     // ── Session notices ───────────────────────────────────────────────────
@@ -1492,6 +1552,14 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             }
         }
 
+        // Stop gave up on this turn: what it still says is not shown. Its open
+        // steps close here, on the dispatcher, which is the one writer.
+        if (turn.Abandoned)
+        {
+            FinalizeOpenBlocks(turn);
+            return;
+        }
+
         if (!msg.TryGetProperty("content", out var contentArr)) return;
         if (contentArr.ValueKind != JsonValueKind.Array) return;
 
@@ -1706,7 +1774,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         }
 
         var turn = RunningTurn();
-        if (turn == null) return;
+        if (turn == null || turn.Abandoned) return;
 
         if (!evt.TryGetProperty("message", out var msg)) return;
         if (!msg.TryGetProperty("content", out var contentArr)) return;
@@ -2986,6 +3054,12 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // Set by Stop before the interrupt goes to the CLI, so the error
         // result that closes an interrupted turn is not shown as a failure.
         public volatile bool Interrupted;
+
+        // A turn of the CLI's own that Stop gave up waiting for. The session
+        // is no longer busy with it, but it stays the CLI's turn until its
+        // result, so its late events land here and are not shown, instead of
+        // opening a turn of their own.
+        public volatile bool Abandoned;
 
         public Channel<string> TextDeltas { get; } = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
         {

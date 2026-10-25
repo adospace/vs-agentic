@@ -3,6 +3,7 @@ using VsAgentic.Services.ClaudeCli;
 using VsAgentic.Services.ClaudeCli.Permissions;
 using VsAgentic.Services.ClaudeCli.Questions;
 using VsAgentic.Services.Configuration;
+using VsAgentic.Services.IdeContext;
 using VsAgentic.Services.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -27,6 +28,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IPermissionBroker, PermissionBroker>();
         services.AddSingleton<IUserQuestionBroker, UserQuestionBroker>();
 
+        // The IDE tools of the vsagentic MCP server. The host registers its
+        // IIdeContextProvider instances; without any, the server has only the
+        // permission tool, as before.
+        services.AddSingleton<IdeContextRegistry>();
+
         // Long-running CLI process host — singleton, owns the subprocess and
         // the in-process pipe server that the MCP helper exe connects to.
         services.AddSingleton<ClaudeCliProcessHost>();
@@ -36,7 +42,10 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IOptions<VsAgenticOptions>>(),
                 sp.GetRequiredService<IOutputListener>(),
                 sp.GetRequiredService<ClaudeCliProcessHost>(),
-                sp.GetRequiredService<ILogger<ClaudeCliChatService>>()));
+                sp.GetRequiredService<ILogger<ClaudeCliChatService>>())
+            {
+                IdeContext = sp.GetRequiredService<IdeContextRegistry>(),
+            });
 
         return services;
     }

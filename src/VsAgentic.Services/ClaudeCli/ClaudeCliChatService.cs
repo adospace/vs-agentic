@@ -17,6 +17,7 @@ using Microsoft.Extensions.Options;
 using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.ClaudeCli.Permissions;
 using VsAgentic.Services.Configuration;
+using VsAgentic.Services.IdeContext;
 
 namespace VsAgentic.Services.ClaudeCli;
 
@@ -124,6 +125,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     // Set when the running process could not take a change. The next message
     // then restarts it, so the change still lands — but never mid-turn.
     private volatile bool _restartBeforeNextMessage;
+
+    /// <summary>The IDE tools of this chat, for their step titles. Optional.</summary>
+    public IdeContextRegistry? IdeContext { get; init; }
 
     public ClaudeCliChatService(
         IOptions<VsAgenticOptions> options,
@@ -1630,7 +1634,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         FinalizeResponseItem(turn);
         FinalizeToolItem(turn);
 
-        var toolTitle = $"Using {toolName}";
+        var toolTitle = IdeContext?.Find(toolName) is { } ideTool && toolName.StartsWith(IdeContextRegistry.McpToolPrefix, StringComparison.Ordinal)
+            ? ideTool.Title
+            : $"Using {toolName}";
         string? toolBody = null;
         if (block.TryGetProperty("input", out var input))
         {

@@ -57,6 +57,15 @@
     <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.14.40265" ExcludeAssets="runtime" />
 
     <!--
+      Roslyn, for the semantic tools (IdeContext\RoslynIdeContextProvider.cs).
+      VS ships it and redirects every older version to its own, so compile
+      against the one in VS 17.0, the lowest version the manifest accepts,
+      and ship nothing: a second copy of Roslyn in the process would not
+      share types with the workspace VS hands out.
+    -->
+    <PackageReference Include="Microsoft.VisualStudio.LanguageServices" Version="[4.0.1]" ExcludeAssets="runtime" />
+
+    <!--
       VS-provided BCL shims: compile against these but do NOT ship the
       runtime DLLs. VS bundles its own copies in Common7\IDE\PublicAssemblies
       and PrivateAssemblies; AssemblyResolveBootstrap.cs substitutes them at

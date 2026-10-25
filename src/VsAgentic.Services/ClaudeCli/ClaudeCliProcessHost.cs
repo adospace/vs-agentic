@@ -13,6 +13,7 @@ using Microsoft.Extensions.Options;
 using VsAgentic.Services.ClaudeCli.Permissions;
 using VsAgentic.Services.ClaudeCli.Questions;
 using VsAgentic.Services.Configuration;
+using VsAgentic.Services.IdeContext;
 
 namespace VsAgentic.Services.ClaudeCli;
 
@@ -37,6 +38,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
     private readonly VsAgenticOptions _options;
     private readonly IPermissionBroker _permissionBroker;
     private readonly IUserQuestionBroker _questionBroker;
+    private readonly IdeContextRegistry? _ideContext;
     private readonly ILogger _logger;
 
     private Process? _process;
@@ -66,11 +68,13 @@ public sealed class ClaudeCliProcessHost : IDisposable
         IOptions<VsAgenticOptions> options,
         IPermissionBroker permissionBroker,
         IUserQuestionBroker questionBroker,
-        ILogger<ClaudeCliProcessHost> logger)
+        ILogger<ClaudeCliProcessHost> logger,
+        IdeContextRegistry? ideContext = null)
     {
         _options = options.Value;
         _permissionBroker = permissionBroker;
         _questionBroker = questionBroker;
+        _ideContext = ideContext;
         _logger = logger;
     }
 
@@ -118,7 +122,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
 
         // Start the in-process pipe server before launching the CLI so the
         // MCP helper can connect immediately.
-        _pipeServer = new PermissionPipeServer(_permissionBroker, _questionBroker, _logger);
+        _pipeServer = new PermissionPipeServer(_permissionBroker, _questionBroker, _ideContext, _logger);
         _pipeServer.Start();
 
         var helperExePath = ResolveHelperExePath();

@@ -122,8 +122,12 @@ public sealed record CliModelInfo(
     }
 }
 
-/// <summary>A slash command or skill the CLI offers, from its answer to <c>initialize</c>.</summary>
-public sealed record CliCommandInfo(string Name, string? Description, string? ArgumentHint);
+/// <summary>
+/// A slash command or skill the CLI offers, from its answer to <c>initialize</c>
+/// or a <c>commands_changed</c> event. <see cref="Builtin"/> marks Claude
+/// Code's own commands; it is absent for a user, project, plugin or MCP one.
+/// </summary>
+public sealed record CliCommandInfo(string Name, string? Description, string? ArgumentHint, bool Builtin = false);
 
 /// <summary>
 /// What the running CLI said about itself in its answer to <c>initialize</c>:
@@ -180,21 +184,30 @@ public sealed class CliProcessInfo
                 .ToList();
         }
 
-        if (response.TryGetProperty("commands", out var commands) && commands.ValueKind == JsonValueKind.Array)
-        {
-            info.Commands = commands.EnumerateArray()
-                .Where(c => c.ValueKind == JsonValueKind.Object)
-                .Select(c => (name: ReadString(c, "name"), c))
-                .Where(x => !string.IsNullOrEmpty(x.name))
-                .Select(x => new CliCommandInfo(
-                    x.name!,
-                    ReadString(x.c, "description"),
-                    ReadString(x.c, "argumentHint")))
-                .ToList();
-        }
+        info.Commands = ReadCommands(response);
 
         return info;
     }
+
+    /// <summary>The <c>commands</c> array of an <c>initialize</c> answer or a <c>commands_changed</c> event.</summary>
+    internal static IReadOnlyList<CliCommandInfo> ReadCommands(JsonElement owner)
+    {
+        if (!owner.TryGetProperty("commands", out var commands) || commands.ValueKind != JsonValueKind.Array)
+            return Array.Empty<CliCommandInfo>();
+
+        return commands.EnumerateArray()
+            .Where(c => c.ValueKind == JsonValueKind.Object)
+            .Select(c => (name: ReadString(c, "name"), c))
+            .Where(x => !string.IsNullOrEmpty(x.name))
+            .Select(x => new CliCommandInfo(
+                x.name!,
+                ReadString(x.c, "description"),
+                ReadString(x.c, "argumentHint"),
+                x.c.TryGetProperty("builtin", out var b) && b.ValueKind == JsonValueKind.True))
+            .ToList();
+    }
+
+    internal static IReadOnlyList<string> ReadStringList(JsonElement owner, string name) => ReadStrings(owner, name);
 
     internal static string? ReadString(JsonElement owner, string name) =>
         owner.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
@@ -220,6 +233,17 @@ internal sealed class CliInitEvent
     public IReadOnlyList<string> Tools { get; private set; } = Array.Empty<string>();
     public FastModeStatus? FastMode { get; private set; }
 
+    /// <summary>
+    /// The names of every command the session can run, as they are typed.
+    /// A plugin's skill carries its plugin here ("anthropic-skills:pdf"),
+    /// where the <c>initialize</c> answer may give the bare name. Null for a
+    /// CLI that does not send the list.
+    /// </summary>
+    public IReadOnlyList<string>? SlashCommands { get; private set; }
+
+    /// <summary>Commands that work only in the terminal, not in a session like ours.</summary>
+    public IReadOnlyList<string> TerminalSlashCommands { get; private set; } = Array.Empty<string>();
+
     public static CliInitEvent Read(JsonElement evt)
     {
         var init = new CliInitEvent
@@ -230,6 +254,10 @@ internal sealed class CliInitEvent
             PermissionMode = CliProcessInfo.ReadString(evt, "permissionMode"),
             Capabilities = CliCapabilities.Read(evt),
             FastMode = FastModeStatus.Read(evt),
+            SlashCommands = evt.TryGetProperty("slash_commands", out var sc) && sc.ValueKind == JsonValueKind.Array
+                ? CliProcessInfo.ReadStringList(evt, "slash_commands")
+                : null,
+            TerminalSlashCommands = CliProcessInfo.ReadStringList(evt, "terminal_slash_commands"),
         };
 
         if (evt.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array)

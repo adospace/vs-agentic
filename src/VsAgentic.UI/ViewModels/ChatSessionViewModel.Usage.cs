@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using Microsoft.Extensions.Logging;
 using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.ClaudeCli;
@@ -59,10 +60,9 @@ public partial class ChatSessionViewModel
     /// turned up — and two sessions can be on different models.
     ///
     /// The rows are the models the CLI offered (<see cref="ClaudeModelCatalog.Reported"/>),
-    /// or the built-in aliases until a CLI has answered.
+    /// or the built-in aliases until a CLI has answered. The panel shows them
+    /// as <see cref="CurrentModelOptions"/> and <see cref="OtherModelOptions"/>.
     /// </summary>
-    public IReadOnlyList<ModelOption> ModelOptions => _modelOptions;
-
     private List<ModelOption> _modelOptions = BuildModelOptions(null);
 
     // The reported list the rows were built from; null for the built-in one.
@@ -83,14 +83,14 @@ public partial class ChatSessionViewModel
     /// The levels the selected model accepts, after Default. The selected
     /// level stays in the list even when the model does not accept it, so
     /// switching models does not quietly change the user's choice; the CLI
-    /// lowers it, and <see cref="EffortTooltip"/> says to what.
+    /// lowers it, and <see cref="EffortHint"/> says so.
     /// </summary>
     public IReadOnlyList<EffortOption> EffortOptions => _effortOptions;
 
     private IReadOnlyList<EffortOption> _effortOptions = Array.Empty<EffortOption>();
 
-    // One instance per level, so the dropdown keeps its selection when the
-    // list is rebuilt.
+    // One instance per level, so a level keeps its marks when the list is
+    // rebuilt.
     private readonly Dictionary<ClaudeEffort, EffortOption> _effortOptionCache = new();
 
     private EffortOption OptionOf(ClaudeEffort effort)
@@ -105,21 +105,12 @@ public partial class ChatSessionViewModel
     private ModelOption _selectedModel = null!;
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(SelectedEffortOption))]
     private ClaudeEffort _selectedEffort = ClaudeEffort.Default;
-
-    /// <summary>The dropdown's view of <see cref="SelectedEffort"/>.</summary>
-    public EffortOption SelectedEffortOption
-    {
-        get => OptionOf(SelectedEffort);
-        // Null while the dropdown swaps its list; not a choice.
-        set { if (value is not null) SelectedEffort = value.Value; }
-    }
 
     /// <summary>
     /// False for a model the CLI reports without effort levels (Haiku 4.5 on
-    /// CLI 2.1.296). The dropdown is then disabled rather than offering levels
-    /// the CLI would drop.
+    /// CLI 2.1.296). The panel then has no effort section rather than
+    /// offering levels the CLI would drop.
     /// </summary>
     public bool HasEffort => SelectedModel?.SupportedEfforts is not { Count: 0 };
 
@@ -128,15 +119,7 @@ public partial class ChatSessionViewModel
     /// a model without effort.
     /// </summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(EffortTooltip))]
     private ClaudeEffort? _appliedEffort;
-
-    public string EffortTooltip =>
-        !HasEffort
-            ? "This model has no reasoning effort setting."
-            : "Reasoning effort. Default sends no level to the CLI."
-              + (AppliedEffort is { } applied ? $"\nIn use: {applied.ToCliValue()}" : "")
-              + "\nTakes effect on the next request, also during a reply.";
 
     /// <summary>
     /// Set while seeding the pickers from saved settings, so restoring a value
@@ -177,7 +160,11 @@ public partial class ChatSessionViewModel
 
     partial void OnModelIdChanged(string? value) => RefreshResolvedModelLabel();
 
-    partial void OnAppliedEffortChanged(ClaudeEffort? value) => RefreshDefaultEffortLabel();
+    partial void OnAppliedEffortChanged(ClaudeEffort? value)
+    {
+        RefreshDefaultEffortLabel();
+        RefreshPicker();
+    }
 
     private void RefreshEffortOptions()
     {
@@ -196,12 +183,10 @@ public partial class ChatSessionViewModel
         {
             _effortOptions = shown;
             OnPropertyChanged(nameof(EffortOptions));
-            // The dropdown drops its selection when its list is replaced.
-            OnPropertyChanged(nameof(SelectedEffortOption));
         }
 
         OnPropertyChanged(nameof(HasEffort));
-        OnPropertyChanged(nameof(EffortTooltip));
+        RefreshPicker();
     }
 
     /// <summary>
@@ -212,6 +197,104 @@ public partial class ChatSessionViewModel
         OptionOf(ClaudeEffort.Default).DisplayName = AppliedEffort is { } applied && SelectedEffort == ClaudeEffort.Default
             ? $"Default ({applied.ToCliValue()})"
             : EffortOption.DefaultLabel;
+
+    // ── One picker for model, effort and Fast mode ────────────────────────
+    // The status bar shows a single button, "Opus 5.5 · Medium", that opens a
+    // panel with all three. The dropdown lists above stay the source; this is
+    // their view for the panel.
+
+    /// <summary>The CLI's aliases (Default, Opus …), which follow the newest model of their family.</summary>
+    public IReadOnlyList<ModelOption> CurrentModelOptions => _modelOptions.Where(m => !m.IsPinnedVersion).ToList();
+
+    /// <summary>Fixed model versions the CLI also offers, under "Other models".</summary>
+    public IReadOnlyList<ModelOption> OtherModelOptions => _modelOptions.Where(m => m.IsPinnedVersion).ToList();
+
+    public bool HasOtherModels => _modelOptions.Any(m => m.IsPinnedVersion);
+
+    public string OtherModelsLabel => $"Other models ({_modelOptions.Count(m => m.IsPinnedVersion)})";
+
+    /// <summary>
+    /// Whether the panel lists the fixed versions. Opens by itself when one of
+    /// them is the session's model, so the check mark is never hidden.
+    /// </summary>
+    [ObservableProperty]
+    private bool _showOtherModels;
+
+    /// <summary>What the button reads: the model, and the effort in use when the model has one.</summary>
+    public string ModelPickerLabel
+    {
+        get
+        {
+            var model = SelectedModel?.DisplayName ?? ModelOption.UnresolvedLabel;
+            if (!HasEffort) return model;
+
+            var effort = SelectedEffort != ClaudeEffort.Default
+                ? SelectedEffort.ToString()
+                : AppliedEffort?.ToString() ?? EffortOption.DefaultLabel;
+            return $"{model} · {effort}";
+        }
+    }
+
+    public string ModelPickerTooltip =>
+        $"Model: {ModelDisplay}\nModel, reasoning effort and Fast mode for this chat.\n"
+        + "Changes take effect on the next request, also during a reply.";
+
+    /// <summary>Under the effort buttons: what Default stands for, or why a level is faded.</summary>
+    public string EffortHint
+    {
+        get
+        {
+            if (SelectedEffort == ClaudeEffort.Default)
+                return AppliedEffort is { } applied
+                    ? $"Default = {applied}, as reported by Claude Code."
+                    : "Default leaves the level to Claude Code.";
+
+            return SelectedModel?.SupportedEfforts is { } levels && !levels.Contains(SelectedEffort)
+                ? $"This model has no {SelectedEffort} level. Claude Code uses a lower one."
+                : "";
+        }
+    }
+
+    [RelayCommand]
+    private void PickModel(ModelOption? option)
+    {
+        if (option is not null) SelectedModel = option;
+    }
+
+    [RelayCommand]
+    private void PickEffort(EffortOption? option)
+    {
+        if (option is not null) SelectedEffort = option.Value;
+    }
+
+    /// <summary>Brings the panel's marks and the button's text up to date.</summary>
+    private void RefreshPicker()
+    {
+        foreach (var option in _modelOptions)
+            option.IsSelected = ReferenceEquals(option, SelectedModel);
+
+        var levels = SelectedModel?.SupportedEfforts;
+        foreach (var option in _effortOptions)
+        {
+            option.IsSelected = option.Value == SelectedEffort;
+            option.IsSupported = option.Value == ClaudeEffort.Default || levels is null || levels.Contains(option.Value);
+        }
+
+        if (SelectedModel is { IsPinnedVersion: true })
+            ShowOtherModels = true;
+
+        OnPropertyChanged(nameof(ModelPickerLabel));
+        OnPropertyChanged(nameof(ModelPickerTooltip));
+        OnPropertyChanged(nameof(EffortHint));
+    }
+
+    private void RaiseModelListsChanged()
+    {
+        OnPropertyChanged(nameof(CurrentModelOptions));
+        OnPropertyChanged(nameof(OtherModelOptions));
+        OnPropertyChanged(nameof(HasOtherModels));
+        OnPropertyChanged(nameof(OtherModelsLabel));
+    }
 
     private void ApplyModelAndEffort()
     {
@@ -350,7 +433,7 @@ public partial class ChatSessionViewModel
         {
             _modelOptionsSource = ClaudeModelCatalog.Reported;
             _modelOptions = BuildModelOptions(_modelOptionsSource);
-            OnPropertyChanged(nameof(ModelOptions));
+            RaiseModelListsChanged();
             SelectedModel = OptionFor(alias);
         }
         finally
@@ -377,8 +460,16 @@ public partial class ChatSessionViewModel
         if (known is not null) return known;
         if (alias.Length == 0) return _modelOptions[0];
 
-        var custom = new ModelOption(new ClaudeModelInfo(alias, alias));
+        // A full model id ("claude-opus-5", a fixed version picked from the
+        // CLI's list before the CLI has answered this time) gets its readable
+        // name, as the button shows it. Anything else stays as typed, so a typo
+        // in the setting is still visible.
+        var name = alias.StartsWith("claude-", StringComparison.OrdinalIgnoreCase)
+            ? ClaudeModelCatalog.DisplayNameFor(alias)
+            : alias;
+        var custom = new ModelOption(new ClaudeModelInfo(alias, name));
         _modelOptions.Add(custom);
+        RaiseModelListsChanged();
         return custom;
     }
 
@@ -473,11 +564,12 @@ public partial class ChatSessionViewModel
             ? ClaudeModelCatalog.DisplayNameFor(ModelId)
             : null;
 
-        foreach (var option in ModelOptions)
+        foreach (var option in _modelOptions)
         {
             if (option.IsCliDefault)
                 option.DisplayName = resolved ?? ModelOption.UnresolvedLabel;
         }
+        RefreshPicker();
     }
 
     // ── Status bar text ───────────────────────────────────────────────────
@@ -648,9 +740,34 @@ public partial class ModelOption : ObservableObject
         SupportedEfforts = info.SupportedEfforts;
         SupportsFastMode = info.SupportsFastMode;
         _displayName = info.IsCliDefault ? UnresolvedLabel : info.DisplayName;
+        RowName = info.DisplayName;
     }
 
     public string Alias { get; }
+
+    /// <summary>
+    /// The name on the row in the model panel. Fixed, unlike
+    /// <see cref="DisplayName"/>: the Default row keeps the CLI's own name
+    /// ("Default (recommended)") rather than taking the model it resolves to,
+    /// which would show the same model twice. Its description names that model.
+    /// </summary>
+    public string RowName { get; }
+
+    /// <summary>
+    /// A fixed model version ("claude-opus-4-8") rather than one of the CLI's
+    /// aliases ("opus"), which move to the newest model of their family. The
+    /// CLI lists the aliases first and the fixed versions after them; the
+    /// picker puts the fixed ones under "Other models". A Bedrock or Vertex id
+    /// carries the model name after a prefix ("us.anthropic.claude-…"), and a
+    /// Bedrock inference profile is an ARN; none of the aliases has either.
+    /// </summary>
+    public bool IsPinnedVersion =>
+        Alias.IndexOf("claude-", StringComparison.OrdinalIgnoreCase) >= 0
+        || Alias.StartsWith("arn:", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Whether this is the session's model. Drives the check mark in the picker.</summary>
+    [ObservableProperty]
+    private bool _isSelected;
 
     /// <summary>The CLI's description of the model, shown as the row's tooltip.</summary>
     public string? Description { get; }
@@ -685,6 +802,21 @@ public partial class EffortOption : ObservableObject
     }
 
     public ClaudeEffort Value { get; }
+
+    /// <summary>The level's name alone, for the picker's buttons.</summary>
+    public string ShortName => Value == ClaudeEffort.Default ? DefaultLabel : Value.ToString();
+
+    /// <summary>Whether this is the session's level.</summary>
+    [ObservableProperty]
+    private bool _isSelected;
+
+    /// <summary>
+    /// False for a level the selected model does not take. It stays in the
+    /// list while selected, so switching models does not change the user's
+    /// choice; the CLI lowers it.
+    /// </summary>
+    [ObservableProperty]
+    private bool _isSupported = true;
 
     [ObservableProperty]
     private string _displayName;

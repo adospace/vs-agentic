@@ -503,6 +503,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         try { ClaudeModelCatalog.SetReported(CliModelInfo.ToCatalog(info.Models)); }
         catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] Model list handler threw"); }
 
+        SetReportedCommands(info.Commands);
+
         if (info.FastMode is { } fast)
             SetFastModeStatus(fast);
 
@@ -773,6 +775,12 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
             case "local_command_output":
                 HandleLocalCommandOutput(evt);
+                return;
+
+            // The whole list again, after skills were found mid-session; it
+            // replaces the one from initialize.
+            case "commands_changed":
+                SetReportedCommands(CliProcessInfo.ReadCommands(evt));
                 return;
 
             case "task_started":
@@ -1338,8 +1346,82 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             ? (tokens / 1000.0).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "k"
             : tokens.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
+    // ── Slash commands ────────────────────────────────────────────────────
+    // The menu under "/" lists what the CLI says the session can run. The
+    // descriptions come from initialize (or commands_changed, which replaces
+    // the list); system/init adds the names as they are typed and which ones
+    // work only in a terminal. Guarded by _commandsLock: initialize answers
+    // off the dispatcher.
+
+    private readonly object _commandsLock = new object();
+    private IReadOnlyList<CliCommandInfo> _commands = Array.Empty<CliCommandInfo>();
+    private IReadOnlyList<string>? _slashCommandNames;
+    private IReadOnlyList<string> _terminalCommandNames = Array.Empty<string>();
+
+    private void SetReportedCommands(IReadOnlyList<CliCommandInfo> commands)
+    {
+        if (commands.Count == 0) return;
+        lock (_commandsLock) { _commands = commands; }
+        PublishCommands();
+    }
+
+    private void SetCommandNames(IReadOnlyList<string> slashNames, IReadOnlyList<string> terminalNames)
+    {
+        lock (_commandsLock)
+        {
+            _slashCommandNames = slashNames;
+            _terminalCommandNames = terminalNames;
+        }
+        PublishCommands();
+    }
+
+    // Built and handed on under the lock: the initialize answer and
+    // system/init arrive on different threads, and a list built from the
+    // older of the two must not land after the newer one.
+    private void PublishCommands()
+    {
+        lock (_commandsLock)
+        {
+            if (_commands.Count == 0) return;
+
+            var terminalOnly = new HashSet<string>(_terminalCommandNames, StringComparer.OrdinalIgnoreCase);
+            var menu = new List<ClaudeCommandInfo>();
+            foreach (var command in _commands)
+            {
+                var name = TypedName(command.Name, _slashCommandNames);
+                // Internal commands the CLI runs for itself ("__remote-workflow").
+                if (name.StartsWith("__", StringComparison.Ordinal)) continue;
+                if (terminalOnly.Contains(name) || terminalOnly.Contains(command.Name)) continue;
+                menu.Add(new ClaudeCommandInfo(name, command.Description, command.ArgumentHint, command.Builtin));
+            }
+
+            try { ClaudeCommandCatalog.SetReported(_options.WorkingDirectory, menu); }
+            catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] Command list handler threw"); }
+        }
+    }
+
+    /// <summary>
+    /// The name to type for a command. A plugin's skill can come without its
+    /// plugin in the initialize answer ("pdf") and with it in system/init
+    /// ("anthropic-skills:pdf"); the full name is the one that runs it. Only
+    /// a single match counts, so two plugins with the same skill keep the
+    /// name the CLI gave.
+    /// </summary>
+    private static string TypedName(string name, IReadOnlyList<string>? slashNames)
+    {
+        if (slashNames is null) return name;
+        if (slashNames.Contains(name, StringComparer.OrdinalIgnoreCase)) return name;
+
+        var suffix = ":" + name;
+        var matches = slashNames.Where(n => n.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)).Take(2).ToList();
+        return matches.Count == 1 ? matches[0] : name;
+    }
+
     private void HandleInit(CliInitEvent init)
     {
+        if (init.SlashCommands is not null)
+            SetCommandNames(init.SlashCommands, init.TerminalSlashCommands);
+
         if (init.SessionId is not null)
         {
             _cliSessionId = init.SessionId;

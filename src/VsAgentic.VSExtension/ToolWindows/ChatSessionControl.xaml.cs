@@ -30,11 +30,93 @@ public partial class ChatSessionControl : UserControl
     public ChatSessionControl()
     {
         InitializeComponent();
+
+        // The model panel opens above its button with their right edges in
+        // line. The button sits near the right of the status bar, so a panel
+        // aligned to its left edge would run past the window. Above or, if
+        // there is no room, below.
+        ModelPickerPopup.CustomPopupPlacementCallback = (popupSize, targetSize, offset) => new[]
+        {
+            new CustomPopupPlacement(new Point(targetSize.Width - popupSize.Width, -popupSize.Height), PopupPrimaryAxis.Horizontal),
+            new CustomPopupPlacement(new Point(targetSize.Width - popupSize.Width, targetSize.Height), PopupPrimaryAxis.Horizontal),
+        };
+
+        // The panel works from the keyboard: it opens with the focus on the
+        // session's model, the arrow keys and Tab move inside it, and Escape
+        // closes it. The content is laid out after Opened, hence the post.
+        ModelPickerPopup.Opened += (_, _) =>
+            Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(FocusSelectedModelRow));
+        ModelPickerPopup.Closed += (_, _) =>
+        {
+            // Focus left in the closed panel would sit in a hidden window. A
+            // click elsewhere has already moved it, and keeps it there.
+            if (Keyboard.FocusedElement is not DependencyObject focused || IsInModelPickerPanel(focused))
+                ModelPickerToggle.Focus();
+        };
+        ModelPickerToggle.PreviewKeyDown += ModelPickerToggle_PreviewKeyDown;
+    }
+
+    // Alt+Down and F4 open the panel, as they open a dropdown list.
+    private void ModelPickerToggle_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        var altDown = e.Key == Key.System && e.SystemKey == Key.Down;
+        if ((altDown || e.Key == Key.F4) && ModelPickerToggle.IsChecked != true)
+        {
+            ModelPickerToggle.IsChecked = true;
+            e.Handled = true;
+        }
+    }
+
+    private void ModelPickerPanel_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        var altUp = e.Key == Key.System && e.SystemKey == Key.Up;
+        if (e.Key == Key.Escape || altUp || e.Key == Key.F4)
+        {
+            ModelPickerToggle.IsChecked = false;
+            ModelPickerToggle.Focus();
+            e.Handled = true;
+        }
+    }
+
+    private void FocusSelectedModelRow()
+    {
+        if (!ModelPickerPopup.IsOpen) return;
+
+        var row = FindDescendants<Button>(ModelPickerPanel)
+            .FirstOrDefault(b => b.DataContext is ModelOption { IsSelected: true } && b.IsVisible);
+        if (row is not null)
+            row.Focus();
+        else
+            ModelPickerPanel.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+    }
+
+    private bool IsInModelPickerPanel(DependencyObject element)
+    {
+        for (var node = element; node is not null;
+             node = node is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node))
+        {
+            if (ReferenceEquals(node, ModelPickerPanel)) return true;
+        }
+        return false;
+    }
+
+    private static IEnumerable<T> FindDescendants<T>(DependencyObject root) where T : DependencyObject
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T match) yield return match;
+            foreach (var nested in FindDescendants<T>(child)) yield return nested;
+        }
     }
 
     public void Initialize(ChatSessionViewModel viewModel)
     {
         DataContext = viewModel;
+
+        // "/model", "/effort" and "/fast", picked or typed, open the panel.
+        viewModel.OpenModelPanel = OpenModelPanel;
 
         viewModel.MessageAdded += (id, type, data) =>
             _ = ChatWebView.AddMessageAsync(id, type, data);
@@ -680,6 +762,8 @@ public partial class ChatSessionControl : UserControl
     {
         if (_suppressTextChanged) return;
 
+        UpdateSlashPopup();
+
         var text = InputTextBox.Text ?? "";
         var caret = InputTextBox.CaretIndex;
 
@@ -718,6 +802,10 @@ public partial class ChatSessionControl : UserControl
 
     private void InputTextBox_SelectionChanged(object sender, RoutedEventArgs e)
     {
+        // Moving the caret out of the command's name closes the menu.
+        if (SlashPopup.IsOpen && !TryGetSlashToken(InputTextBox.Text ?? "", InputTextBox.CaretIndex, out _))
+            CloseSlashPopup();
+
         if (_mentionStart < 0) return;
 
         var caret = InputTextBox.CaretIndex;
@@ -727,8 +815,9 @@ public partial class ChatSessionControl : UserControl
     private void InputTextBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
         // Don't close if focus moved into the popup (clicking a list item).
-        if (e.NewFocus is DependencyObject d && IsDescendantOf(d, MentionPopup.Child)) return;
+        if (e.NewFocus is DependencyObject d && (IsDescendantOf(d, MentionPopup.Child) || IsDescendantOf(d, SlashPopup.Child))) return;
         CloseMentionPopup();
+        CloseSlashPopup();
     }
 
     private static bool IsDescendantOf(DependencyObject? node, DependencyObject? root)
@@ -765,6 +854,12 @@ public partial class ChatSessionControl : UserControl
                     return;
                 }
             }
+        }
+
+        if (SlashPopup.IsOpen && HandleSlashKey(e))
+        {
+            e.Handled = true;
+            return;
         }
 
         if (!MentionPopup.IsOpen) return;

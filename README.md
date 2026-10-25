@@ -127,7 +127,7 @@ A **VsAgentic Sessions** panel will also appear (docked next to Solution Explore
 | Error | Cause | Fix |
 |-------|-------|-----|
 | **"Not logged in · Please run /login"** | The CLI is not authenticated | Run `claude login` from a terminal and complete the browser-based login flow |
-| **"Invalid API key"** | An `ANTHROPIC_API_KEY` environment variable is set and interfering | Remove the `ANTHROPIC_API_KEY` env var — VsAgentic uses subscription auth, not API keys. Remove it with: `[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", $null, "User")` then restart Visual Studio |
+| **"Invalid API key"** | A Claude Code settings file sets an API key: `ANTHROPIC_API_KEY` in its `env` block, or `apiKeyHelper`. VsAgentic clears the `ANTHROPIC_API_KEY` environment variable, but the CLI applies these settings after that | Remove `ANTHROPIC_API_KEY` from `env` and remove `apiKeyHelper` in `%USERPROFILE%\.claude\settings.json` and in `.claude\settings.json` / `.claude\settings.local.json` of the solution folder, then start a new chat — VsAgentic uses subscription auth, not API keys |
 | **"Failed to start Claude CLI"** | The `claude` command was not found | Install the CLI with `npm install -g @anthropic-ai/claude-code`, or set the full path in **Tools → Options → VsAgentic** |
 | **Update banner keeps appearing after upgrading** | Visual Studio may keep stale extension directories from a previous version and continue loading old files | Close VS, go to `%LOCALAPPDATA%\Microsoft\VisualStudio\<instance>\Extensions\`, delete any old VsAgentic folders (check `extension.vsixmanifest` inside each to identify the version), and restart VS |
 

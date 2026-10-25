@@ -130,15 +130,30 @@
             </Style.Triggers>
         </Style>
 
-        <!-- The Fast switch: the same flat chrome as the pickers. Checked keeps
-             the pressed fill, so "on" reads at a glance without a colour of
-             its own. -->
+        <!-- Keyboard focus as an outline in the theme's highlight colour. The
+             system focus rectangle is black dots, which a dark theme hides. -->
+        <Style x:Key="ThemedFocusVisual">
+            <Setter Property="Control.Template">
+                <Setter.Value>
+                    <ControlTemplate>
+                        <Rectangle Margin="-1"
+                                   RadiusX="3" RadiusY="3"
+                                   Stroke="{DynamicResource {x:Static vs:VsBrushes.HighlightKey}}"
+                                   StrokeThickness="1"
+                                   SnapsToDevicePixels="True"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- The model button: the same flat chrome as the pickers. Checked
+             keeps the pressed fill while the panel is open. -->
         <Style x:Key="StatusToggleStyle" TargetType="ToggleButton">
             <Setter Property="Margin" Value="4,0,0,0"/>
             <Setter Property="Height" Value="19"/>
             <Setter Property="FontSize" Value="11"/>
             <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="FocusVisualStyle" Value="{StaticResource ThemedFocusVisual}"/>
             <Setter Property="Foreground"
                     Value="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
             <Setter Property="Template">
@@ -188,6 +203,129 @@
                             <Trigger Property="IsHighlighted" Value="True">
                                 <Setter TargetName="ItemChrome" Property="Background"
                                         Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <controls:InverseBooleanConverter x:Key="InverseBool"/>
+
+        <!-- The full description of a list row, as a tooltip no wider than the
+             row and wrapped. A plain string tooltip does not wrap, so a long
+             description ran across the whole screen. Hidden for a row
+             without one. One instance per row. -->
+        <ToolTip x:Key="RowDescriptionTip" x:Shared="False">
+            <ToolTip.Style>
+                <Style TargetType="ToolTip">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding Description}" Value="{x:Null}">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ToolTip.Style>
+            <TextBlock Text="{Binding Description}"
+                       TextWrapping="Wrap"
+                       MaxWidth="{Binding PlacementTarget.ActualWidth, RelativeSource={RelativeSource AncestorType=ToolTip}}"/>
+        </ToolTip>
+
+        <!-- The model panel (one button for model, effort and Fast mode). Rows
+             and level buttons share the command bar's hover and pressed fills,
+             like the pickers they replace.
+
+             The panel is a popup: it has no adorner layer for a focus visual,
+             so a row with keyboard focus takes the hover fill, as a highlighted
+             row in a dropdown list does. -->
+        <Style x:Key="PickerRowStyle" TargetType="Button">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Foreground"
+                    Value="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Chrome"
+                                Background="Transparent"
+                                Padding="0,3,10,3"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Chrome" Property="Background"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PickerSectionStyle" TargetType="TextBlock">
+            <Setter Property="Margin" Value="12,6,12,3"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="Foreground"
+                    Value="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+        </Style>
+
+        <Style x:Key="PickerDividerStyle" TargetType="Border">
+            <Setter Property="Height" Value="1"/>
+            <Setter Property="Margin" Value="0,6"/>
+            <Setter Property="Background"
+                    Value="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"/>
+        </Style>
+
+        <!-- The Fast mode switch in the panel: a track and a knob. Keyboard
+             focus draws a ring around the track, apart from it, so it shows
+             with the switch on as well. -->
+        <Style x:Key="PickerSwitchStyle" TargetType="ToggleButton">
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="Ring"
+                                CornerRadius="10"
+                                BorderBrush="Transparent"
+                                BorderThickness="1"
+                                Padding="1"
+                                SnapsToDevicePixels="True">
+                            <Border x:Name="Track"
+                                    Width="30" Height="16"
+                                    CornerRadius="8"
+                                    Background="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseDownBackgroundGradientKey}}"
+                                    BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                                    BorderThickness="1"
+                                    SnapsToDevicePixels="True">
+                                <Ellipse x:Name="Knob"
+                                         Width="10" Height="10"
+                                         Margin="2,0"
+                                         HorizontalAlignment="Left"
+                                         Fill="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                            </Border>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Ring" Property="BorderBrush"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.HighlightKey}}"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Track" Property="Background"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.HighlightKey}}"/>
+                                <Setter TargetName="Knob" Property="HorizontalAlignment" Value="Right"/>
+                                <Setter TargetName="Knob" Property="Fill"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.HighlightTextKey}}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5"/>
+                                <Setter Property="Cursor" Value="Arrow"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -664,15 +802,16 @@
                                                   Focusable="False"/>
                                 </StackPanel>
 
-                                <!-- Status info: usage readings and the model /
-                                     effort pickers, right-aligned towards Send.
+                                <!-- Status info: usage readings and the model
+                                     button, right-aligned towards Send.
 
                                      Each item names the cell width it needs and
                                      drops out below it. Context is the last to go:
                                      it is ambient, and hidden it cannot warn that a
-                                     compaction is near. The pickers go first: they
-                                     are occasional actions, reachable again by
-                                     widening the pane or through Tools → Options.
+                                     compaction is near. The model button goes just
+                                     before it: it is the only way to change the
+                                     model, effort or Fast mode for this chat. The
+                                     other readings go first.
 
                                      The thresholds are cumulative estimates of the
                                      items' widths, in unzoomed pixels. The cell is
@@ -703,7 +842,7 @@
                                                               ToolTip="{Binding LongWindowTooltip}"
                                                               Visibility="{Binding ActualWidth, ElementName=StatusInfo,
                                                                            Converter={StaticResource MinWidth},
-                                                                           ConverterParameter=255}"/>
+                                                                           ConverterParameter=405}"/>
                                             <local:UsageMeter Caption="5h"
                                                               ValueText="{Binding ShortWindowDisplay}"
                                                               Level="{Binding ShortWindowLevel}"
@@ -711,7 +850,7 @@
                                                               ToolTip="{Binding ShortWindowTooltip}"
                                                               Visibility="{Binding ActualWidth, ElementName=StatusInfo,
                                                                            Converter={StaticResource MinWidth},
-                                                                           ConverterParameter=170}"/>
+                                                                           ConverterParameter=320}"/>
                                         </StackPanel>
 
                                         <local:UsageMeter Caption="Session"
@@ -720,7 +859,7 @@
                                                           ToolTip="{Binding SessionTokensTooltip}"
                                                           Visibility="{Binding ActualWidth, ElementName=StatusInfo,
                                                                        Converter={StaticResource MinWidth},
-                                                                       ConverterParameter=325}"/>
+                                                                       ConverterParameter=475}"/>
 
                                         <!-- The one bar: the context ceiling is real,
                                              derived from the model id. -->
@@ -729,90 +868,286 @@
                                                           Level="{Binding ContextLevel}"
                                                           ToolTip="{Binding ContextTooltip}"/>
 
-                                        <!-- Changing either picker goes to the running
-                                             CLI process, which applies it from its next
-                                             API request. An older CLI that cannot take
-                                             it restarts before the next message; the
-                                             conversation is resumed, not lost.
+                                        <!-- One button for model, effort and Fast mode, reading
+                                             like the state it sets ("Opus 5.5 · Medium", ⚡ while
+                                             Fast mode is on). A change goes to the running CLI
+                                             process, which applies it from its next API request.
+                                             An older CLI that cannot take it restarts before the
+                                             next message; the conversation is resumed, not lost.
 
-                                             An ItemTemplate, not DisplayMemberPath:
-                                             the Default row renames itself once the
-                                             model is known, and StatusComboStyle only
-                                             forwards SelectionBoxItemTemplate. With
-                                             DisplayMemberPath that is null, so the
-                                             closed box would draw ToString() once and
-                                             keep showing "Default". -->
-                                        <ComboBox Style="{StaticResource StatusComboStyle}"
-                                                  ItemsSource="{Binding ModelOptions}"
-                                                  SelectedItem="{Binding SelectedModel}"
-                                                  Visibility="{Binding ActualWidth, ElementName=StatusInfo,
-                                                               Converter={StaticResource MinWidth},
-                                                               ConverterParameter=405}">
-                                            <!-- A TextBlock, not ToolTip="{Binding ...
-                                                 StringFormat=...}": the ToolTip property
-                                                 is typed object, so the binding has no
-                                                 target type to format to and the tooltip
-                                                 reads as the bare model name. -->
-                                            <ComboBox.ToolTip>
-                                                <TextBlock Text="{Binding ModelDisplay,
-                                                           StringFormat='Model: {0}&#x0a;Takes effect on the next request, also during a reply.'}"/>
-                                            </ComboBox.ToolTip>
-                                            <!-- The CLI's description of each model, on the
-                                                 row in the open list. Not on the template:
-                                                 that also draws the closed box and would
-                                                 cover the tooltip above. -->
-                                            <ComboBox.ItemContainerStyle>
-                                                <Style TargetType="ComboBoxItem"
-                                                       BasedOn="{StaticResource StatusComboItemStyle}">
-                                                    <Setter Property="ToolTip" Value="{Binding Description}"/>
-                                                </Style>
-                                            </ComboBox.ItemContainerStyle>
-                                            <ComboBox.ItemTemplate>
-                                                <DataTemplate>
-                                                    <TextBlock Text="{Binding DisplayName}"/>
-                                                </DataTemplate>
-                                            </ComboBox.ItemTemplate>
-                                        </ComboBox>
+                                             Not hit-testable while the panel is open: the click
+                                             that closes a StaysOpen="False" popup would
+                                             otherwise reach the button and open it again.
 
-                                        <!-- The levels come from the selected model; a
-                                             model without effort disables the box. -->
-                                        <ComboBox Style="{StaticResource StatusComboStyle}"
-                                                  ItemContainerStyle="{StaticResource StatusComboItemStyle}"
-                                                  ItemsSource="{Binding EffortOptions}"
-                                                  SelectedItem="{Binding SelectedEffortOption}"
-                                                  IsEnabled="{Binding HasEffort}"
-                                                  ToolTipService.ShowOnDisabled="True"
-                                                  Visibility="{Binding ActualWidth, ElementName=StatusInfo,
-                                                               Converter={StaticResource MinWidth},
-                                                               ConverterParameter=480}">
-                                            <ComboBox.ToolTip>
-                                                <TextBlock Text="{Binding EffortTooltip}"/>
-                                            </ComboBox.ToolTip>
-                                            <ComboBox.ItemTemplate>
-                                                <DataTemplate>
-                                                    <TextBlock Text="{Binding DisplayName}"/>
-                                                </DataTemplate>
-                                            </ComboBox.ItemTemplate>
-                                        </ComboBox>
+                                             Reached with Tab. Space, Enter or Alt+Down opens the
+                                             panel and puts the focus on the selected model;
+                                             Escape closes it and gives the focus back here
+                                             (ChatSessionControl.xaml.cs). -->
+                                        <ToggleButton x:Name="ModelPickerToggle"
+                                                      Style="{StaticResource StatusToggleStyle}"
+                                                      AutomationProperties.Name="{Binding ModelPickerLabel, StringFormat='Model and reasoning effort: {0}'}"
+                                                      IsHitTestVisible="{Binding IsOpen, ElementName=ModelPickerPopup,
+                                                                         Converter={StaticResource InverseBool}}"
+                                                      Visibility="{Binding ActualWidth, ElementName=StatusInfo,
+                                                                   Converter={StaticResource MinWidth},
+                                                                   ConverterParameter=250}">
+                                            <ToggleButton.ToolTip>
+                                                <TextBlock Text="{Binding ModelPickerTooltip}"/>
+                                            </ToggleButton.ToolTip>
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="{Binding ModelPickerLabel}"
+                                                           VerticalAlignment="Center"/>
+                                                <TextBlock Text="⚡"
+                                                           Margin="4,0,0,0"
+                                                           VerticalAlignment="Center"
+                                                           Visibility="{Binding IsFastModeOn, Converter={StaticResource BoolToVis}}"/>
+                                                <Path Margin="5,1,0,0"
+                                                      VerticalAlignment="Center"
+                                                      Data="M 0 0 L 3.5 3.5 L 7 0 Z"
+                                                      Fill="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                            </StackPanel>
+                                        </ToggleButton>
 
-                                        <!-- Only for a model the CLI offers fast mode for.
-                                             Two conditions, so two elements: the width
-                                             rule on the wrapper, the model rule on the
-                                             switch. -->
-                                        <Border Visibility="{Binding ActualWidth, ElementName=StatusInfo,
-                                                             Converter={StaticResource MinWidth},
-                                                             ConverterParameter=525}">
-                                            <ToggleButton Style="{StaticResource StatusToggleStyle}"
-                                                          Content="Fast"
-                                                          IsChecked="{Binding IsFastModeOn}"
-                                                          IsEnabled="{Binding CanToggleFastMode}"
-                                                          ToolTipService.ShowOnDisabled="True"
-                                                          Visibility="{Binding ShowFastMode, Converter={StaticResource BoolToVis}}">
-                                                <ToggleButton.ToolTip>
-                                                    <TextBlock Text="{Binding FastModeTooltip}"/>
-                                                </ToggleButton.ToolTip>
-                                            </ToggleButton>
-                                        </Border>
+                                        <!-- Opens upwards: the status bar sits at the bottom
+                                             of the window, like the @-mention popup. The panel
+                                             inherits the view model through the popup; a row's
+                                             command reaches it through the list around the row. -->
+                                        <Popup x:Name="ModelPickerPopup"
+                                               PlacementTarget="{Binding ElementName=ModelPickerToggle}"
+                                               Placement="Custom"
+                                               StaysOpen="False"
+                                               AllowsTransparency="True"
+                                               PopupAnimation="Fade"
+                                               IsOpen="{Binding IsChecked, ElementName=ModelPickerToggle, Mode=TwoWay}">
+                                            <!-- Tab and the arrow keys stay inside the panel and
+                                                 wrap around; Escape closes it (code-behind). -->
+                                            <Border x:Name="ModelPickerPanel"
+                                                    KeyboardNavigation.TabNavigation="Cycle"
+                                                    KeyboardNavigation.DirectionalNavigation="Cycle"
+                                                    PreviewKeyDown="ModelPickerPanel_PreviewKeyDown"
+                                                    Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
+                                                    BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="4"
+                                                    Width="360"
+                                                    Padding="0,4"
+                                                    SnapsToDevicePixels="True"
+                                                    TextElement.FontSize="11"
+                                                    TextElement.Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}">
+                                                <Border.Resources>
+                                                    <!-- A model row: check mark, name, the CLI's
+                                                         description, and a mark for Fast mode. -->
+                                                    <DataTemplate x:Key="ModelRowTemplate">
+                                                        <Button x:Name="Row"
+                                                                Style="{StaticResource PickerRowStyle}"
+                                                                Command="{Binding DataContext.PickModelCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                CommandParameter="{Binding}"
+                                                                AutomationProperties.Name="{Binding RowName}"
+                                                                AutomationProperties.HelpText="{Binding Description}"
+                                                                ToolTip="{StaticResource RowDescriptionTip}">
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="26"/>
+                                                                    <ColumnDefinition Width="Auto"/>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                    <ColumnDefinition Width="Auto"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="✓"
+                                                                           HorizontalAlignment="Center"
+                                                                           FontWeight="SemiBold"
+                                                                           Visibility="{Binding IsSelected, Converter={StaticResource BoolToVis}}"/>
+                                                                <TextBlock Grid.Column="1"
+                                                                           Text="{Binding RowName}"
+                                                                           FontSize="12"/>
+                                                                <TextBlock Grid.Column="2"
+                                                                           Text="{Binding Description}"
+                                                                           Margin="8,1,8,0"
+                                                                           TextTrimming="CharacterEllipsis"
+                                                                           Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                                <TextBlock Grid.Column="3"
+                                                                           Text="⚡ Fast"
+                                                                           Margin="0,1,0,0"
+                                                                           FontSize="10"
+                                                                           Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
+                                                                           Visibility="{Binding SupportsFastMode, Converter={StaticResource BoolToVis}}"/>
+                                                            </Grid>
+                                                        </Button>
+                                                        <!-- A screen reader hears which row is the
+                                                             session's model, as the check mark shows. -->
+                                                        <DataTemplate.Triggers>
+                                                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                                <Setter TargetName="Row" Property="AutomationProperties.ItemStatus" Value="Selected"/>
+                                                            </DataTrigger>
+                                                        </DataTemplate.Triggers>
+                                                    </DataTemplate>
+                                                </Border.Resources>
+                                                <StackPanel>
+                                                    <TextBlock Text="MODEL" Style="{StaticResource PickerSectionStyle}"/>
+                                                    <ItemsControl ItemsSource="{Binding CurrentModelOptions}"
+                                                                  ItemTemplate="{StaticResource ModelRowTemplate}"
+                                                                  Focusable="False"/>
+
+                                                    <!-- Fixed versions the CLI offers besides its
+                                                         aliases, folded away until asked for. -->
+                                                    <ToggleButton IsChecked="{Binding ShowOtherModels}"
+                                                                  Cursor="Hand"
+                                                                  FocusVisualStyle="{x:Null}"
+                                                                  AutomationProperties.Name="{Binding OtherModelsLabel}"
+                                                                  Visibility="{Binding HasOtherModels, Converter={StaticResource BoolToVis}}">
+                                                        <ToggleButton.Template>
+                                                            <ControlTemplate TargetType="ToggleButton">
+                                                                <Border x:Name="Chrome"
+                                                                        Background="Transparent"
+                                                                        Padding="12,3,10,3">
+                                                                    <StackPanel Orientation="Horizontal">
+                                                                        <TextBlock x:Name="Arrow"
+                                                                                   Text="▸"
+                                                                                   Width="14"
+                                                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                                        <TextBlock Text="{Binding OtherModelsLabel}"
+                                                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                                    </StackPanel>
+                                                                </Border>
+                                                                <ControlTemplate.Triggers>
+                                                                    <Trigger Property="IsChecked" Value="True">
+                                                                        <Setter TargetName="Arrow" Property="Text" Value="▾"/>
+                                                                    </Trigger>
+                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                        <Setter TargetName="Chrome" Property="Background"
+                                                                                Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}"/>
+                                                                    </Trigger>
+                                                                    <Trigger Property="IsKeyboardFocused" Value="True">
+                                                                        <Setter TargetName="Chrome" Property="Background"
+                                                                                Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}"/>
+                                                                    </Trigger>
+                                                                </ControlTemplate.Triggers>
+                                                            </ControlTemplate>
+                                                        </ToggleButton.Template>
+                                                    </ToggleButton>
+                                                    <ItemsControl ItemsSource="{Binding OtherModelOptions}"
+                                                                  ItemTemplate="{StaticResource ModelRowTemplate}"
+                                                                  Focusable="False"
+                                                                  Visibility="{Binding ShowOtherModels, Converter={StaticResource BoolToVis}}"/>
+
+                                                    <!-- Only the levels the selected model takes; no
+                                                         section at all for a model without effort. -->
+                                                    <StackPanel Visibility="{Binding HasEffort, Converter={StaticResource BoolToVis}}">
+                                                        <Border Style="{StaticResource PickerDividerStyle}"/>
+                                                        <TextBlock Text="REASONING EFFORT" Style="{StaticResource PickerSectionStyle}"/>
+                                                        <Border Margin="12,2,12,4"
+                                                                BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                                                                BorderThickness="1"
+                                                                CornerRadius="3">
+                                                            <ItemsControl ItemsSource="{Binding EffortOptions}"
+                                                                          Focusable="False">
+                                                                <ItemsControl.ItemsPanel>
+                                                                    <ItemsPanelTemplate>
+                                                                        <UniformGrid Rows="1"/>
+                                                                    </ItemsPanelTemplate>
+                                                                </ItemsControl.ItemsPanel>
+                                                                <ItemsControl.ItemTemplate>
+                                                                    <DataTemplate>
+                                                                        <Button Command="{Binding DataContext.PickEffortCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                                                                                CommandParameter="{Binding}"
+                                                                                Cursor="Hand"
+                                                                                FocusVisualStyle="{x:Null}"
+                                                                                AutomationProperties.Name="{Binding DisplayName, StringFormat='Reasoning effort: {0}'}">
+                                                                            <Button.Template>
+                                                                                <ControlTemplate TargetType="Button">
+                                                                                    <Border x:Name="Chrome"
+                                                                                            Background="Transparent"
+                                                                                            BorderBrush="Transparent"
+                                                                                            BorderThickness="1"
+                                                                                            Padding="0,2">
+                                                                                        <!-- The theme's text colour, set here: a
+                                                                                             Button's default style sets the system
+                                                                                             control text colour, black on a dark
+                                                                                             theme. -->
+                                                                                        <TextBlock x:Name="Label"
+                                                                                                   Text="{Binding ShortName}"
+                                                                                                   HorizontalAlignment="Center"
+                                                                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                                                                                    </Border>
+                                                                                    <ControlTemplate.Triggers>
+                                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                                            <Setter TargetName="Chrome" Property="Background"
+                                                                                                    Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}"/>
+                                                                                        </Trigger>
+                                                                                        <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                                                            <Setter TargetName="Chrome" Property="Background"
+                                                                                                    Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseDownBackgroundGradientKey}}"/>
+                                                                                            <Setter TargetName="Label" Property="FontWeight" Value="SemiBold"/>
+                                                                                            <Setter Property="AutomationProperties.ItemStatus" Value="Selected"/>
+                                                                                        </DataTrigger>
+                                                                                        <!-- After the selected fill, so a focused
+                                                                                             selected level still shows the focus. -->
+                                                                                        <Trigger Property="IsKeyboardFocused" Value="True">
+                                                                                            <Setter TargetName="Chrome" Property="BorderBrush"
+                                                                                                    Value="{DynamicResource {x:Static vs:VsBrushes.HighlightKey}}"/>
+                                                                                        </Trigger>
+                                                                                        <DataTrigger Binding="{Binding IsSupported}" Value="False">
+                                                                                            <Setter TargetName="Label" Property="Opacity" Value="0.5"/>
+                                                                                        </DataTrigger>
+                                                                                    </ControlTemplate.Triggers>
+                                                                                </ControlTemplate>
+                                                                            </Button.Template>
+                                                                        </Button>
+                                                                    </DataTemplate>
+                                                                </ItemsControl.ItemTemplate>
+                                                            </ItemsControl>
+                                                        </Border>
+                                                        <!-- Hidden when there is nothing to say, so a
+                                                             chosen level leaves no empty line. -->
+                                                        <TextBlock Text="{Binding EffortHint}"
+                                                                   Margin="12,0,12,2"
+                                                                   TextWrapping="Wrap"
+                                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding EffortHint}" Value="">
+                                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                    </StackPanel>
+
+                                                    <!-- Only for a model the CLI offers fast mode for,
+                                                         and while it is on, so it can be turned off
+                                                         after a switch to a model without it. -->
+                                                    <StackPanel Visibility="{Binding ShowFastMode, Converter={StaticResource BoolToVis}}">
+                                                        <Border Style="{StaticResource PickerDividerStyle}"/>
+                                                        <Grid Margin="12,0,12,4">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="*"/>
+                                                                <ColumnDefinition Width="Auto"/>
+                                                            </Grid.ColumnDefinitions>
+                                                            <StackPanel>
+                                                                <TextBlock Text="Fast mode" FontSize="12"/>
+                                                                <TextBlock Text="Faster output, billed at a higher rate. This chat only."
+                                                                           TextWrapping="Wrap"
+                                                                           Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                            </StackPanel>
+                                                            <ToggleButton Grid.Column="1"
+                                                                          Style="{StaticResource PickerSwitchStyle}"
+                                                                          AutomationProperties.Name="Fast mode"
+                                                                          AutomationProperties.HelpText="{Binding FastModeTooltip}"
+                                                                          Margin="10,0,0,0"
+                                                                          VerticalAlignment="Center"
+                                                                          IsChecked="{Binding IsFastModeOn}"
+                                                                          IsEnabled="{Binding CanToggleFastMode}"
+                                                                          ToolTipService.ShowOnDisabled="True">
+                                                                <ToggleButton.ToolTip>
+                                                                    <TextBlock Text="{Binding FastModeTooltip}"/>
+                                                                </ToggleButton.ToolTip>
+                                                            </ToggleButton>
+                                                        </Grid>
+                                                    </StackPanel>
+                                                </StackPanel>
+                                            </Border>
+                                        </Popup>
                                     </StackPanel>
                                 </Grid>
 

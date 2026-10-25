@@ -17,6 +17,7 @@ using Microsoft.Extensions.Options;
 using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.ClaudeCli.Permissions;
 using VsAgentic.Services.Configuration;
+using VsAgentic.Services.Services;
 
 namespace VsAgentic.Services.ClaudeCli;
 
@@ -201,6 +202,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             {
                 _control = NewControlChannel();
                 _capabilities = CliCapabilities.None;
+                lock (_reportedMcpProblems) { _reportedMcpProblems.Clear(); }
             }
             EnsureDispatcherStarted();
             if (!wasRunning)
@@ -1364,10 +1366,157 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (init.FastMode is { } fast)
             SetFastModeStatus(fast);
 
+        ReportMcpServers(init);
+
         // Diagnostic: dump the available tool names so we can verify whether
         // AskUserQuestion is registered in headless mode.
         if (init.Tools.Count > 0)
             _logger.LogInformation("[ClaudeCli] Available tools ({Count}): {Tools}", init.Tools.Count, string.Join(", ", init.Tools));
+    }
+
+    // ── MCP servers ───────────────────────────────────────────────────────
+    // system/init repeats with every turn, so each problem is shown once per
+    // process. Cleared on every process start: a new process connects anew.
+    private readonly HashSet<string> _reportedMcpProblems = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Shows the MCP servers the CLI could not connect. Our own server comes
+    /// first: without it a tool that needs approval cannot ask, and the CLI
+    /// ends with "MCP tool mcp__vsagentic__approval_prompt … not found" at the
+    /// first such tool, with no result event. The others matter only when the
+    /// user's own servers are loaded (see <see cref="VsAgenticOptions.UseClaudeMcpServers"/>).
+    /// </summary>
+    private void ReportMcpServers(CliInitEvent init)
+    {
+        // A CLI that predates the list gives us nothing to check.
+        if (init.McpServers is null) return;
+
+        var ours = init.McpServers.FirstOrDefault(s => s.Name == ClaudeCliProcessHost.PermissionServerName)
+            ?? new CliMcpServer(ClaudeCliProcessHost.PermissionServerName, "missing", null);
+        var others = init.McpServers
+            .Where(s => s.Name != ClaudeCliProcessHost.PermissionServerName && s.IsUnavailable)
+            .ToList();
+
+        bool reportOurs;
+        List<CliMcpServer> newOthers;
+        List<CliMcpServerError> newErrors;
+        lock (_reportedMcpProblems)
+        {
+            reportOurs = ours.IsUnavailable && _reportedMcpProblems.Add("server:" + ours.Name);
+            newOthers = others.Where(s => _reportedMcpProblems.Add("server:" + s.Name)).ToList();
+            newErrors = init.McpServerErrors.Where(e => _reportedMcpProblems.Add("config:" + e.Name)).ToList();
+        }
+
+        if (!reportOurs && newOthers.Count == 0 && newErrors.Count == 0) return;
+
+        var notConnected = (reportOurs ? new[] { ours } : Array.Empty<CliMcpServer>()).Concat(newOthers)
+            .Select(s => $"{s.Name} ({s.Status})")
+            .ToList();
+        _logger.LogWarning("[ClaudeCli] MCP servers not connected: {Servers}; skipped configs: {Errors}",
+            notConnected.Count == 0 ? "(none)" : string.Join(", ", notConnected),
+            newErrors.Count == 0 ? "(none)" : string.Join(", ", newErrors.Select(e => e.Name)));
+
+        // The reasons come only from mcp_status. Asked off the dispatcher,
+        // which is what delivers the answer.
+        var control = _control;
+        _ = Task.Run(async () =>
+        {
+            var reasons = await ReadMcpErrorsAsync(control).ConfigureAwait(false);
+            if (reportOurs)
+                EmitError("Permission server not connected", DescribePermissionServerProblem(ours, reasons));
+            if (newOthers.Count > 0 || newErrors.Count > 0)
+            {
+                var signInOnly = newErrors.Count == 0 && newOthers.All(s => s.NeedsSignIn);
+                EmitError(signInOnly ? "MCP servers need sign-in" : "MCP servers not connected",
+                    DescribeMcpServerProblems(newOthers, newErrors, reasons));
+            }
+        });
+    }
+
+    /// <summary>
+    /// The <c>error</c> of each server <c>mcp_status</c> reports, by name.
+    /// Empty when the CLI does not answer: the process may already be ending.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, string>> ReadMcpErrorsAsync(CliControlChannel control)
+    {
+        var reasons = new Dictionary<string, string>(StringComparer.Ordinal);
+        var reply = await control.SendAsync(StreamJsonProtocol.BuildMcpStatus, TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+        if (!reply.Succeeded || reply.Response is not { } body)
+        {
+            _logger.LogInformation("[ClaudeCli] mcp_status failed: {Error}", reply.Error ?? "empty answer");
+            return reasons;
+        }
+
+        if (body.TryGetProperty("mcpServers", out var servers) && servers.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var s in servers.EnumerateArray())
+            {
+                var name = CliProcessInfo.ReadString(s, "name");
+                var error = CliProcessInfo.ReadString(s, "error");
+                if (!string.IsNullOrEmpty(name) && !string.IsNullOrWhiteSpace(error))
+                    reasons[name!] = error!;
+            }
+        }
+        return reasons;
+    }
+
+    private static string DescribePermissionServerProblem(CliMcpServer ours, IReadOnlyDictionary<string, string> reasons)
+    {
+        var sb = new StringBuilder();
+        sb.Append("VsAgentic's permission server (MCP server `").Append(ours.Name)
+          .Append("`) did not connect to the Claude CLI. Status: ").Append(ours.Status);
+        if (reasons.TryGetValue(ours.Name, out var reason))
+            sb.Append(" (").Append(MarkdownText.Escape(reason)).Append(')');
+        sb.AppendLine(".");
+        sb.AppendLine();
+        sb.AppendLine("Tools that need your approval cannot ask for it, and the CLI stops at the first one.");
+        sb.AppendLine();
+        sb.Append("The server writes its log to `")
+          .Append(Path.Combine(ClaudeCliProcessHost.HelperLogDirectory, "vsagentic-mcp-helper-" + DateTime.Now.ToString("yyyyMMdd") + ".log"))
+          .Append("`.");
+        return sb.ToString();
+    }
+
+    private static string DescribeMcpServerProblems(
+        IReadOnlyList<CliMcpServer> servers,
+        IReadOnlyList<CliMcpServerError> errors,
+        IReadOnlyDictionary<string, string> reasons)
+    {
+        var sb = new StringBuilder();
+        if (servers.Count > 0)
+        {
+            sb.AppendLine("The model cannot use the tools of these MCP servers:");
+            sb.AppendLine();
+            foreach (var s in servers)
+            {
+                sb.Append("- ").Append(MarkdownText.Escape(s.Name)).Append(": ");
+                if (s.NeedsSignIn)
+                {
+                    // claude.ai connectors are not loaded, so this is a server
+                    // of the user's own that uses OAuth.
+                    sb.Append("needs sign-in. Run `claude`, then `/mcp`, to sign in.");
+                }
+                else
+                {
+                    sb.Append(MarkdownText.Escape(s.Status));
+                    if (reasons.TryGetValue(s.Name, out var reason))
+                        sb.Append(" (").Append(MarkdownText.Escape(reason)).Append(')');
+                }
+                sb.AppendLine();
+            }
+        }
+
+        if (errors.Count > 0)
+        {
+            if (sb.Length > 0) sb.AppendLine();
+            sb.AppendLine("The CLI skipped these MCP server configs:");
+            sb.AppendLine();
+            foreach (var e in errors)
+                sb.Append("- ").Append(MarkdownText.Escape(e.Name)).Append(": ")
+                  .AppendLine(MarkdownText.Escape(e.Message ?? e.Type ?? "invalid config"));
+        }
+
+        return sb.ToString().TrimEnd();
     }
 
     // The event carries the whole list of running tasks, not a change, so the
@@ -2016,13 +2165,15 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         turn.OpenAgentSteps.Clear();
     }
 
-    private void EmitFatalError(string body)
+    private void EmitFatalError(string body) => EmitError("CLI Error", body);
+
+    private void EmitError(string title, string body)
     {
         var errorItem = new OutputItem
         {
             Id = Guid.NewGuid().ToString("N"),
             ToolName = "ClaudeCli",
-            Title = "CLI Error",
+            Title = title,
             Status = OutputItemStatus.Error,
             Body = body
         };

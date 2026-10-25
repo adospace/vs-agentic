@@ -33,6 +33,15 @@ public class VsAgenticOptions
     public ClaudeEffort Effort { get; set; } = ClaudeEffort.Default;
 
     /// <summary>
+    /// Also load the user-scope MCP servers from the CLI's global config
+    /// (<c>~/.claude.json</c>). They are copied into our <c>--mcp-config</c>
+    /// next to our permission server; <c>--strict-mcp-config</c> stays, so a
+    /// project's <c>.mcp.json</c>, plugin servers and claude.ai connectors are
+    /// never loaded.
+    /// </summary>
+    public bool UseClaudeMcpServers { get; set; }
+
+    /// <summary>
     /// Subscription the rolling usage meters are sized against. Display only —
     /// nothing here reaches the CLI.
     /// </summary>

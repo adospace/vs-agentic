@@ -226,6 +226,13 @@ internal static class StreamJsonProtocol
         BuildControlRequest(requestId, "get_settings");
 
     /// <summary>
+    /// Build the <c>mcp_status</c> request. Its answer lists every MCP server
+    /// with the <c>error</c> text that <c>system/init</c> leaves out.
+    /// </summary>
+    public static string BuildMcpStatus(string requestId) =>
+        BuildControlRequest(requestId, "mcp_status");
+
+    /// <summary>
     /// Build the <c>get_context_usage</c> request. Its answer carries
     /// <c>totalTokens</c>, what the conversation now takes of the context
     /// window: what <c>/context</c> shows in the terminal.

@@ -206,9 +206,39 @@ public sealed class CliProcessInfo
 }
 
 /// <summary>
+/// An MCP server as <c>system/init</c> lists it. <see cref="Status"/> is
+/// <c>connected</c>, <c>failed</c>, <c>needs-auth</c>, <c>pending</c> or
+/// <c>disabled</c>. <see cref="Source"/> says where its definition came from
+/// (<c>dynamic</c> for <c>--mcp-config</c>, <c>project</c>, <c>user</c>,
+/// <c>claudeai</c> …) and is absent on older CLIs.
+/// </summary>
+public sealed record CliMcpServer(string Name, string Status, string? Source)
+{
+    public const string Connected = "connected";
+    public const string Pending = "pending";
+    public const string Disabled = "disabled";
+    public const string NeedsAuth = "needs-auth";
+
+    /// <summary>
+    /// The model cannot use the server, and not because the user turned it
+    /// off or because it is still starting.
+    /// </summary>
+    public bool IsUnavailable => Status != Connected && Status != Pending && Status != Disabled;
+
+    /// <summary>The server uses OAuth and the user has not signed in to it.</summary>
+    public bool NeedsSignIn => Status == NeedsAuth;
+}
+
+/// <summary>
+/// An <c>--mcp-config</c> entry the CLI skipped because its config is not
+/// valid, from <c>system/init.mcp_server_errors</c>.
+/// </summary>
+public sealed record CliMcpServerError(string Name, string? Type, string? Message);
+
+/// <summary>
 /// The <c>system/init</c> event. The CLI sends it at the start of every turn,
 /// not once per process, with the session id, the model actually serving the
-/// turn, and its capabilities.
+/// turn, its capabilities and the state of its MCP servers.
 /// </summary>
 internal sealed class CliInitEvent
 {
@@ -219,6 +249,11 @@ internal sealed class CliInitEvent
     public CliCapabilities Capabilities { get; private set; } = CliCapabilities.None;
     public IReadOnlyList<string> Tools { get; private set; } = Array.Empty<string>();
     public FastModeStatus? FastMode { get; private set; }
+
+    /// <summary>Null when the event has no <c>mcp_servers</c> list at all.</summary>
+    public IReadOnlyList<CliMcpServer>? McpServers { get; private set; }
+
+    public IReadOnlyList<CliMcpServerError> McpServerErrors { get; private set; } = Array.Empty<CliMcpServerError>();
 
     public static CliInitEvent Read(JsonElement evt)
     {
@@ -231,6 +266,31 @@ internal sealed class CliInitEvent
             Capabilities = CliCapabilities.Read(evt),
             FastMode = FastModeStatus.Read(evt),
         };
+
+        if (evt.TryGetProperty("mcp_servers", out var servers) && servers.ValueKind == JsonValueKind.Array)
+        {
+            init.McpServers = servers.EnumerateArray()
+                .Where(s => s.ValueKind == JsonValueKind.Object)
+                .Select(s => (name: CliProcessInfo.ReadString(s, "name"), s))
+                .Where(x => !string.IsNullOrEmpty(x.name))
+                .Select(x => new CliMcpServer(
+                    x.name!,
+                    CliProcessInfo.ReadString(x.s, "status") ?? "",
+                    CliProcessInfo.ReadString(x.s, "source")))
+                .ToList();
+        }
+
+        // Present only when an entry was skipped.
+        if (evt.TryGetProperty("mcp_server_errors", out var errors) && errors.ValueKind == JsonValueKind.Array)
+        {
+            init.McpServerErrors = errors.EnumerateArray()
+                .Where(e => e.ValueKind == JsonValueKind.Object)
+                .Select(e => new CliMcpServerError(
+                    CliProcessInfo.ReadString(e, "name") ?? "",
+                    CliProcessInfo.ReadString(e, "type"),
+                    CliProcessInfo.ReadString(e, "message")))
+                .ToList();
+        }
 
         if (evt.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array)
         {

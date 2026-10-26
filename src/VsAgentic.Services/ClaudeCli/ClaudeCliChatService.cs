@@ -17,6 +17,7 @@ using Microsoft.Extensions.Options;
 using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.ClaudeCli.Permissions;
 using VsAgentic.Services.Configuration;
+using VsAgentic.Services.IdeContext;
 
 namespace VsAgentic.Services.ClaudeCli;
 
@@ -124,6 +125,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     // Set when the running process could not take a change. The next message
     // then restarts it, so the change still lands — but never mid-turn.
     private volatile bool _restartBeforeNextMessage;
+
+    /// <summary>The IDE tools of this chat, for their step titles. Optional.</summary>
+    public IdeContextRegistry? IdeContext { get; init; }
 
     public ClaudeCliChatService(
         IOptions<VsAgenticOptions> options,
@@ -1630,7 +1634,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         FinalizeResponseItem(turn);
         FinalizeToolItem(turn);
 
-        var toolTitle = $"Using {toolName}";
+        var toolTitle = IdeContext?.Find(toolName) is { } ideTool && toolName.StartsWith(IdeContextRegistry.McpToolPrefix, StringComparison.Ordinal)
+            ? ideTool.Title
+            : $"Using {toolName}";
         string? toolBody = null;
         if (block.TryGetProperty("input", out var input))
         {
@@ -1808,8 +1814,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // belongs to a call that failed.
         var isError = block.TryGetProperty("is_error", out var ep) && ep.ValueKind == JsonValueKind.True;
         turn.ToolItem.Status = isError ? OutputItemStatus.Error : OutputItemStatus.Success;
-        if (turn.ToolItem.ToolName != "Agent")
-            turn.ToolItem.Title = $"Used {turn.ToolItem.ToolName}";
+        turn.ToolItem.Title = CompletedTitle(turn.ToolItem);
         turn.ToolItem.Body = content;
         turn.ToolItem.Delta = null;
         _outputListener.OnStepCompleted(turn.ToolItem);
@@ -1988,11 +1993,28 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (item == null) return;
 
         item.Status = status;
-        if (item.ToolName != "Agent")
-            item.Title = $"Used {item.ToolName}";
+        item.Title = CompletedTitle(item);
         item.Delta = null;
         _outputListener.OnStepCompleted(item);
         turn.ToolItem = null;
+    }
+
+    /// <summary>
+    /// The title of a finished tool step. A subagent keeps its description and
+    /// an IDE tool its own title ("Reading the Error List"); the internal name
+    /// mcp__vsagentic__… means nothing to the user.
+    /// </summary>
+    private string CompletedTitle(OutputItem item)
+    {
+        if (item.ToolName == "Agent")
+            return item.Title;
+        if (item.ToolName.StartsWith(IdeContextRegistry.McpToolPrefix, StringComparison.Ordinal) &&
+            IdeContext?.Find(item.ToolName) is { } ideTool)
+        {
+            return ideTool.Title;
+        }
+
+        return $"Used {item.ToolName}";
     }
 
     private void FinalizeOpenBlocks(StepStream turn)
@@ -2184,6 +2206,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                     parts.Add($"{prop.Name}: `{val}`");
                 }
                 if (parts.Count > 0) return string.Join("  \n", parts);
+
+                // A call without arguments, such as an IDE tool that reads the
+                // caret: "{}" under the step title says nothing.
+                return "";
             }
 
             var raw = input.GetRawText();

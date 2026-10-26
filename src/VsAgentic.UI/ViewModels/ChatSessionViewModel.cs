@@ -1467,6 +1467,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         try { _activityTimer?.Stop(); } catch { }
         try { EditorContextProvider = null; } catch { }
+        try { DebuggerModeSource = null; } catch { }
         try
         {
             if (_chatService is not null)

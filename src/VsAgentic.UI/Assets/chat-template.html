@@ -863,6 +863,15 @@ function isSessionLine(type, data) {
     return type === 'ToolStep' && SESSION_LINE_TOOLS.indexOf(data.ToolName) >= 0;
 }
 
+// An IDE tool's step goes by its title ("Reading the Error List"), not by
+// mcp__vsagentic__…; null for other steps. Steps saved before IDE tools kept
+// their title still read "Used …", and keep the name.
+function ideToolTitle(data) {
+    if (typeof data.ToolName !== 'string' || data.ToolName.indexOf('mcp__vsagentic__') !== 0) return null;
+    if (!data.Title || /^Us(ed|ing) /.test(data.Title)) return null;
+    return data.Title;
+}
+
 function setActivityLabel(group, text) {
     var label = group.querySelector('.activity-label');
     if (label) label.textContent = text || '';
@@ -985,10 +994,11 @@ function addToActivityGroup(div, type, data, group) {
     // restored session, which is why the dot never turned red on one.
     if (data.Status === 'Error') group.classList.add('has-error');
 
-    // A subagent goes by its description, so the row names which one ran.
+    // A subagent goes by its description, so the row names which one ran; an
+    // IDE tool by its title.
     var tool = type === 'Thinking' ? 'Thinking'
              : (data.ToolName === 'Agent' && data.Title) ? data.Title
-             : (data.ToolName || 'tool');
+             : (ideToolTitle(data) || data.ToolName || 'tool');
     var seen = group._tools.indexOf(tool);
     if (seen >= 0) group._tools.splice(seen, 1);
     group._tools.push(tool);
@@ -1216,7 +1226,7 @@ function addMessage(id, type, dataJson) {
         statusSpan.textContent = STATUS_SYMBOLS[data.Status] || STATUS_SYMBOLS.Pending;
         var nameSpan = document.createElement('span');
         nameSpan.className = 'toolstep-name';
-        nameSpan.textContent = '[' + (data.ToolName || '') + ']';
+        nameSpan.textContent = '[' + (ideToolTitle(data) || data.ToolName || '') + ']';
         // An Agent step's title is the description the model gave its
         // subagent. The expander that shows it is hidden once the step is
         // done, and without it two subagents cannot be told apart.

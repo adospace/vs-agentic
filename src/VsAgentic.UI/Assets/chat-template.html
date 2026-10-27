@@ -258,6 +258,35 @@ html, body {
     margin-bottom: 6px;
     color: var(--prompt-accent);
 }
+/* A long prompt, usually something pasted, is capped like a step's output so
+   it does not push the conversation off the screen. */
+.msg-user .msg-content.capped {
+    max-height: 220px;
+    overflow: hidden;
+    position: relative;
+}
+.msg-user .msg-content.capped::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 30px;
+    background: linear-gradient(transparent, var(--prompt-bg));
+}
+.msg-user .show-more-link { margin-left: 0; }
+/* Headings and paragraph gaps in a prompt mostly come along with pasted text,
+   such as a card copied from a tracker. At the reply's sizes they make the
+   prompt look like a document and take twice the room. */
+.msg-user .md-content h1,
+.msg-user .md-content h2,
+.msg-user .md-content h3 {
+    font-size: 1.1em;
+    margin: 0.3em 0;
+    border-bottom: none;
+    padding-bottom: 0;
+}
+.msg-user .md-content p { margin: 0.2em 0; }
 
 .msg-assistant {
     padding: 0 8px;
@@ -1163,6 +1192,10 @@ function addMessage(id, type, dataJson) {
         linkifyFilePaths(content);
         addBlockCopyButtons(content);
         div.appendChild(content);
+        // Capped before it is placed, so a long prompt never shows at full
+        // height first; measured once it is laid out.
+        content.classList.add('capped');
+        requestAnimationFrame(function() { applyPromptCap(content, data.Content || ''); });
     }
     else if (type === 'Assistant') {
         div.classList.add('msg-assistant');
@@ -1577,6 +1610,35 @@ function applyBodyCap(el, body) {
         link.textContent = isCapped ? 'Show less' : 'Show more';
     });
     body.parentNode.insertBefore(link, body.nextSibling);
+}
+
+// The cap stays only when it hides enough to be worth a click: a prompt a few
+// lines over the cap shows in full. Reads scrollHeight, so the prompt has to
+// be laid out.
+var PROMPT_CAP = 220;
+var PROMPT_CAP_SLACK = 80;
+function applyPromptCap(content, source) {
+    if (content.scrollHeight <= PROMPT_CAP + PROMPT_CAP_SLACK) {
+        content.classList.remove('capped');
+    } else {
+        var lines = source.split('\n').filter(function(l) { return l.trim(); }).length;
+        var showAll = 'Show all (' + lines + ' lines)';
+        var link = document.createElement('span');
+        link.className = 'show-more-link';
+        link.textContent = showAll;
+        link.addEventListener('click', function() {
+            var isCapped = content.classList.contains('capped');
+            var linkTop = link.getBoundingClientRect().top;
+            content.classList.toggle('capped', !isCapped);
+            link.textContent = isCapped ? 'Show less' : showAll;
+            // Folded back from its end, a long prompt would leave the reader
+            // far below it. Keep the link where it was on screen.
+            if (!isCapped) _container.scrollTop += link.getBoundingClientRect().top - linkTop;
+        });
+        content.parentNode.insertBefore(link, content.nextSibling);
+    }
+    // Either way the prompt's height changed after the scroll that placed it.
+    if (!_userScrolledUp) scrollToBottom();
 }
 
 function applyPendingBodyCaps(items) {

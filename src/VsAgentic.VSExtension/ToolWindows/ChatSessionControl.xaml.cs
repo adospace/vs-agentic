@@ -252,6 +252,27 @@ public partial class ChatSessionControl : UserControl
             : VSColorTheme.GetThemedColor(EnvironmentColors.PanelHyperlinkColorKey);
 
     /// <summary>
+    /// The edge of the prompt box.
+    /// </summary>
+    /// <remarks>
+    /// Not the combo box edge the rest of the window takes: its shell color,
+    /// ControlStrokeDefault, is black at 6% in the Light theme, and
+    /// ControlStrokeSecondary is no stronger there. Held here because the XAML
+    /// compiler resolves CommonControlsColors to a null key.
+    /// </remarks>
+    public static object PromptBoxBorderKey => CommonControlsColors.TextBoxBorderBrushKey;
+
+    /// <summary>
+    /// The edge of the prompt box while the focus is inside it.
+    /// </summary>
+    /// <remarks>
+    /// The theme accent, not the link color the chat uses for its own focus: a
+    /// theme may pick a link color unrelated to its accent, such as cyan in a
+    /// green theme.
+    /// </remarks>
+    public static object PromptBoxFocusBorderKey => CommonControlsColors.TextBoxBorderFocusedBrushKey;
+
+    /// <summary>
     /// The environment brushes the chrome of this window binds to, each paired
     /// with the shell color that carries the same meaning in a Visual Studio
     /// 2026 theme.
@@ -262,6 +283,8 @@ public partial class ChatSessionControl : UserControl
     {
         (VsBrushes.ComboBoxBackgroundKey, "ControlFillActiveInput"),
         (VsBrushes.ComboBoxBorderKey, "ControlStrokeDefault"),
+        (PromptBoxBorderKey, "SurfaceStrokeDefault"),
+        (PromptBoxFocusBorderKey, "AccentFillDefault"),
         (VsBrushes.WindowTextKey, "TextFillPrimary"),
         (VsBrushes.GrayTextKey, "TextFillSecondary"),
         (VsBrushes.PanelHyperlinkKey, "HyperlinkFillPrimary"),

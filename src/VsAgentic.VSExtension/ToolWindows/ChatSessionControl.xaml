@@ -463,12 +463,17 @@
                      of attachments and the status bar are part of what the user
                      aims at, and a file dropped on either belongs to the same
                      message. Only a file drop is taken here; text dragged out of
-                     an editor falls through to the textbox, which inserts it. -->
+                     an editor falls through to the textbox, which inserts it.
+
+                     The edge is the text box edge rather than the combo box edge
+                     the rest of the window uses: a VS 2026 theme draws the latter
+                     so faintly that the box blends into the chat. With the focus
+                     inside, it takes the theme accent, as the active window
+                     frame does. -->
                 <Border x:Name="PromptBox"
                         Grid.Row="1"
                         CornerRadius="4"
                         Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
-                        BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
                         BorderThickness="1"
                         SnapsToDevicePixels="True"
                         AllowDrop="True"
@@ -476,6 +481,18 @@
                         PreviewDragLeave="PromptBox_PreviewDragLeave"
                         PreviewDrop="PromptBox_PreviewDrop"
                         MouseEnter="PromptBox_MouseEnter">
+                    <Border.Style>
+                        <Style TargetType="Border">
+                            <Setter Property="BorderBrush"
+                                    Value="{DynamicResource {x:Static local:ChatSessionControl.PromptBoxBorderKey}}"/>
+                            <Style.Triggers>
+                                <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                    <Setter Property="BorderBrush"
+                                            Value="{DynamicResource {x:Static local:ChatSessionControl.PromptBoxFocusBorderKey}}"/>
+                                </Trigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Style>
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>

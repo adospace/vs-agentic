@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.IO.Pipes;
 using System.Text;
@@ -20,7 +21,12 @@ namespace VsAgentic.Services.McpPermissionServer;
 ///
 /// MCP transport: JSON-RPC 2.0, one message per line on stdin/stdout.
 /// Methods we implement: <c>initialize</c>, <c>tools/list</c>, <c>tools/call</c>.
-/// We also accept (but ignore) <c>notifications/initialized</c>.
+/// We accept <c>notifications/initialized</c> and act on
+/// <c>notifications/cancelled</c>.
+///
+/// Several calls can be open at once: subagents running in parallel each ask
+/// on their own. The stdin loop therefore never waits for a call, and the
+/// pipe matches replies to requests by id.
 /// </summary>
 internal static class Program
 {
@@ -30,9 +36,19 @@ internal static class Program
     private static StreamWriter? _pipeWriter;
     private static StreamReader? _pipeReader;
     private static volatile bool _pipeBroken;
-    private static readonly SemaphoreSlim _pipeLock = new SemaphoreSlim(1, 1);
+    private static readonly SemaphoreSlim _pipeWriteLock = new SemaphoreSlim(1, 1);
+    private static readonly SemaphoreSlim _stdoutLock = new SemaphoreSlim(1, 1);
     private static readonly object _logLock = new object();
     private static string? _logFilePath;
+
+    // Pipe request id -> the parent's reply line, once it arrives.
+    private static readonly ConcurrentDictionary<string, TaskCompletionSource<string>> _pendingReplies =
+        new ConcurrentDictionary<string, TaskCompletionSource<string>>();
+
+    // JSON-RPC id of an open tools/call (raw JSON text) -> its pipe request id.
+    // A call whose entry is gone when the reply arrives was cancelled by the CLI.
+    private static readonly ConcurrentDictionary<string, string> _openCalls =
+        new ConcurrentDictionary<string, string>();
 
     private static void Log(string message)
     {
@@ -116,6 +132,7 @@ internal static class Program
             Log("connecting to pipe...");
             await ConnectPipeAsync(pipeName!, secret!).ConfigureAwait(false);
             Log("pipe connected, handshake sent");
+            _ = Task.Run(PipeReadLoopAsync);
 
             // The Console default streams use the OEM encoding on Windows; force UTF-8.
             var stdin = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
@@ -168,6 +185,39 @@ internal static class Program
         await _pipeWriter.WriteLineAsync(secret).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// The only reader of the pipe. Hands each reply to the call waiting for
+    /// its id. When the pipe closes, every waiting call gets an empty reply,
+    /// which it turns into a deny.
+    /// </summary>
+    private static async Task PipeReadLoopAsync()
+    {
+        try
+        {
+            string? line;
+            while ((line = await _pipeReader!.ReadLineAsync().ConfigureAwait(false)) != null)
+            {
+                var id = ReadStringProperty(line, "id");
+                if (id != null && _pendingReplies.TryRemove(id, out var waiter))
+                    waiter.TrySetResult(line);
+                else
+                    Log($"pipe reply for unknown id: {line}");
+            }
+            Log("pipe closed by parent");
+        }
+        catch (Exception ex)
+        {
+            Log($"pipe read error: {ex.Message}");
+        }
+
+        _pipeBroken = true;
+        foreach (var id in _pendingReplies.Keys)
+        {
+            if (_pendingReplies.TryRemove(id, out var waiter))
+                waiter.TrySetResult("");
+        }
+    }
+
     private static async Task HandleRequestAsync(string requestLine, StreamWriter stdout)
     {
         using var doc = JsonDocument.Parse(requestLine);
@@ -182,43 +232,80 @@ internal static class Program
         {
             case "initialize":
                 if (hasId)
-                    await WriteResponseAsync(stdout, id!.Value, BuildInitializeResult()).ConfigureAwait(false);
+                    await WriteResponseAsync(stdout, id!.Value.GetRawText(), BuildInitializeResult()).ConfigureAwait(false);
                 break;
 
             case "notifications/initialized":
-            case "notifications/cancelled":
                 // notifications: no response
+                break;
+
+            case "notifications/cancelled":
+                // The CLI no longer wants the answer: the turn was interrupted,
+                // the subagent stopped, or the request timed out on its side.
+                if (root.TryGetProperty("params", out var cancelParams) &&
+                    cancelParams.TryGetProperty("requestId", out var cancelledId))
+                {
+                    await CancelCallAsync(cancelledId.GetRawText()).ConfigureAwait(false);
+                }
                 break;
 
             case "tools/list":
                 if (hasId)
-                    await WriteResponseAsync(stdout, id!.Value, BuildToolsListResult()).ConfigureAwait(false);
+                    await WriteResponseAsync(stdout, id!.Value.GetRawText(), BuildToolsListResult()).ConfigureAwait(false);
                 break;
 
             case "tools/call":
                 if (hasId)
                 {
-                    string result;
-                    try
-                    {
-                        result = await HandleToolCallAsync(root).ConfigureAwait(false);
-                    }
-                    catch (IOException ex)
-                    {
-                        // Pipe to parent broke — return an error to the CLI so it
-                        // doesn't hang forever waiting for a response that will
-                        // never arrive.
-                        Log($"tools/call pipe error, returning deny: {ex.Message}");
-                        result = BuildToolErrorContent("Permission pipe disconnected");
-                    }
-                    await WriteResponseAsync(stdout, id!.Value, result).ConfigureAwait(false);
+                    // Not awaited: the loop must keep reading, both for calls
+                    // from other subagents and for the CLI cancelling this one.
+                    // Registered here, before the next line is read, so a
+                    // cancel that follows right away finds the call.
+                    var rpcId = id!.Value.GetRawText();
+                    var requestId = Guid.NewGuid().ToString("N");
+                    _openCalls[rpcId] = requestId;
+                    var callRoot = root.Clone();
+                    _ = Task.Run(() => RunToolCallAsync(rpcId, requestId, callRoot, stdout));
                 }
                 break;
 
             default:
                 if (hasId)
-                    await WriteErrorAsync(stdout, id!.Value, -32601, "Method not found").ConfigureAwait(false);
+                    await WriteErrorAsync(stdout, id!.Value.GetRawText(), -32601, "Method not found").ConfigureAwait(false);
                 break;
+        }
+    }
+
+    private static async Task RunToolCallAsync(string rpcId, string requestId, JsonElement requestRoot, StreamWriter stdout)
+    {
+        try
+        {
+            string result;
+            try
+            {
+                result = await HandleToolCallAsync(rpcId, requestId, requestRoot).ConfigureAwait(false);
+            }
+            catch (IOException ex)
+            {
+                // Pipe to parent broke — return an error to the CLI so it
+                // doesn't hang forever waiting for a response that will
+                // never arrive.
+                Log($"tools/call pipe error, returning deny: {ex.Message}");
+                result = BuildToolErrorContent("Permission pipe disconnected");
+            }
+
+            // A call the CLI cancelled gets no response (MCP: the receiver
+            // should not answer a cancelled request).
+            if (!_openCalls.TryRemove(rpcId, out _))
+            {
+                Log($"tools/call {rpcId} was cancelled, response dropped");
+                return;
+            }
+            await WriteResponseAsync(stdout, rpcId, result).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Log($"tools/call {rpcId} error: {ex}");
         }
     }
 
@@ -241,7 +328,7 @@ internal static class Program
         return @"{""tools"":[{""name"":""" + ToolName + @""",""description"":""Prompt the user for approval to use a tool"",""inputSchema"":{""type"":""object"",""properties"":{""tool_name"":{""type"":""string""},""input"":{""type"":""object""},""tool_use_id"":{""type"":""string""}},""required"":[""tool_name"",""input""]}}]}";
     }
 
-    private static async Task<string> HandleToolCallAsync(JsonElement requestRoot)
+    private static async Task<string> HandleToolCallAsync(string rpcId, string requestId, JsonElement requestRoot)
     {
         // params.name should be "approval_prompt"; params.arguments has the fields.
         if (!requestRoot.TryGetProperty("params", out var paramsEl))
@@ -256,32 +343,38 @@ internal static class Program
 
         var toolName = argsEl.TryGetProperty("tool_name", out var tn) ? tn.GetString() ?? "" : "";
         JsonElement input = argsEl.TryGetProperty("input", out var inp) ? inp : default;
-
-        // If a prior call already discovered the pipe is broken, fail fast.
-        if (_pipeBroken)
-            return BuildToolErrorContent("Permission pipe disconnected");
+        var toolUseId = argsEl.TryGetProperty("tool_use_id", out var tu) && tu.ValueKind == JsonValueKind.String
+            ? tu.GetString()
+            : null;
 
         // Forward to the parent over the pipe and wait for the reply.
-        var requestId = Guid.NewGuid().ToString("N");
-        var pipeRequest = BuildPipeRequest(requestId, toolName, input);
+        var reply = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingReplies[requestId] = reply;
 
-        string pipeResponse;
-        await _pipeLock.WaitAsync().ConfigureAwait(false);
+        // Checked after registering, so a pipe that breaks in between still
+        // settles this call through the read loop's cleanup.
+        if (_pipeBroken)
+        {
+            _pendingReplies.TryRemove(requestId, out _);
+            return BuildToolErrorContent("Permission pipe disconnected");
+        }
+
         try
         {
-            await _pipeWriter!.WriteLineAsync(pipeRequest).ConfigureAwait(false);
-            var line = await _pipeReader!.ReadLineAsync().ConfigureAwait(false);
-            pipeResponse = line ?? "";
+            await WritePipeLineAsync(BuildPipeRequest(requestId, toolName, input, toolUseId)).ConfigureAwait(false);
         }
-        catch (IOException)
+        catch
         {
-            _pipeBroken = true;
+            _pendingReplies.TryRemove(requestId, out _);
             throw;
         }
-        finally
-        {
-            _pipeLock.Release();
-        }
+
+        // A cancel that came in before the request reached the parent found
+        // nothing to take down there. Send it again now that it can.
+        if (!_openCalls.ContainsKey(rpcId))
+            await SendWithdrawAsync(requestId).ConfigureAwait(false);
+
+        var pipeResponse = await reply.Task.ConfigureAwait(false);
 
         if (string.IsNullOrEmpty(pipeResponse))
             return BuildToolErrorContent("pipe closed");
@@ -293,7 +386,55 @@ internal static class Program
         return BuildToolSuccessContent(innerJson);
     }
 
-    private static string BuildPipeRequest(string id, string toolName, JsonElement input)
+    /// <summary>
+    /// Tells the parent to take the prompt down. The parent still answers it,
+    /// which settles the waiting call; <see cref="RunToolCallAsync"/> then
+    /// drops that answer because the call is no longer open.
+    /// </summary>
+    private static async Task CancelCallAsync(string rpcId)
+    {
+        if (!_openCalls.TryRemove(rpcId, out var requestId))
+        {
+            Log($"cancel for unknown or finished call {rpcId}");
+            return;
+        }
+
+        Log($"tools/call {rpcId} cancelled by the CLI, withdrawing {requestId}");
+        await SendWithdrawAsync(requestId).ConfigureAwait(false);
+    }
+
+    private static async Task SendWithdrawAsync(string requestId)
+    {
+        if (_pipeBroken) return;
+        try
+        {
+            await WritePipeLineAsync("{\"id\":" + JsonEscape(requestId) + ",\"cancel\":true}").ConfigureAwait(false);
+        }
+        catch (IOException ex)
+        {
+            Log($"withdraw {requestId} failed: {ex.Message}");
+        }
+    }
+
+    private static async Task WritePipeLineAsync(string line)
+    {
+        await _pipeWriteLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await _pipeWriter!.WriteLineAsync(line).ConfigureAwait(false);
+        }
+        catch (IOException)
+        {
+            _pipeBroken = true;
+            throw;
+        }
+        finally
+        {
+            _pipeWriteLock.Release();
+        }
+    }
+
+    private static string BuildPipeRequest(string id, string toolName, JsonElement input, string? toolUseId)
     {
         var sb = new StringBuilder();
         sb.Append("{\"id\":");
@@ -302,8 +443,30 @@ internal static class Program
         sb.Append(JsonEscape(toolName));
         sb.Append(",\"input\":");
         sb.Append(input.ValueKind == JsonValueKind.Undefined ? "{}" : input.GetRawText());
+        if (toolUseId != null)
+        {
+            sb.Append(",\"toolUseId\":");
+            sb.Append(JsonEscape(toolUseId));
+        }
         sb.Append("}");
         return sb.ToString();
+    }
+
+    private static string? ReadStringProperty(string json, string name)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.ValueKind == JsonValueKind.Object &&
+                   doc.RootElement.TryGetProperty(name, out var el) &&
+                   el.ValueKind == JsonValueKind.String
+                ? el.GetString()
+                : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string StripIdField(string json)
@@ -357,27 +520,41 @@ internal static class Program
         return sb.ToString();
     }
 
-    private static async Task WriteResponseAsync(StreamWriter stdout, JsonElement id, string resultJson)
+    private static async Task WriteResponseAsync(StreamWriter stdout, string rawId, string resultJson)
     {
         var sb = new StringBuilder();
         sb.Append("{\"jsonrpc\":\"2.0\",\"id\":");
-        sb.Append(id.GetRawText());
+        sb.Append(rawId);
         sb.Append(",\"result\":");
         sb.Append(resultJson);
         sb.Append("}");
         var line = sb.ToString();
         Log($"-> stdout: {line}");
-        await stdout.WriteLineAsync(line).ConfigureAwait(false);
+        await WriteStdoutLineAsync(stdout, line).ConfigureAwait(false);
     }
 
-    private static async Task WriteErrorAsync(StreamWriter stdout, JsonElement id, int code, string message)
+    private static async Task WriteErrorAsync(StreamWriter stdout, string rawId, int code, string message)
     {
         var sb = new StringBuilder();
         sb.Append("{\"jsonrpc\":\"2.0\",\"id\":");
-        sb.Append(id.GetRawText());
+        sb.Append(rawId);
         sb.Append(",\"error\":{\"code\":").Append(code).Append(",\"message\":");
         sb.Append(JsonEscape(message));
         sb.Append("}}");
-        await stdout.WriteLineAsync(sb.ToString()).ConfigureAwait(false);
+        await WriteStdoutLineAsync(stdout, sb.ToString()).ConfigureAwait(false);
+    }
+
+    // Calls finish on their own tasks, so two answers can be ready at once.
+    private static async Task WriteStdoutLineAsync(StreamWriter stdout, string line)
+    {
+        await _stdoutLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await stdout.WriteLineAsync(line).ConfigureAwait(false);
+        }
+        finally
+        {
+            _stdoutLock.Release();
+        }
     }
 }

@@ -16,10 +16,12 @@ namespace VsAgentic.Services.ClaudeCli.Permissions;
 /// helper exe (spawned by the Claude CLI as a stdio MCP server) connects back
 /// to this pipe to forward permission requests it receives from the CLI.
 ///
-/// Wire format: newline-delimited JSON, two shapes only.
-///   client → server  {"id":"<guid>","tool":"Bash","input":{...}}
+/// Wire format: newline-delimited JSON.
+///   client → server  {"id":"<guid>","tool":"Bash","input":{...},"toolUseId":"toolu_…"}
+///                    {"id":"<guid>","cancel":true}   (the CLI withdrew the request)
 ///   server → client  {"id":"<guid>","behavior":"allow","updatedInput":{...}}
 ///                    {"id":"<guid>","behavior":"deny","message":"..."}
+/// Several requests can be open at once; replies come in any order.
 ///
 /// One pipe instance per CLI process. Started by <c>ClaudeCliProcessHost</c>
 /// before launching the CLI; the pipe name + shared secret are passed to the
@@ -106,6 +108,11 @@ internal sealed class PermissionPipeServer : IDisposable
                 }
                 _logger.LogInformation("[PermissionPipeServer] handshake ok");
 
+                // Requests are answered on their own tasks: subagents running in
+                // parallel ask at the same time, and one unanswered prompt must
+                // not hold back the next one or a withdrawal of itself.
+                var writeLock = new SemaphoreSlim(1, 1);
+
                 while (!ct.IsCancellationRequested)
                 {
                     var line = await reader.ReadLineAsync().ConfigureAwait(false);
@@ -114,17 +121,25 @@ internal sealed class PermissionPipeServer : IDisposable
 
                     string id = "";
                     string toolName = "";
+                    string? toolUseId = null;
+                    bool withdraw = false;
                     JsonElement input = default;
                     try
                     {
                         using var doc = JsonDocument.Parse(line);
                         var root = doc.RootElement;
                         id = root.GetProperty("id").GetString() ?? "";
-                        toolName = root.GetProperty("tool").GetString() ?? "";
-                        if (root.TryGetProperty("input", out var inp))
+                        withdraw = root.TryGetProperty("cancel", out var cancel) && cancel.ValueKind == JsonValueKind.True;
+                        if (!withdraw)
                         {
-                            // Clone so we can use it after the doc is disposed.
-                            input = inp.Clone();
+                            toolName = root.GetProperty("tool").GetString() ?? "";
+                            if (root.TryGetProperty("input", out var inp))
+                            {
+                                // Clone so we can use it after the doc is disposed.
+                                input = inp.Clone();
+                            }
+                            if (root.TryGetProperty("toolUseId", out var tu) && tu.ValueKind == JsonValueKind.String)
+                                toolUseId = tu.GetString();
                         }
                     }
                     catch (Exception ex)
@@ -133,40 +148,75 @@ internal sealed class PermissionPipeServer : IDisposable
                         continue;
                     }
 
-                    // AskUserQuestion is the documented Anthropic flow for clarifying
-                    // questions: the host gathers answers and returns them via the
-                    // permission "allow" decision's updatedInput { questions, answers }.
-                    // The CLI then runs the tool with that injected input and the model
-                    // sees the answers in the resulting tool_result. Returning a plain
-                    // "allow" with the raw input — or trying to write our own tool_result
-                    // afterwards — leaves the model with empty answers.
-                    PermissionDecision decision;
-                    if (toolName == "AskUserQuestion")
+                    if (withdraw)
                     {
-                        decision = await HandleAskUserQuestionAsync(id, input, ct).ConfigureAwait(false);
+                        // The CLI cancelled the call. Its answer is no longer
+                        // read, so this only takes the prompt off the screen.
+                        // Ids are unique, and each broker ignores ones it
+                        // does not hold.
+                        _logger.LogInformation("[PermissionPipeServer] request {Id} withdrawn by the CLI", id);
+                        _broker.Withdraw(id);
+                        _questionBroker.Withdraw(id);
+                        continue;
                     }
-                    else
+
+                    // Called here rather than on the task below: the broker
+                    // registers the request before this returns, so a
+                    // withdrawal on the next line always finds it.
+                    var decisionTask = DecideAsync(id, toolName, input, toolUseId, ct);
+
+                    _ = Task.Run(async () =>
                     {
-                        var request = new PermissionRequest(id, toolName, input);
                         try
                         {
-                            decision = await _broker.SubmitAsync(request, ct).ConfigureAwait(false);
+                            var decision = await decisionTask.ConfigureAwait(false);
+                            var response = SerializeDecision(id, decision);
+                            await writeLock.WaitAsync(ct).ConfigureAwait(false);
+                            try
+                            {
+                                await writer.WriteLineAsync(response).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                writeLock.Release();
+                            }
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogError(ex, "[PermissionPipeServer] broker.SubmitAsync threw");
-                            decision = PermissionDecision.Deny("Internal error");
+                            _logger.LogError(ex, "[PermissionPipeServer] request {Id} failed", id);
                         }
-                    }
-
-                    var response = SerializeDecision(id, decision);
-                    await writer.WriteLineAsync(response).ConfigureAwait(false);
+                    });
                 }
             }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[PermissionPipeServer] connection handler crashed");
+        }
+    }
+
+    private async Task<PermissionDecision> DecideAsync(
+        string id, string toolName, JsonElement input, string? toolUseId, CancellationToken ct)
+    {
+        // AskUserQuestion is the documented Anthropic flow for clarifying
+        // questions: the host gathers answers and returns them via the
+        // permission "allow" decision's updatedInput { questions, answers }.
+        // The CLI then runs the tool with that injected input and the model
+        // sees the answers in the resulting tool_result. Returning a plain
+        // "allow" with the raw input — or trying to write our own tool_result
+        // afterwards — leaves the model with empty answers.
+        if (toolName == "AskUserQuestion")
+            return await HandleAskUserQuestionAsync(id, input, ct).ConfigureAwait(false);
+
+        var request = new PermissionRequest(id, toolName, input, toolUseId);
+        try
+        {
+            return await _broker.SubmitAsync(request, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[PermissionPipeServer] broker.SubmitAsync threw");
+            return PermissionDecision.Deny("Internal error");
         }
     }
 

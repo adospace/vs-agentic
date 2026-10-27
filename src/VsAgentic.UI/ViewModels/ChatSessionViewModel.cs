@@ -23,6 +23,17 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     private readonly ConcurrentDictionary<string, ChatItemViewModel> _activeItems = new();
     private int _userMsgCounter;
 
+    // Prompts that arrived while another one was on screen, oldest first.
+    // Subagents running in parallel ask at the same time. UI thread only.
+    private readonly List<IBannerViewModel> _waitingPrompts = new();
+
+    // Which Agent step each subagent step ran under, and the Agent steps'
+    // titles, so a permission prompt can say which subagent asks. Kept after
+    // the steps finish: a background subagent asks long after its Agent step
+    // has closed. UI thread only.
+    private readonly Dictionary<string, string> _stepParents = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _agentTitles = new(StringComparer.Ordinal);
+
     public ObservableCollection<ChatItemViewModel> Items { get; } = new();
 
     [ObservableProperty]
@@ -479,11 +490,13 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         {
             _permissionBroker.PermissionRequested += OnPermissionBrokerRequested;
             _permissionBroker.PendingCancelled += OnPermissionCancelled;
+            _permissionBroker.PendingWithdrawn += OnPermissionWithdrawn;
         }
         if (_questionBroker is not null)
         {
             _questionBroker.QuestionRequested += OnQuestionBrokerRequested;
             _questionBroker.PendingCancelled += OnQuestionCancelled;
+            _questionBroker.PendingWithdrawn += OnQuestionWithdrawn;
         }
 
         chatService.LoginRequired += OnChatServiceLoginRequired;
@@ -672,13 +685,15 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             try
             {
                 _logger.LogInformation(
-                    "[VM] Permission prompt requested (id={Id}, tool={Tool})",
-                    request.Id, request.ToolName);
-                ActiveBanner = new PermissionBannerViewModel(request, decision =>
+                    "[VM] Permission prompt requested (id={Id}, tool={Tool}, toolUseId={ToolUseId})",
+                    request.Id, request.ToolName, request.ToolUseId);
+                var banner = new PermissionBannerViewModel(request, decision =>
                 {
-                    Dispatch(() => ActiveBanner = null);
+                    Dispatch(ShowNextPrompt);
                     _permissionBroker?.Resolve(request.Id, decision);
                 });
+                banner.AskedBy = FindAskingSubagent(request.ToolUseId);
+                ShowPrompt(banner);
             }
             catch (Exception ex)
             {
@@ -701,11 +716,11 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 _logger.LogInformation(
                     "[VM] User question requested (toolUseId={Id}, questions={Count})",
                     request.ToolUseId, request.Questions.Count);
-                ActiveBanner = new QuestionCardViewModel(request, answers =>
+                ShowPrompt(new QuestionCardViewModel(request, answers =>
                 {
-                    Dispatch(() => ActiveBanner = null);
+                    Dispatch(ShowNextPrompt);
                     _questionBroker?.Resolve(request.ToolUseId, answers);
-                });
+                }));
             }
             catch (Exception ex)
             {
@@ -727,7 +742,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         Dispatch(() =>
         {
-            if (ActiveBanner is not PermissionBannerViewModel banner || banner.RequestId != requestId)
+            if (DropWaitingPrompt(b => b is PermissionBannerViewModel p && p.RequestId == requestId)
+                || ActiveBanner is not PermissionBannerViewModel banner || banner.RequestId != requestId)
                 return;
 
             _logger.LogInformation("[VM] Permission prompt cancelled (id={Id})", requestId);
@@ -739,7 +755,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         Dispatch(() =>
         {
-            if (ActiveBanner is not QuestionCardViewModel card || card.ToolUseId != toolUseId)
+            if (DropWaitingPrompt(b => b is QuestionCardViewModel q && q.ToolUseId == toolUseId)
+                || ActiveBanner is not QuestionCardViewModel card || card.ToolUseId != toolUseId)
                 return;
 
             _logger.LogInformation("[VM] User question cancelled (toolUseId={Id})", toolUseId);
@@ -747,11 +764,84 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         });
     }
 
+    /// <summary>
+    /// The CLI took the request back on its own: the turn was interrupted from
+    /// elsewhere, the subagent that asked stopped, or the CLI stopped waiting.
+    /// An answer would go nowhere, so the banner goes, with a line saying why.
+    /// </summary>
+    private void OnPermissionWithdrawn(string requestId)
+    {
+        Dispatch(() =>
+        {
+            if (DropWaitingPrompt(b => b is PermissionBannerViewModel p && p.RequestId == requestId)
+                || ActiveBanner is not PermissionBannerViewModel banner || banner.RequestId != requestId)
+                return;
+
+            _logger.LogInformation("[VM] Permission prompt withdrawn by the CLI (id={Id})", requestId);
+            DismissActiveBanner($"_Claude no longer needs to use **{banner.ToolName}**. The request was withdrawn._");
+        });
+    }
+
+    private void OnQuestionWithdrawn(string toolUseId)
+    {
+        Dispatch(() =>
+        {
+            if (DropWaitingPrompt(b => b is QuestionCardViewModel q && q.ToolUseId == toolUseId)
+                || ActiveBanner is not QuestionCardViewModel card || card.ToolUseId != toolUseId)
+                return;
+
+            _logger.LogInformation("[VM] User question withdrawn by the CLI (toolUseId={Id})", toolUseId);
+            DismissActiveBanner("_Claude no longer needs an answer. The question was withdrawn._");
+        });
+    }
+
+    /// <summary>
+    /// Puts a prompt on screen, or behind the one already there. Replacing
+    /// it would leave the first request unanswerable. Must run on the UI thread.
+    /// </summary>
+    private void ShowPrompt(IBannerViewModel prompt)
+    {
+        if (ActiveBanner is PermissionBannerViewModel or QuestionCardViewModel)
+        {
+            _waitingPrompts.Add(prompt);
+            return;
+        }
+        ActiveBanner = prompt;
+    }
+
+    /// <summary>Takes the answered or dismissed prompt down and shows the next
+    /// waiting one, if any. Must run on the UI thread.</summary>
+    private void ShowNextPrompt()
+    {
+        ActiveBanner = null;
+        if (_waitingPrompts.Count == 0) return;
+
+        var next = _waitingPrompts[0];
+        _waitingPrompts.RemoveAt(0);
+        ActiveBanner = next;
+    }
+
+    /// <summary>Removes a prompt that was never shown. It needs no line in the
+    /// chat: the user did not see it go.</summary>
+    private bool DropWaitingPrompt(Predicate<IBannerViewModel> match) =>
+        _waitingPrompts.RemoveAll(match) > 0;
+
+    /// <summary>
+    /// The title of the subagent whose tool call this is, or null when the
+    /// main conversation asks. Must run on the UI thread.
+    /// </summary>
+    private string? FindAskingSubagent(string? toolUseId)
+    {
+        if (toolUseId is null || !_stepParents.TryGetValue(toolUseId, out var agentId))
+            return null;
+        return _agentTitles.TryGetValue(agentId, out var title) ? title : null;
+    }
+
     /// <summary>Clears the banner and leaves a row in the chat saying so. Must
     /// run on the UI thread.</summary>
     private void DismissActiveBanner(string notice)
     {
-        ActiveBanner = null;
+        ShowNextPrompt();
         UpdateActivityIndicator();
 
         var noticeId = $"dismissed-{++_userMsgCounter}";
@@ -1177,6 +1267,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         _chatService?.ClearHistory();
         Items.Clear();
         _activeItems.Clear();
+        _stepParents.Clear();
+        _agentTitles.Clear();
         AllCleared?.Invoke();
     }
 
@@ -1205,6 +1297,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             };
             _activeItems[item.Id] = vm;
             Items.Add(vm);
+            NoteSubagentStep(item);
             MessageAdded?.Invoke(item.Id, type, new ChatMessageData
             {
                 Id = item.Id,
@@ -1228,6 +1321,26 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             UpdateBusyStatus();
             RequestScroll();
         });
+    }
+
+    /// <summary>
+    /// Remembers which subagent a step belongs to. The CLI sends the tool call
+    /// and asks for permission to run it at nearly the same moment, so the
+    /// prompt can be on screen before its step: name the subagent then.
+    /// </summary>
+    private void NoteSubagentStep(OutputItem item)
+    {
+        if (item.ToolName == "Agent")
+            _agentTitles[item.Id] = item.Title;
+        if (item.ParentId is null)
+            return;
+
+        _stepParents[item.Id] = item.ParentId;
+        var asking = _waitingPrompts.Prepend(ActiveBanner)
+            .OfType<PermissionBannerViewModel>()
+            .FirstOrDefault(p => p.ToolUseId == item.Id && p.AskedBy is null);
+        if (asking is not null)
+            asking.AskedBy = FindAskingSubagent(item.Id);
     }
 
     private void OnStepUpdated(OutputItem item)

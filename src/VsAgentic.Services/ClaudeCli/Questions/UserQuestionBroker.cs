@@ -21,6 +21,8 @@ public sealed class UserQuestionBroker : IUserQuestionBroker
 
     public event Action<string>? PendingCancelled;
 
+    public event Action<string>? PendingWithdrawn;
+
     public Task<IReadOnlyDictionary<string, string>> SubmitAsync(
         UserQuestionRequest request,
         CancellationToken cancellationToken)
@@ -79,6 +81,22 @@ public sealed class UserQuestionBroker : IUserQuestionBroker
                 tcs.TrySetResult(empty);
                 RaisePendingCancelled(key);
             }
+        }
+    }
+
+    public void Withdraw(string toolUseId)
+    {
+        if (!_pending.TryRemove(toolUseId, out var tcs)) return;
+
+        _logger.LogInformation("[UserQuestionBroker] CLI withdrew {Id}", toolUseId);
+        tcs.TrySetResult(new Dictionary<string, string>());
+        try
+        {
+            PendingWithdrawn?.Invoke(toolUseId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[UserQuestionBroker] PendingWithdrawn handler threw for {Id}", toolUseId);
         }
     }
 

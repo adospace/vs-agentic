@@ -16,7 +16,20 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     public string RequestId => _request.Id;
 
     public string ToolName => _request.ToolName;
-    public string Header => $"Claude wants to use {_request.ToolName}";
+
+    /// <summary>The tool call this prompt is about; its step in the
+    /// transcript has the same id.</summary>
+    public string? ToolUseId => _request.ToolUseId;
+
+    /// <summary>Title of the subagent that asks, or null for the main
+    /// conversation. Can be filled in after the banner is shown.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(Header))]
+    private string? _askedBy;
+
+    public string Header => AskedBy is { Length: > 0 } agent
+        ? $"Subagent “{agent}” wants to use {_request.ToolName}"
+        : $"Claude wants to use {_request.ToolName}";
     public string BodyText { get; }
     public bool HasBodyText => !string.IsNullOrEmpty(BodyText);
 

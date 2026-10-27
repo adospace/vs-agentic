@@ -12,11 +12,19 @@ public sealed class PermissionRequest
     public string ToolName { get; }
     public JsonElement Input { get; }
 
-    public PermissionRequest(string id, string toolName, JsonElement input)
+    /// <summary>
+    /// The tool call the CLI is asking about. Its step in the transcript has
+    /// the same id, which tells whether a subagent is the one asking. Null
+    /// when the CLI did not send it.
+    /// </summary>
+    public string? ToolUseId { get; }
+
+    public PermissionRequest(string id, string toolName, JsonElement input, string? toolUseId = null)
     {
         Id = id;
         ToolName = toolName;
         Input = input;
+        ToolUseId = toolUseId;
     }
 }
 

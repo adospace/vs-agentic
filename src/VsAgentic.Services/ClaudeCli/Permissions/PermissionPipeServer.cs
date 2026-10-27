@@ -260,6 +260,7 @@ internal sealed class PermissionPipeServer : IDisposable
             sb.Append(JsonSerializer.Serialize(id));
             sb.Append(",\"behavior\":\"allow\",\"updatedInput\":");
             sb.Append(decision.UpdatedInputJson ?? "{}");
+            AppendSessionRules(sb, decision);
             sb.Append("}");
             return sb.ToString();
         }
@@ -273,6 +274,38 @@ internal sealed class PermissionPipeServer : IDisposable
             sb.Append("}");
             return sb.ToString();
         }
+    }
+
+    /// <summary>
+    /// Appends the <c>updatedPermissions</c> array the CLI reads off an allow
+    /// response. With destination <c>session</c> the CLI adds the rules to its
+    /// in-memory permission context and writes nothing to disk, so they end
+    /// with the CLI process.
+    ///
+    /// The helper process forwards every field of this object except <c>id</c>,
+    /// so nothing extra is needed there.
+    /// </summary>
+    private static void AppendSessionRules(StringBuilder sb, PermissionDecision decision)
+    {
+        if (decision.SessionRules.Count == 0) return;
+
+        sb.Append(",\"updatedPermissions\":[{\"type\":\"addRules\",\"behavior\":\"allow\",\"destination\":\"session\",\"rules\":[");
+
+        for (var i = 0; i < decision.SessionRules.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            var rule = decision.SessionRules[i];
+            sb.Append("{\"toolName\":");
+            sb.Append(JsonSerializer.Serialize(rule.ToolName));
+            if (rule.RuleContent is not null)
+            {
+                sb.Append(",\"ruleContent\":");
+                sb.Append(JsonSerializer.Serialize(rule.RuleContent));
+            }
+            sb.Append('}');
+        }
+
+        sb.Append("]}]");
     }
 
     public void Dispose()

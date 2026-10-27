@@ -271,10 +271,23 @@ public partial class ChatSessionControl : UserControl
     };
 
     /// <summary>
+    /// The status row binds a color rather than a brush, because it flashes and
+    /// a themed brush is frozen. It has to follow the prompt box background above.
+    /// </summary>
+    private static readonly (object Key, string ShellColor)[] ChromeColors =
+    {
+        (VsColors.ComboBoxBackgroundKey, "ControlFillActiveInput"),
+    };
+
+    /// <summary>
     /// Points the prompt box and the status row at the shell palette, so that a
     /// theme which defines only the shell colors still reaches them.
     /// </summary>
-    private void ApplyShellBrushes() => ShellPalette.OverrideBrushes(this, ChromeBrushes);
+    private void ApplyShellBrushes()
+    {
+        ShellPalette.OverrideBrushes(this, ChromeBrushes);
+        ShellPalette.OverrideColors(this, ChromeColors);
+    }
 
     private static System.Drawing.Color Blend(System.Drawing.Color from, System.Drawing.Color to, double amount)
     {

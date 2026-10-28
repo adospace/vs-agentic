@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using Ellipse = System.Windows.Shapes.Ellipse;
 using System.Windows.Threading;
 using Microsoft.VisualStudio.PlatformUI;
 using Microsoft.VisualStudio.Shell;
@@ -66,6 +68,18 @@ public partial class ChatSessionControl : UserControl
         viewModel.TurnEnded += () =>
             _ = ChatWebView.EndActivityAsync();
 
+        // The dots before the status text. Busy only: while a banner waits for
+        // the user, Claude is not working.
+        SetWorkingDots(viewModel.Activity == SessionActivity.Busy);
+        viewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName != nameof(ChatSessionViewModel.Activity)) return;
+            if (Dispatcher.CheckAccess())
+                SetWorkingDots(viewModel.Activity == SessionActivity.Busy);
+            else
+                Dispatcher.BeginInvoke(new Action(() => SetWorkingDots(viewModel.Activity == SessionActivity.Busy)));
+        };
+
         // Banner mounting is now driven by the ActiveBanner property on the VM —
         // the BannerHost ContentControl in XAML binds to it and DataTemplates
         // pick the right UserControl by VM type.
@@ -109,6 +123,80 @@ public partial class ChatSessionControl : UserControl
         // reports its own chrome, the page reports itself.
         IsKeyboardFocusWithinChanged += OnKeyboardFocusWithinChanged;
         ChatWebView.ContentFocusChanged += OnChatContentFocusChanged;
+    }
+
+    // The dots' ring: seconds per turn, and seconds per turn of the two axes
+    // that tilt it. Periods with no common factor keep the shape from repeating.
+    private const double DotsRingPeriod = 1.8;
+    private const double DotsTiltXPeriod = 4.3;
+    private const double DotsTiltYPeriod = 6.7;
+    private const double DotsRingRadius = 6;
+    private const double DotsMinSize = 1.2;
+    private const double DotsMaxSize = 4.5;
+
+    private readonly Stopwatch _workingDotsClock = new();
+    private TimeSpan _workingDotsLastFrame;
+
+    /// <summary>
+    /// Shows the dots and moves them on every frame while they show. Hidden
+    /// dots take no frames, so an idle window costs nothing.
+    /// </summary>
+    private void SetWorkingDots(bool working)
+    {
+        var shown = WorkingDots.Visibility == Visibility.Visible;
+        if (working == shown) return;
+        WorkingDots.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
+
+        if (working)
+        {
+            _workingDotsClock.Restart();
+            PlaceWorkingDots(0);
+            CompositionTarget.Rendering += OnWorkingDotsFrame;
+        }
+        else
+        {
+            CompositionTarget.Rendering -= OnWorkingDotsFrame;
+            _workingDotsClock.Stop();
+        }
+    }
+
+    private void OnWorkingDotsFrame(object? sender, EventArgs e)
+    {
+        // Rendering can fire more than once for the same frame.
+        var frame = ((RenderingEventArgs)e).RenderingTime;
+        if (frame == _workingDotsLastFrame) return;
+        _workingDotsLastFrame = frame;
+        PlaceWorkingDots(_workingDotsClock.Elapsed.TotalSeconds);
+    }
+
+    /// <summary>
+    /// Three points a third of a turn apart on a ring that turns while it tilts
+    /// about two axes. Each point is projected flat; the nearer it is, the
+    /// larger it is drawn and the higher it sits in the stack.
+    /// </summary>
+    private void PlaceWorkingDots(double t)
+    {
+        var tiltX = 2 * Math.PI * t / DotsTiltXPeriod;
+        var tiltY = 2 * Math.PI * t / DotsTiltYPeriod;
+        var center = WorkingDots.Width / 2;
+
+        for (var i = 0; i < WorkingDots.Children.Count; i++)
+        {
+            var angle = 2 * Math.PI * (t / DotsRingPeriod + i / 3.0);
+            var x = Math.Cos(angle);
+            var y = Math.Sin(angle) * Math.Cos(tiltX);
+            var z = Math.Sin(angle) * Math.Sin(tiltX);
+            var depth = z * Math.Cos(tiltY) - x * Math.Sin(tiltY);
+            x = x * Math.Cos(tiltY) + z * Math.Sin(tiltY);
+
+            var size = DotsMinSize + (DotsMaxSize - DotsMinSize) * (depth + 1) / 2;
+            var dot = (Ellipse)WorkingDots.Children[i];
+            dot.Width = size;
+            dot.Height = size;
+            Canvas.SetLeft(dot, center + DotsRingRadius * x - size / 2);
+            Canvas.SetTop(dot, center + DotsRingRadius * y - size / 2);
+            Panel.SetZIndex(dot, (int)(depth * 100));
+        }
     }
 
     private void OnChatClicked()
@@ -161,6 +249,7 @@ public partial class ChatSessionControl : UserControl
         ChatWebView.Clicked -= OnChatClicked;
         ChatWebView.ContentFocusChanged -= OnChatContentFocusChanged;
         IsKeyboardFocusWithinChanged -= OnKeyboardFocusWithinChanged;
+        SetWorkingDots(false);
 
         // A popup is its own window and would outlive the pane it belongs to.
         _zoomToastTimer?.Stop();

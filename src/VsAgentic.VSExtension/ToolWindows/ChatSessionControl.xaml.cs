@@ -219,7 +219,7 @@ public partial class ChatSessionControl : UserControl
         colors["--accent"] = ToCssHex(accent);
 
         var toolWindowBackground = VSColorTheme.GetThemedColor(EnvironmentColors.ToolWindowBackgroundColorKey);
-        var promptAccent = accent;
+        var promptAccent = PromptAccent(accent);
         var promptBorderBase = VSColorTheme.GetThemedColor(EnvironmentColors.ToolWindowBorderColorKey);
         var promptBgBlend = RelativeLuminance(toolWindowBackground) >= 0.5 ? 0.08 : 0.12;
 
@@ -237,7 +237,8 @@ public partial class ChatSessionControl : UserControl
     }
 
     /// <summary>
-    /// The color the chat uses for links, focus borders and the prompt accent.
+    /// The color the chat uses for links and focus borders, and for the prompt
+    /// where the theme names no accent.
     /// </summary>
     /// <remarks>
     /// The OS system highlight is deliberately not used: on Windows 11 it is
@@ -250,6 +251,20 @@ public partial class ChatSessionControl : UserControl
         ShellPalette.TryGetColor("HyperlinkFillPrimary") is Color accent
             ? System.Drawing.Color.FromArgb(accent.A, accent.R, accent.G, accent.B)
             : VSColorTheme.GetThemedColor(EnvironmentColors.PanelHyperlinkColorKey);
+
+    /// <summary>
+    /// The color that marks the user's own messages.
+    /// </summary>
+    /// <remarks>
+    /// A theme may give links a color of their own, apart from its accent, and
+    /// the prompt is no link. The shell palette names the accent; where it has
+    /// none, which is every Visual Studio 2022, the prompt keeps
+    /// <paramref name="linkAccent"/> as before.
+    /// </remarks>
+    private static System.Drawing.Color PromptAccent(System.Drawing.Color linkAccent) =>
+        ShellPalette.TryGetColor("AccentFillDefault") is Color accent
+            ? System.Drawing.Color.FromArgb(accent.A, accent.R, accent.G, accent.B)
+            : linkAccent;
 
     /// <summary>
     /// The environment brushes the chrome of this window binds to, each paired

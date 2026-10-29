@@ -42,6 +42,10 @@ html, body {
     overflow-x: hidden;
     height: 100%;
     padding: 8px 0;
+    /* Chromium draws the scrolled content on a layer of its own and keeps
+       ClearType only where that layer is opaque; without a background of its
+       own, all chat text falls back to grayscale antialiasing. */
+    background: var(--bg-primary);
 }
 
 /* Custom scrollbar styling */

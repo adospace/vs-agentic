@@ -535,6 +535,35 @@ html, body {
 /* A subagent's row, inside its Agent step and lined up with the step's body. */
 .activity.subagent { margin: 4px 0 0 18px; }
 
+/* Scheduled checks: a run of checks the model scheduled for itself, folded
+   into one block. Most of them find nothing, and one block per check buries
+   the replies that matter. The header says when the last check ran and how
+   many there were; the last check is shown below it, the earlier ones are
+   behind the header. */
+.check-header {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin: 6px 12px 2px;
+    font-size: 12px;
+    color: var(--text-muted);
+    user-select: none;
+}
+.check-block.has-history > .check-header { cursor: pointer; }
+.check-header .activity-arrow { visibility: hidden; }
+.check-block.has-history > .check-header .activity-arrow { visibility: visible; }
+.check-history {
+    display: none;
+    margin: 0 12px 4px 14px;
+    border-left: 2px solid var(--border);
+}
+.check-history.visible { display: block; }
+.check-tick-time {
+    margin: 6px 12px 0;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
 /* Streaming indicator */
 .streaming-cursor::after {
     content: '\25ae';
@@ -955,8 +984,8 @@ function createActivityGroup(before, host) {
 
     group.appendChild(header);
     group.appendChild(items);
-    if (before) _container.insertBefore(group, before);
-    else (host || _container).appendChild(group);
+    if (before) before.parentNode.insertBefore(group, before);
+    else (host || outputHost()).appendChild(group);
     return group;
 }
 
@@ -1109,6 +1138,110 @@ function closeActivityGroup() {
     setActivityDetail(group, '');
 }
 
+// --- Scheduled checks ---
+// A check the model scheduled for itself (CronCreate, /loop) is a turn the CLI
+// starts on its own, opened by a notice with the ScheduledCheck tool name.
+// Consecutive checks go into one block: the last check stays in the open and
+// the ones before it fold behind the block's header, which counts them.
+//
+// A check that edited files or failed is not folded away: the next check opens
+// a block of its own. So does anything that comes between two checks. Shell
+// commands do not count as edits; most checks read the folder with one.
+
+var CHECK_KEEPS = '.msg[data-tool="Edit"], .msg[data-tool="Write"], .msg[data-tool="MultiEdit"], .msg[data-tool="NotebookEdit"], .msg[data-tool="ClaudeCli"][data-status="Error"]';
+
+// The block whose check is running; its output goes there.
+var _checkBlock = null;
+
+function isScheduledCheck(type, data) {
+    return type === 'Notice' && data.ToolName === 'ScheduledCheck';
+}
+
+// Where output that is not part of a row goes: the running check, or the chat.
+function outputHost() {
+    return _checkBlock ? _checkBlock._current : _container;
+}
+
+function createCheckBlock() {
+    var block = document.createElement('div');
+    block.className = 'check-block';
+    block._count = 0;
+
+    var header = document.createElement('div');
+    header.className = 'check-header';
+    var arrow = document.createElement('span');
+    arrow.className = 'activity-arrow';
+    arrow.textContent = '▶';
+    var icon = document.createElement('span');
+    icon.className = 'notice-icon';
+    icon.textContent = '↻';
+    var label = document.createElement('span');
+    label.className = 'check-label';
+    header.appendChild(arrow);
+    header.appendChild(icon);
+    header.appendChild(label);
+
+    var history = document.createElement('div');
+    history.className = 'check-history';
+    var current = document.createElement('div');
+    current.className = 'check-current';
+
+    header.addEventListener('click', function() {
+        if (!block.classList.contains('has-history')) return;
+        var show = !history.classList.contains('visible');
+        history.classList.toggle('visible', show);
+        arrow.classList.toggle('expanded', show);
+        header.title = show ? 'Hide the earlier checks' : 'Show the earlier checks';
+        if (show) applyPendingBodyCaps(history);
+    });
+
+    block.appendChild(header);
+    block.appendChild(history);
+    block.appendChild(current);
+    block._label = label;
+    block._header = header;
+    block._history = history;
+    block._current = current;
+    _container.appendChild(block);
+    return block;
+}
+
+// The block the next check can join: the last thing in the chat, with a last
+// check that changed nothing.
+function foldableCheckBlock() {
+    var last = _container.lastElementChild;
+    if (!last || !last.classList.contains('check-block')) return null;
+    return last._current.querySelector(CHECK_KEEPS) ? null : last;
+}
+
+function startScheduledCheck(data) {
+    endScheduledCheck();
+    var block = foldableCheckBlock();
+    if (block) {
+        var tick = document.createElement('div');
+        tick.className = 'check-tick';
+        var time = document.createElement('div');
+        time.className = 'check-tick-time';
+        time.textContent = block._time;
+        tick.appendChild(time);
+        while (block._current.firstChild) tick.appendChild(block._current.firstChild);
+        block._history.appendChild(tick);
+        block.classList.add('has-history');
+        if (!block._header.title) block._header.title = 'Show the earlier checks';
+    } else {
+        block = createCheckBlock();
+    }
+    block._count++;
+    block._time = data.Title || '';
+    block._label.textContent = 'Scheduled check' + (block._time ? ' · ' + block._time : '')
+        + (block._count > 1 ? ' · ' + block._count + ' checks' : '');
+    _checkBlock = block;
+}
+
+function endScheduledCheck() {
+    _checkBlock = null;
+}
+
 // --- Public API ---
 
 // Called by the host when the turn is over. Without it a group whose last step
@@ -1116,6 +1249,7 @@ function closeActivityGroup() {
 // message happened to close it.
 function endActivity() {
     closeActivityGroup();
+    endScheduledCheck();
 }
 
 function addMessage(id, type, dataJson) {
@@ -1207,6 +1341,8 @@ function addMessage(id, type, dataJson) {
     }
     else if (type === 'ToolStep') {
         div.classList.add('msg-toolstep');
+        // Read by a scheduled check, to tell whether it edited files.
+        div.dataset.tool = data.ToolName || '';
         // Header row
         var header = document.createElement('div');
         header.className = 'toolstep-header';
@@ -1354,9 +1490,15 @@ function placeMessage(div, type, data) {
     if (data.ParentId) {
         addSubagentStep(div, type, data);
         maybeScrollToBottom();
+    } else if (isScheduledCheck(type, data)) {
+        // The notice is not shown; the check's block says it all.
+        closeActivityGroup();
+        startScheduledCheck(data);
+        maybeScrollToBottom();
     } else if (type === 'User') {
         // A new prompt ends the previous turn's row for good.
         closeActivityGroup();
+        endScheduledCheck();
         _container.appendChild(div);
         // A prompt the user just sent themselves: take them to it no matter
         // where they were reading. Only output that arrives on its own is
@@ -1370,6 +1512,7 @@ function placeMessage(div, type, data) {
         // steps do not fold into the last one, nor take its reply with them,
         // and leave the notice standing.
         closeActivityGroup();
+        endScheduledCheck();
         _container.appendChild(div);
         maybeScrollToBottom();
     } else if (isSessionLine(type, data)) {
@@ -1378,13 +1521,13 @@ function placeMessage(div, type, data) {
         // it stays where it is: it may be the reply, which a Stop hook's
         // message follows.
         closeActivityGroup();
-        _container.appendChild(div);
+        outputHost().appendChild(div);
         maybeScrollToBottom();
     } else if (isTurnFailure(type, data)) {
         // Left standing, and the text before it left alone: when a turn ends in
         // an error, that text is usually as far as the answer got, and folding
         // it away takes both the answer and the reason off the screen at once.
-        _container.appendChild(div);
+        outputHost().appendChild(div);
         maybeScrollToBottom();
     } else if (isActivityType(type)) {
         absorbPendingText();
@@ -1397,7 +1540,7 @@ function placeMessage(div, type, data) {
         // "Processing stopped." or "Error:" message the view model adds when a
         // turn is cancelled or throws — and the reply it interrupts has to stay
         // where it can be read.
-        _container.appendChild(div);
+        outputHost().appendChild(div);
         _pendingText = div;
         maybeScrollToBottom();
     }
@@ -1613,6 +1756,7 @@ function clearAll() {
     if (_container) _container.innerHTML = '';
     _activityGroup = null;
     _pendingText = null;
+    _checkBlock = null;
     _orphanSteps = {};
     _userScrolledUp = false;
     updateScrollButton();
@@ -1636,6 +1780,7 @@ function loadMessages(jsonArray) {
     // Nothing in a restored transcript is still running, including a run of
     // steps that the session ended on.
     closeActivityGroup();
+    endScheduledCheck();
     _userScrolledUp = false;
     scrollToBottom();
     updateScrollButton();
@@ -1938,6 +2083,11 @@ function revealMatch(range) {
     var el = range.startContainer.parentElement;
     if (!el) return;
 
+    // Outermost first: a folded check holds the rows of its own turn.
+    var checks = el.closest('.check-history');
+    if (checks && !checks.classList.contains('visible')) {
+        checks.parentNode.querySelector('.check-header').click();
+    }
     var items = el.closest('.activity-items');
     if (items && !items.classList.contains('visible')) {
         items.parentNode.querySelector('.activity-header').click();

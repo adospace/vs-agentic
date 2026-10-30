@@ -93,6 +93,12 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     // message waits in the CLI's queue behind it. Guarded by _activeTurnLock.
     private TurnState? _cliTurn;
 
+    // Set when the CLI announces that it starts a message of its own because
+    // a check the model scheduled is due ("command_lifecycle" with a
+    // "wakeup_source"). The turn opens on the message's first output, and
+    // takes the flag with it. Guarded by _activeTurnLock.
+    private bool _scheduledWakeupPending;
+
     // ── Subagents ─────────────────────────────────────────────────────────
     // One stream of steps per subagent, keyed by the id of the Agent step that
     // started it. The CLI tags each of its messages with that id
@@ -320,7 +326,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     // ── Turns the CLI starts on its own ───────────────────────────────────
 
-    public event Action? UnsolicitedTurnStarted;
+    public event Action<bool>? UnsolicitedTurnStarted;
     public event Action? UnsolicitedTurnCompleted;
 
     public void StopUnsolicitedTurn() => _ = StopCliTurnAsync();
@@ -354,10 +360,16 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     {
         // No message of ours: the turn needs no uuid, and it is under way.
         var turn = new TurnState(string.Empty, startedAtOnce: true);
-        lock (_activeTurnLock) { _cliTurn = turn; }
+        bool scheduled;
+        lock (_activeTurnLock)
+        {
+            _cliTurn = turn;
+            scheduled = _scheduledWakeupPending;
+            _scheduledWakeupPending = false;
+        }
 
-        _logger.LogInformation("[ClaudeCli] CLI started a turn on its own");
-        try { UnsolicitedTurnStarted?.Invoke(); }
+        _logger.LogInformation("[ClaudeCli] CLI started a turn on its own{Kind}", scheduled ? " (scheduled check)" : "");
+        try { UnsolicitedTurnStarted?.Invoke(scheduled); }
         catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] UnsolicitedTurnStarted handler threw"); }
         return turn;
     }
@@ -416,7 +428,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         {
             // Process exited unexpectedly; tear down any active turn so callers unblock.
             TurnState? turn, cliTurn;
-            lock (_activeTurnLock) { turn = _activeTurn; _activeTurn = null; cliTurn = _cliTurn; }
+            lock (_activeTurnLock) { turn = _activeTurn; _activeTurn = null; cliTurn = _cliTurn; _scheduledWakeupPending = false; }
             var reported = false;
             if (turn != null)
             {
@@ -687,7 +699,15 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
         TurnState? turn;
         lock (_activeTurnLock) { turn = _activeTurn; }
-        if (turn is null || uuid != turn.MessageUuid) return;
+        if (turn is null || uuid != turn.MessageUuid)
+        {
+            // A message of the CLI's own. A check the model scheduled says
+            // what woke it: "schedule_wakeup" for CronCreate, "loop_wakeup"
+            // for a /loop wakeup (CLI 2.1.310).
+            if (state == "started" && CliProcessInfo.ReadString(evt, "wakeup_source") is "schedule_wakeup" or "loop_wakeup")
+                lock (_activeTurnLock) { _scheduledWakeupPending = true; }
+            return;
+        }
 
         switch (state)
         {
@@ -1842,7 +1862,14 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         }
 
         TurnState? turn, cliTurn;
-        lock (_activeTurnLock) { turn = _activeTurn; cliTurn = _cliTurn; }
+        lock (_activeTurnLock)
+        {
+            turn = _activeTurn;
+            cliTurn = _cliTurn;
+            // A scheduled check that ran inside a turn already open never
+            // opened one of its own; the flag must not mark the next one.
+            _scheduledWakeupPending = false;
+        }
 
         // A result for another message, or for a turn the CLI started itself,
         // must not end ours: our reply would then arrive after the call had

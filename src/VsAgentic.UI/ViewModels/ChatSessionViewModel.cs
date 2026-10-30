@@ -504,12 +504,56 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     // ends last clears IsBusy and ends the turn in the view.
     private bool _inUnsolicitedTurn;
 
-    private void OnUnsolicitedTurnStarted()
+    private void OnUnsolicitedTurnStarted(bool scheduled)
     {
         Dispatch(() =>
         {
             _inUnsolicitedTurn = true;
             IsBusy = true;
+            if (scheduled) AddScheduledCheckMark();
+        });
+    }
+
+    /// <summary>Tool name of the notice that opens a scheduled check.</summary>
+    public const string ScheduledCheckTool = "ScheduledCheck";
+
+    // Opens a check the model scheduled for itself (CronCreate, /loop). The
+    // web view folds consecutive checks into one block, with this notice as
+    // the boundary between them; it is saved, so a reopened session folds
+    // them the same way. The title is the time of the check.
+    private void AddScheduledCheckMark()
+    {
+        var id = $"check-{Guid.NewGuid():N}";
+        const string text = "Scheduled check";
+        var time = DateTime.Now.ToString("HH:mm");
+        Items.Add(new ChatItemViewModel
+        {
+            Type = ChatItemType.Notice,
+            ToolName = ScheduledCheckTool,
+            Title = time,
+            Content = text,
+            Status = OutputItemStatus.Info,
+            IsStreaming = false
+        });
+        MessageAdded?.Invoke(id, ChatItemType.Notice, new ChatMessageData
+        {
+            Id = id,
+            Type = ChatItemType.Notice.ToString(),
+            ToolName = ScheduledCheckTool,
+            Title = time,
+            Content = text,
+            Status = OutputItemStatus.Info.ToString()
+        });
+        RequestScroll();
+
+        PersistMessageFireAndForget(new PersistedMessage
+        {
+            ItemType = ChatItemType.Notice.ToString(),
+            ToolName = ScheduledCheckTool,
+            Title = time,
+            Content = text,
+            StatusText = OutputItemStatus.Info.ToString(),
+            CreatedUtc = DateTime.UtcNow
         });
     }
 

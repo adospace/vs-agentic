@@ -144,8 +144,10 @@ public interface IChatService
     /// model. The turn's output arrives through the output listener as usual,
     /// also while a sent message waits in the CLI's queue behind the turn.
     /// Raised on a background thread; hosts must marshal to the UI thread.
+    /// The argument is true for a check the model scheduled for itself
+    /// (<c>CronCreate</c>, or a <c>/loop</c> wakeup).
     /// </summary>
-    event Action? UnsolicitedTurnStarted;
+    event Action<bool>? UnsolicitedTurnStarted;
 
     /// <summary>
     /// Raised when a turn announced by <see cref="UnsolicitedTurnStarted"/>

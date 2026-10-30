@@ -945,6 +945,20 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             RefreshEditorContext();
     }
 
+    /// <summary>Removes every attachment. False when there was none.</summary>
+    public bool RemoveAllAttachments()
+    {
+        if (PendingAttachments.Count == 0) return false;
+
+        var hadEditorContext = PendingAttachments.OfType<EditorContext>().Any();
+        PendingAttachments.Clear();
+        SendCommand.NotifyCanExecuteChanged();
+
+        if (hadEditorContext)
+            RefreshEditorContext();
+        return true;
+    }
+
     /// <summary>
     /// Puts the attached paths above the user's text, so the model knows what it
     /// has been handed before it reads the question about it. Images that came

@@ -255,12 +255,27 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// <summary>Text for the indicator strip under the chat input; empty hides it.</summary>
     // While a turn runs, BusyStatus already covers both Busy and a banner being
     // up (step or "Waiting for you", plus the elapsed time).
+    // After the turn, tasks it started can still run; the CLI starts a new turn
+    // when they finish, so the session is not done yet.
     public string StatusText => Activity switch
     {
         _ when IsBusy => BusyStatus,
         SessionActivity.AwaitingUser => "Waiting for input…",
+        _ when HasBackgroundTasks => "Running in background",
         SessionActivity.Completed => "Done",
         _ => ""
+    };
+
+    /// <summary>
+    /// Whether Claude works without waiting for the user: a turn in flight, or
+    /// background tasks after it. ChatSessionControl moves the dots before
+    /// <see cref="StatusText"/> while this is true.
+    /// </summary>
+    public bool IsWorking => Activity switch
+    {
+        SessionActivity.Busy => true,
+        SessionActivity.AwaitingUser => false,
+        _ => HasBackgroundTasks
     };
 
     /// <summary>Whether the status bar should be pulsing. Bound by ChatSessionControl.xaml.</summary>
@@ -297,6 +312,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(Activity));
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(IsFlashing));
+        OnPropertyChanged(nameof(IsWorking));
 
         // Only on a real transition: this runs on every permission request and
         // every resolve, and restarting the tick each time would visibly reset
@@ -630,6 +646,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     // place that shows they are still running, and where each can be stopped.
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(StatusText))]
+    [NotifyPropertyChangedFor(nameof(IsWorking))]
     private bool _hasBackgroundTasks;
 
     /// <summary>One row per running background task, in the CLI's order.</summary>

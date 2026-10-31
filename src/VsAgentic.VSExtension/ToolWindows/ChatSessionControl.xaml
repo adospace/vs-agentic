@@ -867,10 +867,30 @@
                     </Style.Triggers>
                 </Style>
             </Border.Style>
-            <TextBlock Text="{Binding StatusText}"
-                       TextTrimming="CharacterEllipsis"
-                       Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
-                       FontSize="12" FontStyle="Italic"/>
+            <DockPanel>
+                <!-- Three dots on a ring that turns in 3D while Claude works.
+                     Placed and sized from code on every frame, and only while
+                     they show. -->
+                <Canvas x:Name="WorkingDots"
+                        DockPanel.Dock="Left"
+                        Width="16" Height="16"
+                        VerticalAlignment="Center"
+                        Margin="0,0,8,0"
+                        Visibility="Collapsed">
+                    <Canvas.Resources>
+                        <Style TargetType="Ellipse">
+                            <Setter Property="Fill" Value="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                        </Style>
+                    </Canvas.Resources>
+                    <Ellipse/>
+                    <Ellipse/>
+                    <Ellipse/>
+                </Canvas>
+                <TextBlock Text="{Binding StatusText}"
+                           TextTrimming="CharacterEllipsis"
+                           Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"
+                           FontSize="12" FontStyle="Italic"/>
+            </DockPanel>
         </Border>
 
         <!-- Background tasks: commands and subagents the CLI runs in the

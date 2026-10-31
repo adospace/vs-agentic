@@ -585,12 +585,56 @@
                                     <Style TargetType="TextBlock">
                                         <Setter Property="Visibility" Value="Collapsed"/>
                                         <Style.Triggers>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+                                                    <Condition Binding="{Binding Text, ElementName=InputTextBox}" Value=""/>
+                                                    <Condition Binding="{Binding PromptSuggestion}" Value="{x:Null}"/>
+                                                </MultiDataTrigger.Conditions>
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </MultiDataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+
+                            <!-- The CLI's guess at the next prompt, in place of the
+                                 placeholder and where typed text starts, so it reads
+                                 as the text Tab puts there. It wraps, unlike the
+                                 placeholder: the CLI keeps it under 100 characters,
+                                 and the row grows to fit. The brush is set in code,
+                                 see ApplyPromptSuggestionBrush. -->
+                            <TextBlock Margin="11,6,8,6"
+                                       VerticalAlignment="Top"
+                                       IsHitTestVisible="False"
+                                       FontSize="13"
+                                       TextWrapping="Wrap"
+                                       Foreground="{DynamicResource PromptSuggestionBrush}">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
                                             <DataTrigger Binding="{Binding Text, ElementName=InputTextBox}" Value="">
                                                 <Setter Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                            <!-- Last, so it wins over the trigger above. -->
+                                            <DataTrigger Binding="{Binding PromptSuggestion}" Value="{x:Null}">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>
                                 </TextBlock.Style>
+                                <Run Text="{Binding PromptSuggestion, Mode=OneWay}"/>
+                                <InlineUIContainer BaselineAlignment="Center">
+                                    <Border Margin="6,0,0,0"
+                                            Padding="4,0"
+                                            CornerRadius="3"
+                                            BorderThickness="1"
+                                            BorderBrush="{DynamicResource PromptSuggestionBrush}">
+                                        <TextBlock Text="Tab"
+                                                   FontSize="11"
+                                                   Foreground="{DynamicResource PromptSuggestionBrush}"/>
+                                    </Border>
+                                </InlineUIContainer>
                             </TextBlock>
                         </Grid>
 

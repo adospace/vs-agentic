@@ -642,7 +642,28 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 if (evt.TryGetProperty("rate_limit_info", out var rateLimit))
                     _planUsage.ApplyRateLimitEvent(rateLimit);
                 return;
+
+            case "prompt_suggestion":
+                HandlePromptSuggestion(evt);
+                return;
         }
+    }
+
+    public event Action<string>? PromptSuggested;
+
+    /// <summary>
+    /// The CLI's guess at the user's next prompt, sent a few seconds after a
+    /// turn ends. By then the user may have sent the next message; the host
+    /// knows that and drops a late one, so it is passed on as it comes.
+    /// </summary>
+    private void HandlePromptSuggestion(JsonElement evt)
+    {
+        var suggestion = CliProcessInfo.ReadString(evt, "suggestion")?.Trim();
+        if (string.IsNullOrEmpty(suggestion)) return;
+
+        _logger.LogDebug("[ClaudeCli] Prompt suggestion received");
+        try { PromptSuggested?.Invoke(suggestion!); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] PromptSuggested handler threw"); }
     }
 
     /// <summary>

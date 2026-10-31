@@ -274,7 +274,31 @@ public partial class ChatSessionControl : UserControl
     /// Points the prompt box and the status row at the shell palette, so that a
     /// theme which defines only the shell colors still reaches them.
     /// </summary>
-    private void ApplyShellBrushes() => ShellPalette.OverrideBrushes(this, ChromeBrushes);
+    private void ApplyShellBrushes()
+    {
+        ShellPalette.OverrideBrushes(this, ChromeBrushes);
+        ApplyPromptSuggestionBrush();
+    }
+
+    /// <summary>
+    /// The suggested prompt is a step dimmer than the placeholder, so it does
+    /// not read as text already typed: the shell's tertiary text against the
+    /// placeholder's secondary. Visual Studio 2022 has no tertiary text, and
+    /// there the suggestion takes the placeholder's color.
+    /// </summary>
+    private void ApplyPromptSuggestionBrush()
+    {
+        if (ShellPalette.TryGetColor("TextFillTertiary") is Color tertiary)
+        {
+            var brush = new SolidColorBrush(tertiary);
+            brush.Freeze();
+            Resources["PromptSuggestionBrush"] = brush;
+        }
+        else
+        {
+            Resources["PromptSuggestionBrush"] = FindResource(VsBrushes.GrayTextKey);
+        }
+    }
 
     private static System.Drawing.Color Blend(System.Drawing.Color from, System.Drawing.Color to, double amount)
     {
@@ -508,6 +532,15 @@ public partial class ChatSessionControl : UserControl
                 vm.SendCommand.Execute(null);
                 e.Handled = true;
             }
+        }
+
+        // Escape in the empty box hides the suggested prompt. With no
+        // suggestion the key goes on to Visual Studio as before.
+        if (e.Key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None &&
+            string.IsNullOrEmpty(InputTextBox.Text) &&
+            DataContext is ChatSessionViewModel session && session.DismissPromptSuggestion())
+        {
+            e.Handled = true;
         }
     }
 
@@ -765,6 +798,19 @@ public partial class ChatSessionControl : UserControl
                     return;
                 }
             }
+        }
+
+        // Tab takes the suggested prompt into the empty box, ready to edit or
+        // send. With text in the box, or no suggestion, Tab moves focus on as
+        // before.
+        if (e.Key == Key.Tab && Keyboard.Modifiers == ModifierKeys.None &&
+            string.IsNullOrEmpty(InputTextBox.Text) &&
+            DataContext is ChatSessionViewModel { PromptSuggestion: { } suggestion })
+        {
+            InputTextBox.Text = suggestion;
+            InputTextBox.CaretIndex = suggestion.Length;
+            e.Handled = true;
+            return;
         }
 
         if (!MentionPopup.IsOpen) return;

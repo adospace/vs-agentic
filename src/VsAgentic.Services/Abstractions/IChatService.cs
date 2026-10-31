@@ -215,4 +215,13 @@ public interface IChatService
     /// marshal to the UI thread.
     /// </summary>
     event Action<IReadOnlyList<BackgroundTask>>? BackgroundTasksChanged;
+
+    /// <summary>
+    /// Raised with the CLI's prediction of the user's next prompt, a few
+    /// seconds after a turn ends. Not after every turn: the CLI skips it after
+    /// the first answer, in plan mode, and when the user turned it off. It can
+    /// arrive after the user has already sent the next message. Raised on a
+    /// background thread; hosts must marshal to the UI thread.
+    /// </summary>
+    event Action<string>? PromptSuggested;
 }

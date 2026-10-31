@@ -36,6 +36,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     private CancellationTokenSource? _sendCts;
 
+    /// <summary>
+    /// The CLI's guess at the next prompt, shown in grey in the empty input
+    /// box until a turn starts. Tab copies it into the box. Null when the CLI
+    /// made none.
+    /// </summary>
+    [ObservableProperty]
+    private string? _promptSuggestion;
+
     [ObservableProperty]
     private string _sessionTitle = "New Session";
 
@@ -284,6 +292,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         _currentStep = null;
         _currentStepId = null;
         UpdateActivityIndicator();
+
+        // A suggestion answers the turn before; the next turn makes it stale.
+        if (value) PromptSuggestion = null;
     }
 
     partial void OnActiveBannerChanged(IBannerViewModel? value) => UpdateActivityIndicator();
@@ -492,8 +503,29 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         chatService.BackgroundTasksChanged += OnChatServiceBackgroundTasksChanged;
         chatService.StepBackgroundStateChanged += OnChatServiceStepBackgroundStateChanged;
         chatService.StepCanMoveToBackground += OnChatServiceStepCanMoveToBackground;
+        chatService.PromptSuggested += OnChatServicePromptSuggested;
 
         InitializeUsage(chatService, options.Value);
+    }
+
+    // The CLI sends the suggestion a few seconds after the turn ends. A user
+    // who sent the next message in the meantime has started a new turn, and
+    // the suggestion no longer fits it.
+    private void OnChatServicePromptSuggested(string suggestion) =>
+        Dispatch(() =>
+        {
+            if (!IsBusy) PromptSuggestion = suggestion;
+        });
+
+    /// <summary>
+    /// Hides the suggested prompt. The CLI sends a new one after the next
+    /// turn. Returns false when there was none to hide.
+    /// </summary>
+    public bool DismissPromptSuggestion()
+    {
+        if (PromptSuggestion is null) return false;
+        PromptSuggestion = null;
+        return true;
     }
 
     // True while a turn the CLI started on its own is running. It holds the
@@ -1177,6 +1209,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         _chatService?.ClearHistory();
         Items.Clear();
         _activeItems.Clear();
+        PromptSuggestion = null;
         AllCleared?.Invoke();
     }
 
@@ -1480,6 +1513,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 _chatService.BackgroundTasksChanged -= OnChatServiceBackgroundTasksChanged;
                 _chatService.StepBackgroundStateChanged -= OnChatServiceStepBackgroundStateChanged;
                 _chatService.StepCanMoveToBackground -= OnChatServiceStepCanMoveToBackground;
+                _chatService.PromptSuggested -= OnChatServicePromptSuggested;
             }
             // Static: without this, a closed session stays reachable from the catalog.
             ClaudeModelCatalog.ReportedChanged -= OnReportedModelsChanged;

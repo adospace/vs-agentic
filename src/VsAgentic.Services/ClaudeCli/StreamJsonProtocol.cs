@@ -170,12 +170,18 @@ internal static class StreamJsonProtocol
     /// background task on its own (the Stop button on the background tasks
     /// strip). Without it, an interrupt also kills the background subagents,
     /// because the CLI assumes nothing else could stop them.
+    ///
+    /// <c>promptSuggestions</c> asks for a predicted next prompt after each
+    /// turn, sent as a <c>prompt_suggestion</c> message. The CLI still decides
+    /// whether to make one: not after the first answer, not in plan mode, and
+    /// not at all when the user turned suggestions off in its settings.
     /// </summary>
     public static string BuildInitialize(string requestId) =>
         BuildControlRequest(requestId, "initialize", w =>
         {
             w.WriteBoolean("forwardSubagentText", true);
             w.WriteBoolean("perTaskStopAffordance", true);
+            w.WriteBoolean("promptSuggestions", true);
         });
 
     /// <summary>

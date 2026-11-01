@@ -53,6 +53,12 @@ public class VsAgenticOptionsPage : DialogPage
     public ClaudeEffort Effort { get; set; } = ClaudeEffort.Default;
 
     [Category("Claude CLI")]
+    [DisplayName("Use my user MCP servers")]
+    [Description("False (default): the CLI loads only VsAgentic's own MCP server, which asks you before gated tools run. True: the CLI also loads the MCP servers you added with the user scope (claude mcp add --scope user), which Claude Code keeps in ~/.claude.json. Servers in a project's .mcp.json, servers added with the local scope, plugin servers and claude.ai connectors are not loaded, so opening a repository never starts a server it defines. Servers that do not connect are listed in the chat. Applies to sessions started after the change.")]
+    [DefaultValue(false)]
+    public bool UseClaudeMcpServers { get; set; }
+
+    [Category("Claude CLI")]
     [DisplayName("Background command limit")]
     [Description("Most time Claude may give a shell command before the CLI stops it. The CLI treats this extension as an unattended session: it stops a background command (a dev server, a watcher) after 30 minutes unless Claude asks for longer, and allows at most 2 hours. The other values raise that maximum through BASH_MAX_TIMEOUT_MS. The CLI applies the variable to every Bash command, so the maximum for a foreground command rises as well. The default timeouts stay. CliDefault leaves the variable alone. A value already set in the environment Visual Studio started with is kept. Applies to sessions started after the change.")]
     [DefaultValue(BackgroundCommandLimit.CliDefault)]

@@ -36,7 +36,7 @@ public class VsAgenticOptionsPage : DialogPage
 
     [Category("Claude CLI")]
     [DisplayName("CLI Permission Mode")]
-    [Description("Controls how the CLI handles tool permissions. Default: every gated tool call surfaces an Allow/Deny banner in the chat (safest). AcceptEdits: file edits (Edit, Write, NotebookEdit) auto-accept; everything else still prompts. BypassPermissions: auto-accept every tool call without prompting (use only in trusted environments).")]
+    [Description("The permission mode a new chat starts in. The dropdown under the chat input changes it for one chat. Default (the default): every gated tool call surfaces an Allow/Deny banner in the chat. CliSetting: no mode is passed, so permissions.defaultMode from your Claude Code settings applies, as in a terminal. This includes the .claude/settings.json committed to the repository you open, so an unfamiliar repository can start the chat in a mode that applies edits without asking. AcceptEdits: file edits (Edit, Write, NotebookEdit) auto-accept; everything else still prompts. Plan: Claude plans and does not change anything until the plan is approved. Auto: a classifier approves the calls it considers safe; the rest still prompt. BypassPermissions: auto-accept every tool call without prompting, except those an ask rule in your Claude Code settings matches (use only in trusted environments).")]
     [DefaultValue(CliPermissionMode.Default)]
     public CliPermissionMode CliPermissionMode { get; set; } = CliPermissionMode.Default;
 

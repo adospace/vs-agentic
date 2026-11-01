@@ -50,16 +50,26 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     private readonly object _dispatcherLock = new object();
 
     // ── Token usage ───────────────────────────────────────────────────────
-    // Accumulated from the usage block on each assistant event. The result
-    // event also carries a usage object, but it is a turn-level aggregate, so
-    // reading both would double-count; the per-message blocks are the finer
-    // grained of the two and are what the context meter needs anyway.
+    // Accumulated from the usage block on each assistant event, then topped up
+    // from the result event. The assistant event is written when the answer
+    // starts to stream, so its output_tokens is only the first few tokens
+    // (CLI 2.1.303: 8 for an answer of 1900). The result's usage is the exact
+    // sum over the main conversation's calls in that turn; whatever it has
+    // beyond what the events gave is added then.
     private readonly object _usageLock = new object();
     private long _inputTokens;
     private long _outputTokens;
     private long _cacheReadTokens;
     private long _cacheCreationTokens;
     private long _contextTokens;
+
+    // What the main conversation's assistant events added since the last
+    // result event, to compare with that result's usage. Subagents are left
+    // out: the result does not include them. Under _usageLock.
+    private long _turnInputTokens;
+    private long _turnOutputTokens;
+    private long _turnCacheReadTokens;
+    private long _turnCacheCreationTokens;
 
     // Counts the readings of _contextTokens from the main conversation, so an
     // answer about the context that comes back late does not replace a newer
@@ -192,7 +202,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 _restartBeforeNextMessage = false;
                 _host.Stop();
                 lock (_dispatcherLock) { _dispatcherTask = null; }
-                _logger.LogInformation("[ClaudeCli] Restarting CLI to apply a model/effort change");
+                _permissionRestartPending = false;
+                _logger.LogInformation("[ClaudeCli] Restarting CLI to apply a settings change");
             }
 
             var wasRunning = _host.IsRunning;
@@ -203,6 +214,11 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 _control = NewControlChannel();
                 _capabilities = CliCapabilities.None;
                 lock (_reportedMcpProblems) { _reportedMcpProblems.Clear(); }
+
+                // A process that stopped mid-turn never sent the result for
+                // what was counted; the new one's first result must not be
+                // measured against it.
+                lock (_usageLock) ResetTurnUsage();
             }
             EnsureDispatcherStarted();
             if (!wasRunning)
@@ -502,6 +518,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             "[ClaudeCli] CLI {Version}: {Models} models, {Commands} commands",
             info.Version ?? "(version unknown)", info.Models.Count, info.Commands.Count);
 
+        // The first report of the mode, before any turn has run.
+        SetReportedPermissionMode(info.PermissionMode);
+
         try { ClaudeModelCatalog.SetReported(CliModelInfo.ToCatalog(info.Models)); }
         catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] Model list handler threw"); }
 
@@ -758,6 +777,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 return;
 
             case "status":
+                // Carries compaction state and, after every mode change
+                // (whoever made it), the permission mode.
+                SetReportedPermissionMode(CliProcessInfo.ReadString(evt, "permissionMode"));
                 HandleStatus(evt);
                 return;
 
@@ -1362,6 +1384,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // every change.
         if (init.Model is not null)
             SetCurrentModel(init.Model);
+
+        SetReportedPermissionMode(init.PermissionMode);
 
         if (init.FastMode is { } fast)
             SetFastModeStatus(fast);
@@ -1976,6 +2000,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (FastModeStatus.Read(evt) is { } fast)
             SetFastModeStatus(fast);
 
+        // Before the turn check: every result closes the CLI's turn, and the
+        // tokens were spent whoever started it.
+        AccountTurnUsage(evt);
+
         var isError = evt.TryGetProperty("is_error", out var ie) && ie.ValueKind == JsonValueKind.True;
 
         // The CLI removed its transcript (cleanupPeriodDays), so this id can
@@ -2579,10 +2607,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 if (messageId is not null) _countedMessageIds.Add(messageId);
             }
 
-            _inputTokens += input;
-            _outputTokens += output;
-            _cacheReadTokens += cacheRead;
-            _cacheCreationTokens += cacheCreate;
+            AddUsage(input, output, cacheRead, cacheCreate);
 
             // Assigned, not accumulated: this is an occupancy reading, and it
             // drops back down when the CLI compacts the conversation.
@@ -2590,9 +2615,67 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             {
                 _contextTokens = context;
                 _contextReadings++;
+
+                _turnInputTokens += input;
+                _turnOutputTokens += output;
+                _turnCacheReadTokens += cacheRead;
+                _turnCacheCreationTokens += cacheCreate;
             }
         }
 
+        RecordUsage(input, output, cacheRead, cacheCreate);
+    }
+
+    /// <summary>
+    /// Adds what the result event's <c>usage</c> has beyond what the turn's
+    /// assistant events already counted. In practice that is the output: each
+    /// event carries the count from the start of its answer, and only the
+    /// result has the final one. The context reading is left alone; the next
+    /// call's reading includes this answer anyway.
+    /// </summary>
+    private void AccountTurnUsage(JsonElement evt)
+    {
+        long input, output, cacheRead, cacheCreate;
+
+        lock (_usageLock)
+        {
+            if (evt.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
+            {
+                // A field the events already covered in full gives nothing; one
+                // they overstate (it should not happen) is not taken back.
+                input = Math.Max(0, ReadTokenCount(usage, "input_tokens") - _turnInputTokens);
+                output = Math.Max(0, ReadTokenCount(usage, "output_tokens") - _turnOutputTokens);
+                cacheRead = Math.Max(0, ReadTokenCount(usage, "cache_read_input_tokens") - _turnCacheReadTokens);
+                cacheCreate = Math.Max(0, ReadTokenCount(usage, "cache_creation_input_tokens") - _turnCacheCreationTokens);
+            }
+            else
+            {
+                input = output = cacheRead = cacheCreate = 0;
+            }
+
+            ResetTurnUsage();
+            AddUsage(input, output, cacheRead, cacheCreate);
+        }
+
+        if (input + output + cacheRead + cacheCreate > 0)
+            RecordUsage(input, output, cacheRead, cacheCreate);
+    }
+
+    // Under _usageLock.
+    private void AddUsage(long input, long output, long cacheRead, long cacheCreate)
+    {
+        _inputTokens += input;
+        _outputTokens += output;
+        _cacheReadTokens += cacheRead;
+        _cacheCreationTokens += cacheCreate;
+    }
+
+    // Under _usageLock.
+    private void ResetTurnUsage() =>
+        _turnInputTokens = _turnOutputTokens = _turnCacheReadTokens = _turnCacheCreationTokens = 0;
+
+    private void RecordUsage(long input, long output, long cacheRead, long cacheCreate)
+    {
         // Cache reads are charged at a fraction of a fresh input token, so
         // counting them in full here would have the rate-limit meter racing
         // ahead of the real limit on exactly the long sessions where caching
@@ -2863,6 +2946,176 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             error);
     }
 
+    // ── Permission mode ───────────────────────────────────────────────────
+    // The requested mode lives in _options.CliPermissionMode, which also feeds
+    // the start-up flag. The reported mode is what the CLI last said is in
+    // force. Both change from the UI thread and the dispatcher, hence the lock.
+
+    private readonly object _permissionLock = new object();
+    private string? _reportedPermissionMode;
+
+    // Set while a set_permission_mode request is unanswered. A report that
+    // arrives meanwhile can still describe the old mode, so the requested
+    // mode does not follow it.
+    private int _permissionRequestsInFlight;
+
+    // Set when the mode can only change with a restart, which the next
+    // message does. Reports from the old process no longer apply.
+    private volatile bool _permissionRestartPending;
+
+    public CliPermissionMode PermissionMode
+    {
+        get { lock (_permissionLock) return _options.CliPermissionMode; }
+    }
+
+    public string? ReportedPermissionMode
+    {
+        get { lock (_permissionLock) return _reportedPermissionMode; }
+    }
+
+    public event Action? PermissionModeChanged;
+
+    public event Action<string>? PermissionModeRejected;
+
+    public void ApplyPermissionMode(CliPermissionMode mode)
+    {
+        CliPermissionMode previous;
+        lock (_permissionLock)
+        {
+            previous = _options.CliPermissionMode;
+            if (previous == mode) return;
+            _options.CliPermissionMode = mode;
+        }
+
+        if (!_host.IsRunning || _permissionRestartPending)
+        {
+            // The start-up flag carries it, or the restart that is already due.
+            _logger.LogInformation("[ClaudeCli] Permission mode set to {Mode}; applies when the CLI starts", mode);
+            RaisePermissionModeChanged();
+            return;
+        }
+
+        if (mode == CliPermissionMode.CliSetting)
+        {
+            // No request returns a process to its settings; only a start
+            // without the flag does.
+            RestartForPermissionMode("the CLI setting applies only at start");
+            return;
+        }
+
+        RaisePermissionModeChanged();
+        _ = SendPermissionModeAsync(mode, previous);
+    }
+
+    /// <summary>
+    /// Sends <c>set_permission_mode</c> to the running process. The CLI applies
+    /// it at once, also within a running turn, and answers with the mode now
+    /// in effect.
+    ///
+    /// Bypass is refused unless the process was started in it, so that one
+    /// waits for a restart. A request that gets no answer does too, the same
+    /// as a model change. Any other refusal (a mode the account or the
+    /// settings do not allow) keeps the old mode and tells the user why.
+    /// </summary>
+    private async Task SendPermissionModeAsync(CliPermissionMode mode, CliPermissionMode previous)
+    {
+        Interlocked.Increment(ref _permissionRequestsInFlight);
+        try
+        {
+            EnsureDispatcherStarted();
+            var value = mode.ToCliValue()!;
+            var reply = await _control.SendAsync(
+                requestId => StreamJsonProtocol.BuildSetPermissionMode(requestId, value)).ConfigureAwait(false);
+
+            if (reply.Succeeded)
+            {
+                var inForce = reply.Response is { } body ? CliProcessInfo.ReadString(body, "mode") : null;
+                _logger.LogInformation("[ClaudeCli] Permission mode applied to the running CLI: {Mode}", inForce ?? value);
+                SetReportedPermissionMode(inForce ?? value);
+                return;
+            }
+
+            if (reply.ErrorCode == "bypass_not_launched" || reply.Error == CliControlChannel.NoResponse)
+            {
+                RestartForPermissionMode(reply.Error ?? "refused");
+                return;
+            }
+
+            lock (_permissionLock)
+            {
+                // Unless the user has picked again in the meantime.
+                if (_options.CliPermissionMode == mode)
+                    _options.CliPermissionMode = previous;
+            }
+            _logger.LogWarning(
+                "[ClaudeCli] CLI refused permission mode {Mode}: {Error} ({Code})",
+                value, reply.Error, reply.ErrorCode ?? "no code");
+
+            try { PermissionModeRejected?.Invoke(reply.Error ?? "The CLI refused the mode."); }
+            catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] PermissionModeRejected handler threw"); }
+            RaisePermissionModeChanged();
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _permissionRequestsInFlight);
+        }
+    }
+
+    private void RestartForPermissionMode(string reason)
+    {
+        _permissionRestartPending = true;
+        _restartBeforeNextMessage = true;
+        lock (_permissionLock) { _reportedPermissionMode = null; }
+        _logger.LogInformation(
+            "[ClaudeCli] Permission mode {Mode} applies after a restart before the next message ({Reason})",
+            PermissionMode, reason);
+        RaisePermissionModeChanged();
+    }
+
+    /// <summary>
+    /// Records the mode the CLI reports. When the session asks for a specific
+    /// mode and the CLI moves to another on its own (an approved plan leaves
+    /// plan mode), the requested mode follows, so a restart keeps the mode
+    /// the user last saw. "CLI setting" stays as it is: it names where the
+    /// mode came from, not the mode.
+    /// </summary>
+    private void SetReportedPermissionMode(string? mode)
+    {
+        if (string.IsNullOrEmpty(mode) || _permissionRestartPending) return;
+
+        lock (_permissionLock)
+        {
+            if (string.Equals(mode, _reportedPermissionMode, StringComparison.Ordinal)) return;
+            _reportedPermissionMode = mode;
+
+            if (Volatile.Read(ref _permissionRequestsInFlight) == 0
+                && _options.CliPermissionMode != CliPermissionMode.CliSetting
+                && CliPermissionModeExtensions.FromCliValue(mode) is { } reported)
+            {
+                _options.CliPermissionMode = reported;
+            }
+        }
+
+        _logger.LogInformation("[ClaudeCli] Permission mode in force: {Mode}", mode);
+        RaisePermissionModeChanged();
+    }
+
+    private void ClearReportedPermissionMode()
+    {
+        lock (_permissionLock) { _reportedPermissionMode = null; }
+        RaisePermissionModeChanged();
+    }
+
+    private void RaisePermissionModeChanged()
+    {
+        try { PermissionModeChanged?.Invoke(); }
+        catch (Exception ex)
+        {
+            // Same reasoning as UsageChanged: the dispatcher loop comes first.
+            _logger.LogError(ex, "[ClaudeCli] PermissionModeChanged handler threw");
+        }
+    }
+
     // The CLI's answer to a control request subtype it does not have.
     private static bool IsUnknownRequest(string error) =>
         error.IndexOf("Unsupported control request subtype", StringComparison.OrdinalIgnoreCase) >= 0;
@@ -2921,6 +3174,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             _contextReadings++;
             _contextWindowTokens = null;
             _countedMessageIds.Clear();
+            ResetTurnUsage();
         }
 
         // Forget the running steps before the process goes, or the dispatcher
@@ -2932,6 +3186,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         lock (_dispatcherLock) { _dispatcherTask = null; }
         _logger.LogInformation("[ClaudeCli] Session cleared (process killed)");
         SetCurrentModel(null);
+        ClearReportedPermissionMode();
         SetAppliedEffort(null);
         // The request stays: it is the user's choice for the session, and the
         // next process gets it. The status comes from that process.

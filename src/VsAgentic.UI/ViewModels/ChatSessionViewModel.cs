@@ -268,7 +268,11 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         (Activity == SessionActivity.AwaitingUser && _options.FlashStatusBarWhileWaiting)
         || (Activity == SessionActivity.Completed && _options.FlashStatusBarWhenComplete);
 
-    partial void OnBusyStatusChanged(string value) => OnPropertyChanged(nameof(StatusText));
+    partial void OnBusyStatusChanged(string value)
+    {
+        OnPropertyChanged(nameof(StatusText));
+        UpdateSessionInfoActivity();
+    }
 
     partial void OnIsBusyChanged(bool value)
     {
@@ -321,6 +325,33 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         }
         UpdateDisplayTitle();
         UpdateBusyStatus();
+        UpdateSessionInfoActivity();
+    }
+
+    partial void OnHasBackgroundTasksChanged(bool value) => UpdateSessionInfoActivity();
+
+    /// <summary>
+    /// Copies the state to the session list row, so a session in a hidden
+    /// window still shows whether it works or waits. The row's name stays
+    /// plain; only its second line follows the bar under the chat.
+    /// </summary>
+    private void UpdateSessionInfoActivity()
+    {
+        if (SessionInfo is null) return;
+
+        SessionInfo.Activity = Activity;
+        SessionInfo.HasBackgroundTasks = HasBackgroundTasks;
+        SessionInfo.ActivityStatus = Activity switch
+        {
+            // Completed is a finished turn the user has not looked at yet; the
+            // row has nothing of its own to say about it.
+            SessionActivity.Idle or SessionActivity.Completed
+                => HasBackgroundTasks ? "Running in background" : string.Empty,
+            // A login banner can come up outside a turn, where BusyStatus
+            // would still read "Thinking...".
+            SessionActivity.AwaitingUser when !IsBusy => "Waiting for you",
+            _ => BusyStatus
+        };
     }
 
     private void EnsureActivityTimer()
@@ -405,9 +436,20 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     /// <summary>
     /// The <see cref="SessionInfo"/> entry in the session list that owns this view model.
-    /// When set, cost is updated on the entry after each completed message exchange.
+    /// When set, cost is updated on the entry after each completed message exchange,
+    /// and the entry follows <see cref="Activity"/>.
     /// </summary>
-    public SessionInfo? SessionInfo { get; set; }
+    public SessionInfo? SessionInfo
+    {
+        get => _sessionInfo;
+        set
+        {
+            _sessionInfo = value;
+            UpdateSessionInfoActivity();
+        }
+    }
+
+    private SessionInfo? _sessionInfo;
 
     public event Action? ScrollRequested;
 
@@ -494,6 +536,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         chatService.StepCanMoveToBackground += OnChatServiceStepCanMoveToBackground;
 
         InitializeUsage(chatService, options.Value);
+        InitializePermissionMode(chatService);
     }
 
     // True while a turn the CLI started on its own is running. It holds the
@@ -753,8 +796,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         ActiveBanner = null;
         UpdateActivityIndicator();
+        AddNotice(notice, "dismissed");
+    }
 
-        var noticeId = $"dismissed-{++_userMsgCounter}";
+    /// <summary>Leaves a row in the chat that is not part of the conversation.
+    /// Must run on the UI thread.</summary>
+    private void AddNotice(string notice, string idPrefix = "notice")
+    {
+        var noticeId = $"{idPrefix}-{++_userMsgCounter}";
         Items.Add(new ChatItemViewModel
         {
             Type = ChatItemType.Assistant,
@@ -1467,6 +1516,18 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         try { _activityTimer?.Stop(); } catch { }
         try { EditorContextProvider = null; } catch { }
+
+        // Closing the window kills the CLI, so the row must not go on claiming
+        // the session works or waits.
+        if (SessionInfo is not null)
+        {
+            SessionInfo.Activity = SessionActivity.Idle;
+            SessionInfo.ActivityStatus = string.Empty;
+            SessionInfo.HasBackgroundTasks = false;
+            // A dispatched update still in the queue must not bring it back.
+            _sessionInfo = null;
+        }
+
         try
         {
             if (_chatService is not null)
@@ -1478,6 +1539,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 _chatService.AppliedEffortChanged -= OnChatServiceAppliedEffortChanged;
                 _chatService.FastModeChanged -= OnChatServiceFastModeChanged;
                 _chatService.BackgroundTasksChanged -= OnChatServiceBackgroundTasksChanged;
+                _chatService.PermissionModeChanged -= OnChatServicePermissionModeChanged;
+                _chatService.PermissionModeRejected -= OnChatServicePermissionModeRejected;
                 _chatService.StepBackgroundStateChanged -= OnChatServiceStepBackgroundStateChanged;
                 _chatService.StepCanMoveToBackground -= OnChatServiceStepCanMoveToBackground;
             }

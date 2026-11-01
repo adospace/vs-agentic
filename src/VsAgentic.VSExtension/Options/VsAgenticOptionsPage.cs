@@ -36,7 +36,7 @@ public class VsAgenticOptionsPage : DialogPage
 
     [Category("Claude CLI")]
     [DisplayName("CLI Permission Mode")]
-    [Description("Controls how the CLI handles tool permissions. Default: every gated tool call surfaces an Allow/Deny banner in the chat (safest). AcceptEdits: file edits (Edit, Write, NotebookEdit) auto-accept; everything else still prompts. BypassPermissions: auto-accept every tool call without prompting (use only in trusted environments).")]
+    [Description("The permission mode a new chat starts in. The dropdown under the chat input changes it for one chat. Default (the default): every gated tool call surfaces an Allow/Deny banner in the chat. CliSetting: no mode is passed, so permissions.defaultMode from your Claude Code settings applies, as in a terminal. This includes the .claude/settings.json committed to the repository you open, so an unfamiliar repository can start the chat in a mode that applies edits without asking. AcceptEdits: file edits (Edit, Write, NotebookEdit) auto-accept; everything else still prompts. Plan: Claude plans and does not change anything until the plan is approved. Auto: a classifier approves the calls it considers safe; the rest still prompt. BypassPermissions: auto-accept every tool call without prompting, except those an ask rule in your Claude Code settings matches (use only in trusted environments).")]
     [DefaultValue(CliPermissionMode.Default)]
     public CliPermissionMode CliPermissionMode { get; set; } = CliPermissionMode.Default;
 
@@ -57,6 +57,12 @@ public class VsAgenticOptionsPage : DialogPage
     [Description("False (default): the CLI loads only VsAgentic's own MCP server, which asks you before gated tools run. True: the CLI also loads the MCP servers you added with the user scope (claude mcp add --scope user), which Claude Code keeps in ~/.claude.json. Servers in a project's .mcp.json, servers added with the local scope, plugin servers and claude.ai connectors are not loaded, so opening a repository never starts a server it defines. Servers that do not connect are listed in the chat. Applies to sessions started after the change.")]
     [DefaultValue(false)]
     public bool UseClaudeMcpServers { get; set; }
+
+    [Category("Claude CLI")]
+    [DisplayName("Background command limit")]
+    [Description("Most time Claude may give a shell command before the CLI stops it. The CLI treats this extension as an unattended session: it stops a background command (a dev server, a watcher) after 30 minutes unless Claude asks for longer, and allows at most 2 hours. The other values raise that maximum through BASH_MAX_TIMEOUT_MS. The CLI applies the variable to every Bash command, so the maximum for a foreground command rises as well. The default timeouts stay. CliDefault leaves the variable alone. A value already set in the environment Visual Studio started with is kept. Applies to sessions started after the change.")]
+    [DefaultValue(BackgroundCommandLimit.CliDefault)]
+    public BackgroundCommandLimit BackgroundCommandLimit { get; set; } = BackgroundCommandLimit.CliDefault;
 
     [Category("Claude CLI")]
     [DisplayName("Check for CLI updates")]

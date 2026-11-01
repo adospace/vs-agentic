@@ -85,6 +85,46 @@ public interface IChatService
     void ApplyModelAndEffort(string modelAlias, ClaudeEffort effort);
 
     /// <summary>
+    /// The permission mode this session asks for: the one it started with, or
+    /// the last one picked. Follows the CLI when the CLI changes the mode
+    /// itself, for example when a plan is approved.
+    /// </summary>
+    CliPermissionMode PermissionMode { get; }
+
+    /// <summary>
+    /// The permission mode the CLI reports as in force, in its own spelling
+    /// ("default", "acceptEdits", "plan", "auto" …). Null before the running
+    /// process has reported it, and while a restart that changes it is pending.
+    /// </summary>
+    string? ReportedPermissionMode { get; }
+
+    /// <summary>
+    /// Raised when <see cref="PermissionMode"/> or <see cref="ReportedPermissionMode"/>
+    /// changes. Raised on a background thread; hosts must marshal to the UI thread.
+    /// </summary>
+    event Action? PermissionModeChanged;
+
+    /// <summary>
+    /// Raised when the running CLI refuses a mode, with its error text. The
+    /// session keeps the mode it had, and <see cref="PermissionModeChanged"/>
+    /// fires with it. Raised on a background thread.
+    /// </summary>
+    event Action<string>? PermissionModeRejected;
+
+    /// <summary>
+    /// Switches the permission mode for this session.
+    ///
+    /// A running process takes the change at once, also within a running turn.
+    /// A process started later gets it as a start-up flag. Two changes need a
+    /// restart, which the next <see cref="SendMessageAsync"/> does while
+    /// resuming the conversation: <see cref="CliPermissionMode.CliSetting"/>,
+    /// because no request returns a process to its settings, and
+    /// <see cref="CliPermissionMode.BypassPermissions"/> when the process was not
+    /// started in it. A no-op when the mode did not change.
+    /// </summary>
+    void ApplyPermissionMode(CliPermissionMode mode);
+
+    /// <summary>
     /// The effort level the CLI will send on its next request, as it reports
     /// it — what <see cref="ClaudeEffort.Default"/> resolves to, or the chosen
     /// level after the CLI lowered it for a model that does not support it.

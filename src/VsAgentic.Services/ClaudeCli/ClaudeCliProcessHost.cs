@@ -157,6 +157,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
         };
 
         ClaudeCliChatService.UseSubscriptionAuth(psi);
+        ApplyBackgroundCommandLimit(psi);
 
         // Without this, a CLI that refuses to start (bad proxy URL, missing
         // shell, a session held elsewhere ...) explains itself on stderr only.
@@ -308,6 +309,27 @@ public sealed class ClaudeCliProcessHost : IDisposable
         sb.Append(EscapeArgument(AskUserQuestionPromptNudge.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ')));
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Lets the model keep a background command longer than the 2 hours the CLI
+    /// allows in an unattended session; see <see cref="BackgroundCommandLimit"/>.
+    /// A value the user already set in the environment Visual Studio inherited
+    /// wins, because it is a deliberate choice and ours is only a default.
+    /// </summary>
+    private void ApplyBackgroundCommandLimit(ProcessStartInfo psi)
+    {
+        var value = _options.BackgroundCommandLimit.ToMaxTimeoutMs();
+        if (value is null) return;
+
+        const string name = BackgroundCommandLimitExtensions.MaxTimeoutVariable;
+        if (!string.IsNullOrEmpty(psi.EnvironmentVariables[name]))
+        {
+            _logger.LogInformation("[ClaudeCli] {Name} kept from the environment: {Value}", name, psi.EnvironmentVariables[name]);
+            return;
+        }
+
+        psi.EnvironmentVariables[name] = value;
     }
 
     private const string AskUserQuestionPromptNudge =

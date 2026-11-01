@@ -1,8 +1,5 @@
 # VsAgentic
 
-## IMPORTANT, FUTURE DEVELOPMENT OF THIS EXTENSION IS AT RISK, PLEASE READ/FOLLOW: https://github.com/adospace/vs-agentic/issues/10
-
-
 **An agentic AI coding assistant for Visual Studio 2026** — chat with Claude to explore, understand, and modify your codebase, powered by the Claude Code CLI and your Claude subscription.
 
 > ⭐ If VsAgentic saves you time, please consider giving it a star — it helps others discover the extension and motivates continued development!

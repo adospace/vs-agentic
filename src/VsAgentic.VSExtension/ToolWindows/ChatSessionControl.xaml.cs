@@ -68,16 +68,16 @@ public partial class ChatSessionControl : UserControl
         viewModel.TurnEnded += () =>
             _ = ChatWebView.EndActivityAsync();
 
-        // The dots before the status text. Busy only: while a banner waits for
-        // the user, Claude is not working.
-        SetWorkingDots(viewModel.Activity == SessionActivity.Busy);
+        // The dots before the status text. While a banner waits for the user,
+        // Claude is not working.
+        SetWorkingDots(viewModel.IsWorking);
         viewModel.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName != nameof(ChatSessionViewModel.Activity)) return;
+            if (e.PropertyName != nameof(ChatSessionViewModel.IsWorking)) return;
             if (Dispatcher.CheckAccess())
-                SetWorkingDots(viewModel.Activity == SessionActivity.Busy);
+                SetWorkingDots(viewModel.IsWorking);
             else
-                Dispatcher.BeginInvoke(new Action(() => SetWorkingDots(viewModel.Activity == SessionActivity.Busy)));
+                Dispatcher.BeginInvoke(new Action(() => SetWorkingDots(viewModel.IsWorking)));
         };
 
         // Banner mounting is now driven by the ActiveBanner property on the VM —

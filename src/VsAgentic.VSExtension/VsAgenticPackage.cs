@@ -340,6 +340,8 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 options.CliPermissionMode = optionsPage.CliPermissionMode;
                 options.Model = optionsPage.Model;
                 options.Effort = optionsPage.Effort;
+                options.UseClaudeMcpServers = optionsPage.UseClaudeMcpServers;
+                options.BackgroundCommandLimit = optionsPage.BackgroundCommandLimit;
                 options.UsagePlan = optionsPage.UsagePlan;
                 options.FiveHourTokenBudget = optionsPage.FiveHourTokenBudget;
                 options.WeeklyTokenBudget = optionsPage.WeeklyTokenBudget;

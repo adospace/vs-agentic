@@ -39,17 +39,27 @@ public static class ClaudeCommandCatalog
     /// </summary>
     public static event Action<string>? ReportedChanged;
 
-    public static void SetReported(string workingDirectory, IReadOnlyList<ClaudeCommandInfo> commands)
+    /// <summary>
+    /// Stores the list for a working directory. True when it differs from the
+    /// one held; the caller then raises <see cref="ReportedChanged"/> with
+    /// <see cref="NotifyReportedChanged"/> once it holds no lock of its own,
+    /// so that no handler runs under that lock.
+    /// </summary>
+    public static bool SetReported(string workingDirectory, IReadOnlyList<ClaudeCommandInfo> commands)
     {
         var key = Key(workingDirectory);
         lock (s_lock)
         {
             // Kept, not replaced, when equal: every turn reports the list again.
-            if (s_reported.TryGetValue(key, out var previous) && previous.SequenceEqual(commands)) return;
+            if (s_reported.TryGetValue(key, out var previous) && previous.SequenceEqual(commands)) return false;
             s_reported[key] = commands;
         }
-        ReportedChanged?.Invoke(key);
+        return true;
     }
+
+    /// <summary>Raises <see cref="ReportedChanged"/> for a working directory.</summary>
+    public static void NotifyReportedChanged(string workingDirectory) =>
+        ReportedChanged?.Invoke(Key(workingDirectory));
 
     private static string Key(string workingDirectory)
     {

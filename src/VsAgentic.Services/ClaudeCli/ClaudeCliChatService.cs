@@ -1419,11 +1419,13 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         PublishCommands();
     }
 
-    // Built and handed on under the lock: the initialize answer and
-    // system/init arrive on different threads, and a list built from the
-    // older of the two must not land after the newer one.
+    // Built and stored under the lock: the initialize answer and system/init
+    // arrive on different threads, and a list built from the older of the two
+    // must not land after the newer one. The change is announced after the
+    // lock is released, so no handler runs under it.
     private void PublishCommands()
     {
+        bool changed;
         lock (_commandsLock)
         {
             if (_commands.Count == 0) return;
@@ -1439,9 +1441,12 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 menu.Add(new ClaudeCommandInfo(name, command.Description, command.ArgumentHint, command.Builtin));
             }
 
-            try { ClaudeCommandCatalog.SetReported(_options.WorkingDirectory, menu); }
-            catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] Command list handler threw"); }
+            changed = ClaudeCommandCatalog.SetReported(_options.WorkingDirectory, menu);
         }
+
+        if (!changed) return;
+        try { ClaudeCommandCatalog.NotifyReportedChanged(_options.WorkingDirectory); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] Command list handler threw"); }
     }
 
     /// <summary>

@@ -19,7 +19,8 @@ public partial class ChatSessionControl
     private bool _slashDismissed;
 
     // The text the "/" button found in the input, while the "/ " it put in
-    // front is still there and nothing has been picked. Escape puts it back.
+    // front is still there and nothing has been picked. It goes back when the
+    // menu closes without a pick.
     private string? _textBeforeSlashButton;
 
     private void SlashCommandButton_Click(object sender, RoutedEventArgs e)
@@ -45,8 +46,9 @@ public partial class ChatSessionControl
         UpdateSlashPopup();
     }
 
-    // Escape after the "/" button, with no command picked: the input goes back
-    // to what the user had written, so it is not sent as "/ text".
+    // The menu closed after the "/" button with no command picked (Escape, the
+    // caret or the focus leaving, a filter that finds nothing): the input goes
+    // back to what the user had written, so it is not sent as "/ text".
     private void RestoreTextBeforeSlashButton()
     {
         var before = _textBeforeSlashButton;
@@ -56,7 +58,11 @@ public partial class ChatSessionControl
         // Typing after the slash makes it a command name the user wrote.
         var text = InputTextBox.Text ?? "";
         if (text != "/ " + before) return;
-        SetInputText(before, before.Length);
+
+        // A caret moved into the text stays on its character; one still at
+        // the slash goes to the end.
+        var caret = InputTextBox.CaretIndex;
+        SetInputText(before, caret > 2 ? caret - 2 : before.Length);
     }
 
     /// <summary>Opens, refilters or closes the menu for the input as it now stands.</summary>
@@ -134,6 +140,7 @@ public partial class ChatSessionControl
     {
         SlashPopup.IsOpen = false;
         SlashList.ItemsSource = null;
+        RestoreTextBeforeSlashButton();
     }
 
     /// <summary>The menu's keys. True when the key was used.</summary>
@@ -159,7 +166,6 @@ public partial class ChatSessionControl
             case Key.Escape:
                 _slashDismissed = true;
                 CloseSlashPopup();
-                RestoreTextBeforeSlashButton();
                 return true;
         }
         return false;

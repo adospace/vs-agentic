@@ -553,6 +553,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         chatService.StepCanMoveToBackground += OnChatServiceStepCanMoveToBackground;
 
         InitializeUsage(chatService, options.Value);
+        InitializeSlashCommands();
         InitializePermissionMode(chatService);
     }
 
@@ -1104,6 +1105,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     private async Task SendAsync()
     {
         var typed = InputText.Trim();
+
+        // "/model", "/effort" and "/fast" change the panel, not go to the CLI.
+        if (PendingAttachments.Count == 0 && TryRunPanelCommand(typed))
+        {
+            InputText = "";
+            return;
+        }
+
         InputText = "";
 
         var attachments = PendingAttachments.ToList();
@@ -1768,6 +1777,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             }
             // Static: without this, a closed session stays reachable from the catalog.
             ClaudeModelCatalog.ReportedChanged -= OnReportedModelsChanged;
+            ClaudeCommandCatalog.ReportedChanged -= OnReportedCommandsChanged;
         }
         catch { }
         try { (_chatService as IDisposable)?.Dispose(); } catch { }

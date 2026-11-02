@@ -117,6 +117,9 @@ public partial class ChatSessionControl : UserControl
     {
         DataContext = viewModel;
 
+        // "/model", "/effort" and "/fast", picked or typed, open the panel.
+        viewModel.OpenModelPanel = OpenModelPanel;
+
         viewModel.MessageAdded += (id, type, data) =>
             _ = ChatWebView.AddMessageAsync(id, type, data);
 
@@ -186,20 +189,21 @@ public partial class ChatSessionControl : UserControl
         // Three ways to say "seen it", between them covering everywhere a
         // pending Completed indicator should stop:
         //
-        //  - GotFocus bubbles from whichever descendant actually receives it,
-        //    so it fires as soon as VS activates the tab and focus lands
-        //    inside — the input box, a banner button, anywhere.
+        //  - Keyboard focus arriving, see UpdateSessionFocus. It arrives when
+        //    VS activates the tab and also when the user comes back to VS from
+        //    another window. GotFocus only covers the first: logical focus
+        //    stays in the input box while VS is in the background, so it does
+        //    not fire again when keyboard focus returns there.
         //  - PreviewMouseDown catches a click on the chrome that takes no
         //    focus: the status bar, the usage meters, a header, bare margin.
         //  - Clicked is relayed by the page, because the transcript itself is
         //    a browser child window that WPF sees no mouse events from.
-        GotFocus += (_, _) => viewModel.NotifySessionSeen();
         ChatWebView.Clicked += OnChatClicked;
 
-        // Separately from "seen it", the view model wants to know whether the
-        // user is in this session at the moment a turn ends, so one that ends
-        // under their nose raises no indicator at all. Same two halves: WPF
-        // reports its own chrome, the page reports itself.
+        // The same focus tells the view model whether the user is in this
+        // session at the moment a turn ends, so one that ends under their nose
+        // raises no indicator at all. Two halves: WPF reports its own chrome,
+        // the page reports itself.
         IsKeyboardFocusWithinChanged += OnKeyboardFocusWithinChanged;
         ChatWebView.ContentFocusChanged += OnChatContentFocusChanged;
     }
@@ -307,11 +311,15 @@ public partial class ChatSessionControl : UserControl
     /// is no longer watching — whereas a docked window stays visible either
     /// way. The page's own answer is OR'd in because focus inside the browser
     /// child window does not always register as focus within the host.
+    /// Focus coming in also means the user now sees the session, so it clears
+    /// a pending Completed indicator.
     /// </summary>
     private void UpdateSessionFocus()
     {
-        if (DataContext is ChatSessionViewModel vm)
-            vm.IsSessionFocused = IsKeyboardFocusWithin || _chatContentFocused;
+        if (DataContext is not ChatSessionViewModel vm) return;
+
+        vm.IsSessionFocused = IsKeyboardFocusWithin || _chatContentFocused;
+        if (vm.IsSessionFocused) vm.NotifySessionSeen();
     }
 
     /// <summary>
@@ -902,6 +910,8 @@ public partial class ChatSessionControl : UserControl
     {
         if (_suppressTextChanged) return;
 
+        UpdateSlashPopup();
+
         var text = InputTextBox.Text ?? "";
         var caret = InputTextBox.CaretIndex;
 
@@ -940,6 +950,10 @@ public partial class ChatSessionControl : UserControl
 
     private void InputTextBox_SelectionChanged(object sender, RoutedEventArgs e)
     {
+        // Moving the caret out of the command's name closes the menu.
+        if (SlashPopup.IsOpen && !TryGetSlashToken(InputTextBox.Text ?? "", InputTextBox.CaretIndex, out _))
+            CloseSlashPopup();
+
         if (_mentionStart < 0) return;
 
         var caret = InputTextBox.CaretIndex;
@@ -949,8 +963,9 @@ public partial class ChatSessionControl : UserControl
     private void InputTextBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
         // Don't close if focus moved into the popup (clicking a list item).
-        if (e.NewFocus is DependencyObject d && IsDescendantOf(d, MentionPopup.Child)) return;
+        if (e.NewFocus is DependencyObject d && (IsDescendantOf(d, MentionPopup.Child) || IsDescendantOf(d, SlashPopup.Child))) return;
         CloseMentionPopup();
+        CloseSlashPopup();
     }
 
     private static bool IsDescendantOf(DependencyObject? node, DependencyObject? root)
@@ -987,6 +1002,12 @@ public partial class ChatSessionControl : UserControl
                     return;
                 }
             }
+        }
+
+        if (SlashPopup.IsOpen && HandleSlashKey(e))
+        {
+            e.Handled = true;
+            return;
         }
 
         if (!MentionPopup.IsOpen) return;

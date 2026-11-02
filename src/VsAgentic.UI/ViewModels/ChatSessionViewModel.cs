@@ -255,12 +255,27 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// <summary>Text for the indicator strip under the chat input; empty hides it.</summary>
     // While a turn runs, BusyStatus already covers both Busy and a banner being
     // up (step or "Waiting for you", plus the elapsed time).
+    // After the turn, tasks it started can still run; the CLI starts a new turn
+    // when they finish, so the session is not done yet.
     public string StatusText => Activity switch
     {
         _ when IsBusy => BusyStatus,
         SessionActivity.AwaitingUser => "Waiting for input…",
+        _ when HasBackgroundTasks => "Running in background",
         SessionActivity.Completed => "Done",
         _ => ""
+    };
+
+    /// <summary>
+    /// Whether Claude works without waiting for the user: a turn in flight, or
+    /// background tasks after it. ChatSessionControl moves the dots before
+    /// <see cref="StatusText"/> while this is true.
+    /// </summary>
+    public bool IsWorking => Activity switch
+    {
+        SessionActivity.Busy => true,
+        SessionActivity.AwaitingUser => false,
+        _ => HasBackgroundTasks
     };
 
     /// <summary>Whether the status bar should be pulsing. Bound by ChatSessionControl.xaml.</summary>
@@ -268,7 +283,11 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         (Activity == SessionActivity.AwaitingUser && _options.FlashStatusBarWhileWaiting)
         || (Activity == SessionActivity.Completed && _options.FlashStatusBarWhenComplete);
 
-    partial void OnBusyStatusChanged(string value) => OnPropertyChanged(nameof(StatusText));
+    partial void OnBusyStatusChanged(string value)
+    {
+        OnPropertyChanged(nameof(StatusText));
+        UpdateSessionInfoActivity();
+    }
 
     partial void OnIsBusyChanged(bool value)
     {
@@ -297,6 +316,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(Activity));
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(IsFlashing));
+        OnPropertyChanged(nameof(IsWorking));
 
         // Only on a real transition: this runs on every permission request and
         // every resolve, and restarting the tick each time would visibly reset
@@ -321,6 +341,33 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         }
         UpdateDisplayTitle();
         UpdateBusyStatus();
+        UpdateSessionInfoActivity();
+    }
+
+    partial void OnHasBackgroundTasksChanged(bool value) => UpdateSessionInfoActivity();
+
+    /// <summary>
+    /// Copies the state to the session list row, so a session in a hidden
+    /// window still shows whether it works or waits. The row's name stays
+    /// plain; only its second line follows the bar under the chat.
+    /// </summary>
+    private void UpdateSessionInfoActivity()
+    {
+        if (SessionInfo is null) return;
+
+        SessionInfo.Activity = Activity;
+        SessionInfo.HasBackgroundTasks = HasBackgroundTasks;
+        SessionInfo.ActivityStatus = Activity switch
+        {
+            // Completed is a finished turn the user has not looked at yet; the
+            // row has nothing of its own to say about it.
+            SessionActivity.Idle or SessionActivity.Completed
+                => HasBackgroundTasks ? "Running in background" : string.Empty,
+            // A login banner can come up outside a turn, where BusyStatus
+            // would still read "Thinking...".
+            SessionActivity.AwaitingUser when !IsBusy => "Waiting for you",
+            _ => BusyStatus
+        };
     }
 
     private void EnsureActivityTimer()
@@ -405,9 +452,20 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     /// <summary>
     /// The <see cref="SessionInfo"/> entry in the session list that owns this view model.
-    /// When set, cost is updated on the entry after each completed message exchange.
+    /// When set, cost is updated on the entry after each completed message exchange,
+    /// and the entry follows <see cref="Activity"/>.
     /// </summary>
-    public SessionInfo? SessionInfo { get; set; }
+    public SessionInfo? SessionInfo
+    {
+        get => _sessionInfo;
+        set
+        {
+            _sessionInfo = value;
+            UpdateSessionInfoActivity();
+        }
+    }
+
+    private SessionInfo? _sessionInfo;
 
     public event Action? ScrollRequested;
 
@@ -494,6 +552,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         chatService.StepCanMoveToBackground += OnChatServiceStepCanMoveToBackground;
 
         InitializeUsage(chatService, options.Value);
+        InitializePermissionMode(chatService);
     }
 
     // True while a turn the CLI started on its own is running. It holds the
@@ -504,12 +563,56 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     // ends last clears IsBusy and ends the turn in the view.
     private bool _inUnsolicitedTurn;
 
-    private void OnUnsolicitedTurnStarted()
+    private void OnUnsolicitedTurnStarted(bool scheduled)
     {
         Dispatch(() =>
         {
             _inUnsolicitedTurn = true;
             IsBusy = true;
+            if (scheduled) AddScheduledCheckMark();
+        });
+    }
+
+    /// <summary>Tool name of the notice that opens a scheduled check.</summary>
+    public const string ScheduledCheckTool = "ScheduledCheck";
+
+    // Opens a check the model scheduled for itself (CronCreate, /loop). The
+    // web view folds consecutive checks into one block, with this notice as
+    // the boundary between them; it is saved, so a reopened session folds
+    // them the same way. The title is the time of the check.
+    private void AddScheduledCheckMark()
+    {
+        var id = $"check-{Guid.NewGuid():N}";
+        const string text = "Scheduled check";
+        var time = DateTime.Now.ToString("HH:mm");
+        Items.Add(new ChatItemViewModel
+        {
+            Type = ChatItemType.Notice,
+            ToolName = ScheduledCheckTool,
+            Title = time,
+            Content = text,
+            Status = OutputItemStatus.Info,
+            IsStreaming = false
+        });
+        MessageAdded?.Invoke(id, ChatItemType.Notice, new ChatMessageData
+        {
+            Id = id,
+            Type = ChatItemType.Notice.ToString(),
+            ToolName = ScheduledCheckTool,
+            Title = time,
+            Content = text,
+            Status = OutputItemStatus.Info.ToString()
+        });
+        RequestScroll();
+
+        PersistMessageFireAndForget(new PersistedMessage
+        {
+            ItemType = ChatItemType.Notice.ToString(),
+            ToolName = ScheduledCheckTool,
+            Title = time,
+            Content = text,
+            StatusText = OutputItemStatus.Info.ToString(),
+            CreatedUtc = DateTime.UtcNow
         });
     }
 
@@ -630,6 +733,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     // place that shows they are still running, and where each can be stopped.
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(StatusText))]
+    [NotifyPropertyChangedFor(nameof(IsWorking))]
     private bool _hasBackgroundTasks;
 
     /// <summary>One row per running background task, in the CLI's order.</summary>
@@ -753,8 +858,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         ActiveBanner = null;
         UpdateActivityIndicator();
+        AddNotice(notice, "dismissed");
+    }
 
-        var noticeId = $"dismissed-{++_userMsgCounter}";
+    /// <summary>Leaves a row in the chat that is not part of the conversation.
+    /// Must run on the UI thread.</summary>
+    private void AddNotice(string notice, string idPrefix = "notice")
+    {
+        var noticeId = $"{idPrefix}-{++_userMsgCounter}";
         Items.Add(new ChatItemViewModel
         {
             Type = ChatItemType.Assistant,
@@ -943,6 +1054,20 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         // A removed editor context goes back to being a suggestion.
         if (attachment is EditorContext)
             RefreshEditorContext();
+    }
+
+    /// <summary>Removes every attachment. False when there was none.</summary>
+    public bool RemoveAllAttachments()
+    {
+        if (PendingAttachments.Count == 0) return false;
+
+        var hadEditorContext = PendingAttachments.OfType<EditorContext>().Any();
+        PendingAttachments.Clear();
+        SendCommand.NotifyCanExecuteChanged();
+
+        if (hadEditorContext)
+            RefreshEditorContext();
+        return true;
     }
 
     /// <summary>
@@ -1468,6 +1593,18 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         try { _activityTimer?.Stop(); } catch { }
         try { EditorContextProvider = null; } catch { }
         try { DebuggerModeSource = null; } catch { }
+
+        // Closing the window kills the CLI, so the row must not go on claiming
+        // the session works or waits.
+        if (SessionInfo is not null)
+        {
+            SessionInfo.Activity = SessionActivity.Idle;
+            SessionInfo.ActivityStatus = string.Empty;
+            SessionInfo.HasBackgroundTasks = false;
+            // A dispatched update still in the queue must not bring it back.
+            _sessionInfo = null;
+        }
+
         try
         {
             if (_chatService is not null)
@@ -1479,6 +1616,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 _chatService.AppliedEffortChanged -= OnChatServiceAppliedEffortChanged;
                 _chatService.FastModeChanged -= OnChatServiceFastModeChanged;
                 _chatService.BackgroundTasksChanged -= OnChatServiceBackgroundTasksChanged;
+                _chatService.PermissionModeChanged -= OnChatServicePermissionModeChanged;
+                _chatService.PermissionModeRejected -= OnChatServicePermissionModeRejected;
                 _chatService.StepBackgroundStateChanged -= OnChatServiceStepBackgroundStateChanged;
                 _chatService.StepCanMoveToBackground -= OnChatServiceStepCanMoveToBackground;
             }

@@ -1,8 +1,5 @@
 # VsAgentic
 
-## IMPORTANT, FUTURE DEVELOPMENT OF THIS EXTENSION IS AT RISK, PLEASE READ/FOLLOW: https://github.com/adospace/vs-agentic/issues/10
-
-
 **An agentic AI coding assistant for Visual Studio 2026** — chat with Claude to explore, understand, and modify your codebase, powered by the Claude Code CLI and your Claude subscription.
 
 > ⭐ If VsAgentic saves you time, please consider giving it a star — it helps others discover the extension and motivates continued development!
@@ -24,6 +21,7 @@ Settings are available in the Visual Studio **Tools → Options → VsAgentic** 
 - **Claude CLI Path** — path to the `claude` executable (defaults to `claude` on PATH)
 - **CLI Permission Mode** — controls how the CLI handles tool permissions
 - **Model** / **Reasoning effort** — remembered from the dropdowns under the chat input
+- **Background command limit** — most time Claude may give a shell command before the CLI stops it. The CLI allows 2 hours (`CliDefault`, the default); the other values raise this through `BASH_MAX_TIMEOUT_MS` for a background command (dev server, watcher) and for a foreground command alike
 - **Plan** — which subscription the 5h / 7d estimates are sized against (`Unlimited` hides the 5h / 7d readings)
 - **5-hour / weekly token budget** — override the estimated limits behind those estimates
 
@@ -127,7 +125,7 @@ A **VsAgentic Sessions** panel will also appear (docked next to Solution Explore
 | Error | Cause | Fix |
 |-------|-------|-----|
 | **"Not logged in · Please run /login"** | The CLI is not authenticated | Run `claude login` from a terminal and complete the browser-based login flow |
-| **"Invalid API key"** | An `ANTHROPIC_API_KEY` environment variable is set and interfering | Remove the `ANTHROPIC_API_KEY` env var — VsAgentic uses subscription auth, not API keys. Remove it with: `[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", $null, "User")` then restart Visual Studio |
+| **"Invalid API key"** | A Claude Code settings file sets an API key: `ANTHROPIC_API_KEY` in its `env` block, or `apiKeyHelper`. VsAgentic clears the `ANTHROPIC_API_KEY` environment variable, but the CLI applies these settings after that | Remove `ANTHROPIC_API_KEY` from `env` and remove `apiKeyHelper` in `%USERPROFILE%\.claude\settings.json` and in `.claude\settings.json` / `.claude\settings.local.json` of the solution folder, then start a new chat — VsAgentic uses subscription auth, not API keys |
 | **"Failed to start Claude CLI"** | The `claude` command was not found | Install the CLI with `npm install -g @anthropic-ai/claude-code`, or set the full path in **Tools → Options → VsAgentic** |
 | **Update banner keeps appearing after upgrading** | Visual Studio may keep stale extension directories from a previous version and continue loading old files | Close VS, go to `%LOCALAPPDATA%\Microsoft\VisualStudio\<instance>\Extensions\`, delete any old VsAgentic folders (check `extension.vsixmanifest` inside each to identify the version), and restart VS |
 

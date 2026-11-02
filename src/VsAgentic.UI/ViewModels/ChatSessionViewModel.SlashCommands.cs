@@ -118,7 +118,19 @@ public partial class ChatSessionViewModel
         {
             case "model":
                 // The panel's Default row has no alias; the CLI calls it "default".
-                SelectedModel = OptionFor(string.Equals(arg, "default", StringComparison.OrdinalIgnoreCase) ? "" : arg);
+                if (string.Equals(arg, "default", StringComparison.OrdinalIgnoreCase))
+                {
+                    SelectedModel = OptionFor("");
+                    return true;
+                }
+                // A model the panel lists, or a full id. For any other name
+                // OptionFor would add a row, as it does for a typo in the Model
+                // setting, and the next message would fail; the CLI answers a
+                // name it does not know.
+                if (!_modelOptions.Any(m => string.Equals(m.Alias, arg, StringComparison.OrdinalIgnoreCase))
+                    && !arg.StartsWith("claude-", StringComparison.OrdinalIgnoreCase))
+                    return false;
+                SelectedModel = OptionFor(arg);
                 return true;
 
             case "effort":

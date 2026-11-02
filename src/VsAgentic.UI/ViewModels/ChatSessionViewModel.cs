@@ -682,14 +682,15 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         Dispatch(() =>
         {
+            PermissionBannerViewModel? banner = null;
             try
             {
                 _logger.LogInformation(
                     "[VM] Permission prompt requested (id={Id}, tool={Tool}, toolUseId={ToolUseId})",
                     request.Id, request.ToolName, request.ToolUseId);
-                var banner = new PermissionBannerViewModel(request, decision =>
+                banner = new PermissionBannerViewModel(request, decision =>
                 {
-                    Dispatch(ShowNextPrompt);
+                    Dispatch(() => ShowNextPromptAfter(banner));
                     _permissionBroker?.Resolve(request.Id, decision);
                 });
                 banner.AskedBy = FindAskingSubagent(request.ToolUseId);
@@ -700,7 +701,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 // Without this guard the throw escapes Dispatcher.BeginInvoke,
                 // tears down the dispatcher loop, and leaves the chat hung.
                 _logger.LogError(ex, "[VM] Permission prompt handler crashed (id={Id})", request.Id);
-                ActiveBanner = null;
+                RemoveFailedPrompt(banner);
                 try { _permissionBroker?.Resolve(request.Id, PermissionDecision.Deny("Banner failed to display")); }
                 catch (Exception ex2) { _logger.LogError(ex2, "[VM] PermissionBroker.Resolve also failed"); }
             }
@@ -711,21 +712,23 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         Dispatch(() =>
         {
+            QuestionCardViewModel? card = null;
             try
             {
                 _logger.LogInformation(
                     "[VM] User question requested (toolUseId={Id}, questions={Count})",
                     request.ToolUseId, request.Questions.Count);
-                ShowPrompt(new QuestionCardViewModel(request, answers =>
+                card = new QuestionCardViewModel(request, answers =>
                 {
-                    Dispatch(ShowNextPrompt);
+                    Dispatch(() => ShowNextPromptAfter(card));
                     _questionBroker?.Resolve(request.ToolUseId, answers);
-                }));
+                });
+                ShowPrompt(card);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[VM] User question handler crashed (toolUseId={Id})", request.ToolUseId);
-                ActiveBanner = null;
+                RemoveFailedPrompt(card);
                 try { _questionBroker?.Resolve(request.ToolUseId, new Dictionary<string, string>()); }
                 catch (Exception ex2) { _logger.LogError(ex2, "[VM] QuestionBroker.Resolve also failed"); }
             }
@@ -818,7 +821,34 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
         var next = _waitingPrompts[0];
         _waitingPrompts.RemoveAt(0);
+        // It comes up where the user just clicked or pressed Enter.
+        if (next is IQueuedPrompt queued) queued.HoldInput(QueuedPromptHold);
         ActiveBanner = next;
+    }
+
+    // Long enough for the second click of a double-click or a held Enter,
+    // short enough not to be noticed.
+    private static readonly TimeSpan QueuedPromptHold = TimeSpan.FromMilliseconds(400);
+
+    /// <summary>After a prompt is answered: the next one comes up only if the
+    /// answered one is still on screen. A Stop or a withdrawal may have taken
+    /// it down already. Must run on the UI thread.</summary>
+    private void ShowNextPromptAfter(IBannerViewModel? answered)
+    {
+        if (answered is not null && ReferenceEquals(ActiveBanner, answered))
+            ShowNextPrompt();
+    }
+
+    /// <summary>A prompt that failed to come up. Only it goes: another prompt
+    /// on screen stays there, still waiting for its answer. Must run on the UI
+    /// thread.</summary>
+    private void RemoveFailedPrompt(IBannerViewModel? failed)
+    {
+        if (failed is null) return;
+        if (ReferenceEquals(ActiveBanner, failed))
+            ShowNextPrompt();
+        else
+            _waitingPrompts.Remove(failed);
     }
 
     /// <summary>Removes a prompt that was never shown. It needs no line in the

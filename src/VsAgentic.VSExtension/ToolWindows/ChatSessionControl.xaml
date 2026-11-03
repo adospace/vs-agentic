@@ -901,27 +901,29 @@
                                                             Moniker="{x:Static catalog:KnownMonikers.AddAttachment}"/>
                                     </Button>
 
-                                    <!-- While Visual Studio is debugging: shows that
-                                         Claude may read the program's state, and
-                                         turns that off for this chat. On = a border
-                                         in the colour the VS status bar takes while
-                                         debugging, so it reads as part of the same
-                                         state. Grey text while the program runs, as
-                                         there is nothing to read yet; no border and
-                                         struck through when off. -->
-                                    <ToggleButton Margin="2,0,0,0"
-                                                  Height="22"
-                                                  FontSize="11"
-                                                  Cursor="Hand"
-                                                  Focusable="False"
-                                                  IsChecked="{Binding IsDebuggerAccessOn}"
-                                                  Visibility="{Binding IsDebugging, Converter={StaticResource BoolToVis}}"
-                                                  AutomationProperties.Name="Debugger access">
-                                        <ToggleButton.ToolTip>
+                                    <!-- What Claude may read from the debugger in this
+                                         chat: off, the stack, or the stack and values
+                                         on request. Shown whenever access is on, so
+                                         the user sees it before debugging, and while
+                                         debugging, so it can be turned on. A click
+                                         opens the three levels. On = a border in the
+                                         colour the VS status bar takes while
+                                         debugging; grey text while nothing is stopped;
+                                         no border and struck through when off. -->
+                                    <Button x:Name="DebuggerAccessButton"
+                                            Margin="2,0,0,0"
+                                            Height="22"
+                                            FontSize="11"
+                                            Cursor="Hand"
+                                            Focusable="False"
+                                            Click="OnDebuggerAccessClick"
+                                            Visibility="{Binding ShowDebuggerAccess, Converter={StaticResource BoolToVis}}"
+                                            AutomationProperties.Name="Debugger access">
+                                        <Button.ToolTip>
                                             <TextBlock Text="{Binding DebuggerAccessTooltip}"/>
-                                        </ToggleButton.ToolTip>
-                                        <ToggleButton.Template>
-                                            <ControlTemplate TargetType="ToggleButton">
+                                        </Button.ToolTip>
+                                        <Button.Template>
+                                            <ControlTemplate TargetType="Button">
                                                 <Border x:Name="Chrome"
                                                         Background="Transparent"
                                                         BorderThickness="1"
@@ -930,7 +932,7 @@
                                                         Padding="6,0"
                                                         SnapsToDevicePixels="True">
                                                     <TextBlock x:Name="Label"
-                                                               Text="Debugger"
+                                                               Text="{Binding DebuggerAccessLabel}"
                                                                VerticalAlignment="Center"
                                                                Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
                                                 </Border>
@@ -943,16 +945,84 @@
                                                         <Setter TargetName="Label" Property="Foreground"
                                                                 Value="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
                                                     </DataTrigger>
-                                                    <Trigger Property="IsChecked" Value="False">
+                                                    <DataTrigger Binding="{Binding IsDebuggerAccessOn}" Value="False">
                                                         <Setter TargetName="Chrome" Property="BorderBrush" Value="Transparent"/>
                                                         <Setter TargetName="Label" Property="Foreground"
                                                                 Value="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
                                                         <Setter TargetName="Label" Property="TextDecorations" Value="Strikethrough"/>
-                                                    </Trigger>
+                                                    </DataTrigger>
                                                 </ControlTemplate.Triggers>
                                             </ControlTemplate>
-                                        </ToggleButton.Template>
-                                    </ToggleButton>
+                                        </Button.Template>
+                                    </Button>
+
+                                    <!-- The three levels, upwards like the model picker.
+                                         Applies to this chat only. -->
+                                    <Popup x:Name="DebuggerAccessPopup"
+                                           PlacementTarget="{Binding ElementName=DebuggerAccessButton}"
+                                           Placement="Top"
+                                           StaysOpen="False"
+                                           AllowsTransparency="True"
+                                           PopupAnimation="Fade">
+                                        <Border Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
+                                                BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                                                BorderThickness="1"
+                                                CornerRadius="4"
+                                                Padding="0,4"
+                                                MinWidth="300"
+                                                SnapsToDevicePixels="True"
+                                                TextElement.FontSize="11"
+                                                TextElement.Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}">
+                                            <StackPanel>
+                                                <TextBlock Text="CLAUDE MAY READ THE DEBUGGER (THIS CHAT)" Style="{StaticResource PickerSectionStyle}"/>
+                                                <Button Style="{StaticResource PickerRowStyle}" Tag="Off" Click="OnDebuggerAccessPick"
+                                                        AutomationProperties.Name="Off">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="26"/>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                            <ColumnDefinition Width="*"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Text="✓" HorizontalAlignment="Center" FontWeight="SemiBold"
+                                                                   Visibility="{Binding IsDebuggerAccessOffSelected, Converter={StaticResource BoolToVis}}"/>
+                                                        <TextBlock Grid.Column="1" Text="Off" FontSize="12"/>
+                                                        <TextBlock Grid.Column="2" Text="Nothing" Margin="8,1,8,0"
+                                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                    </Grid>
+                                                </Button>
+                                                <Button Style="{StaticResource PickerRowStyle}" Tag="StackOnly" Click="OnDebuggerAccessPick"
+                                                        AutomationProperties.Name="Stack only">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="26"/>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                            <ColumnDefinition Width="*"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Text="✓" HorizontalAlignment="Center" FontWeight="SemiBold"
+                                                                   Visibility="{Binding IsDebuggerStackOnlySelected, Converter={StaticResource BoolToVis}}"/>
+                                                        <TextBlock Grid.Column="1" Text="Stack only" FontSize="12"/>
+                                                        <TextBlock Grid.Column="2" Text="Where it stopped and the call stack" Margin="8,1,8,0"
+                                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                    </Grid>
+                                                </Button>
+                                                <Button Style="{StaticResource PickerRowStyle}" Tag="StackAndValues" Click="OnDebuggerAccessPick"
+                                                        AutomationProperties.Name="Stack and values">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="26"/>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                            <ColumnDefinition Width="*"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Text="✓" HorizontalAlignment="Center" FontWeight="SemiBold"
+                                                                   Visibility="{Binding IsDebuggerStackAndValuesSelected, Converter={StaticResource BoolToVis}}"/>
+                                                        <TextBlock Grid.Column="1" Text="Stack and values" FontSize="12"/>
+                                                        <TextBlock Grid.Column="2" Text="Values only after you allow each request" Margin="8,1,8,0"
+                                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                    </Grid>
+                                                </Button>
+                                            </StackPanel>
+                                        </Border>
+                                    </Popup>
 
                                     <!-- The third way: the file open in the editor,
                                          or its selection, one click away. An action

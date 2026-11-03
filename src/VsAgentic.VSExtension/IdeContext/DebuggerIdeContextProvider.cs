@@ -119,7 +119,7 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
                 """,
                 GetDebugValuesAsync,
                 isReadOnly: false,
-                group: IdeToolGroups.Debugger),
+                group: IdeToolGroups.DebuggerValues),
         };
     }
 

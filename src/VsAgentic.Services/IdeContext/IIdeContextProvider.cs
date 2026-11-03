@@ -85,10 +85,16 @@ public sealed class IdeTool
 public static class IdeToolGroups
 {
     /// <summary>
-    /// The debugger state: locals and arguments can hold data the user does
-    /// not want to send, so the chat has a switch for it.
+    /// Where the program stopped and the call stack: no values.
     /// </summary>
     public const string Debugger = "debugger";
+
+    /// <summary>
+    /// Values from the debugger: arguments, locals and the exception message.
+    /// They can hold data the user does not want to send, so they have their
+    /// own level in the setting, and each call goes through the banner.
+    /// </summary>
+    public const string DebuggerValues = "debugger-values";
 }
 
 /// <summary>What a tool returns to Claude: text, usually JSON.</summary>

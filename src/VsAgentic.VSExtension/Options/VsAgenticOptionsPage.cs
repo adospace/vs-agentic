@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using Microsoft.VisualStudio.Shell;
 using VsAgentic.Services.Configuration;
+using VsAgentic.Services.IdeContext;
 
 namespace VsAgentic.VSExtension.Options;
 
@@ -138,6 +139,12 @@ public class VsAgenticOptionsPage : DialogPage
     [Description("Offer the file open in the editor, and the lines selected in it, as a faded chip above the chat input. Nothing is sent until you click the chip; it then goes out with the next message like an attached file. Selected text is sent as well, so unsaved changes reach Claude too.")]
     [DefaultValue(true)]
     public bool SuggestEditorContext { get; set; } = true;
+
+    [Category("Debugger")]
+    [DisplayName("Let Claude read the debugger")]
+    [Description("What Claude may read while you debug a program in Visual Studio. Off (the default): nothing. StackOnly: where the program stopped, why, the exception type and the call stack, without asking. StackAndValues: also the arguments and locals of a frame and the exception message; Claude asks with a banner each time, as values can hold personal data or secrets. The Debugger switch below the chat input changes this for one chat. New chats start with this setting.")]
+    [DefaultValue(DebuggerAccessLevel.Off)]
+    public DebuggerAccessLevel DebuggerAccess { get; set; } = DebuggerAccessLevel.Off;
 
     [Category("Sessions")]
     [DisplayName("Keep days of activity")]

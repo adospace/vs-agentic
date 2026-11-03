@@ -275,6 +275,17 @@ internal sealed class PermissionPipeServer : IDisposable
         if (toolName == "AskUserQuestion")
             return await HandleAskUserQuestionAsync(id, input, ct).ConfigureAwait(false);
 
+        // An IDE tool the user turned off is refused without a banner: a banner
+        // would ask to allow what the setting does not allow. Refused rather
+        // than allowed, so turning access on in between cannot let the call
+        // run without the banner.
+        if (toolName.StartsWith(IdeContextRegistry.McpToolPrefix, StringComparison.Ordinal) &&
+            _ideContext?.IsDisabled(toolName) == true)
+        {
+            _logger.LogInformation("[PermissionPipeServer] refused turned-off IDE tool {Tool}", toolName);
+            return PermissionDecision.Deny(IdeContextRegistry.TurnedOffNote);
+        }
+
         // Our own read-only IDE tools need no banner (see IdeTool.IsReadOnly).
         if (toolName.StartsWith(IdeContextRegistry.McpToolPrefix, StringComparison.Ordinal) &&
             _ideContext?.Find(toolName) is { IsReadOnly: true })

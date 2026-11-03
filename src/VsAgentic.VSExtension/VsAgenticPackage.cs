@@ -169,6 +169,10 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     /// later change straight back. Zoom is set from the chat window rather than
     /// from Tools → Options, so nothing else would ever save it.
     /// </summary>
+    // The debugger setting as last applied, so OnOptionsApplied can tell
+    // whether the user changed it or only another option.
+    private DebuggerAccessLevel _appliedDebuggerAccess = DebuggerAccessLevel.Off;
+
     private void InitializeZoom()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -177,6 +181,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         if (optionsPage is null) return;
 
         optionsPage.Applied += OnOptionsApplied;
+        _appliedDebuggerAccess = optionsPage.DebuggerAccess;
 
         ChatZoom.Initialize(optionsPage.ZoomPercent / 100.0);
 
@@ -226,6 +231,12 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
         if (sender is not VsAgenticOptionsPage optionsPage) return;
 
+        // A changed debugger setting applies to open chats too, replacing what
+        // their switch was set to: turning it off in Options must not leave a
+        // chat that still reads. Applying other options leaves the switch alone.
+        var debuggerAccessChanged = optionsPage.DebuggerAccess != _appliedDebuggerAccess;
+        _appliedDebuggerAccess = optionsPage.DebuggerAccess;
+
         foreach (var kvp in _sessionWindowMap)
         {
             var window = FindToolWindow(typeof(ChatSessionToolWindow), kvp.Value, false);
@@ -239,6 +250,8 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                     optionsPage.ShowCompletedIndicator,
                     optionsPage.AnimateTitleWhenComplete,
                     optionsPage.FlashStatusBarWhenComplete);
+                if (debuggerAccessChanged)
+                    vm.DebuggerAccess = optionsPage.DebuggerAccess;
             }
         }
     }
@@ -369,6 +382,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         var vm = new ChatSessionViewModel(chatService, outputListener, optionsAccessor, permissionBroker, questionBroker, vmLogger);
         vm.EditorContextProvider = _editorContext;
         vm.IdeContext = provider.GetService<IdeContextRegistry>();
+        vm.DebuggerAccess = optionsPage?.DebuggerAccess ?? DebuggerAccessLevel.Off;
         vm.DebuggerModeSource = _debuggerState;
 
         // The status bar pickers only change this session; persisting the choice so

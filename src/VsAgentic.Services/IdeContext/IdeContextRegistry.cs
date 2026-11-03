@@ -25,7 +25,13 @@ public sealed class IdeContextRegistry
     private readonly IReadOnlyList<IIdeContextProvider> _providers;
     private readonly Dictionary<string, IdeTool> _tools = new(StringComparer.Ordinal);
     private readonly ILogger _logger;
-    private readonly HashSet<string> _disabledGroups = new(StringComparer.Ordinal);
+    // The debugger is off until the chat sets the level from the user's
+    // setting, so nothing is read before the setting is known.
+    private readonly HashSet<string> _disabledGroups = new(StringComparer.Ordinal)
+    {
+        IdeToolGroups.Debugger,
+        IdeToolGroups.DebuggerValues,
+    };
 
     public IdeContextRegistry(IEnumerable<IIdeContextProvider> providers, ILogger<IdeContextRegistry> logger)
     {
@@ -63,6 +69,27 @@ public sealed class IdeContextRegistry
         if (tool.Group is not { } group) return false;
         lock (_disabledGroups)
             return _disabledGroups.Contains(group);
+    }
+
+    /// <summary>
+    /// True when the tool behind the name is turned off for this chat. Such a
+    /// call needs no permission banner: it only answers that it is off.
+    /// </summary>
+    public bool IsDisabled(string name) => Find(name) is { } tool && IsDisabled(tool);
+
+    /// <summary>What Claude reads when it calls a tool the user turned off.</summary>
+    public const string TurnedOffNote =
+        "The user has not allowed this. What Claude may read from the debugger is set in " +
+        "Tools > Options > VsAgentic, and for one chat with the Debugger switch below the " +
+        "message box. Do not retry; if you need it, ask the user to allow it there.";
+
+    /// <summary>
+    /// Sets the debugger tool groups to what a chat's access level allows.
+    /// </summary>
+    public void SetDebuggerAccess(DebuggerAccessLevel level)
+    {
+        SetGroupEnabled(IdeToolGroups.Debugger, level != DebuggerAccessLevel.Off);
+        SetGroupEnabled(IdeToolGroups.DebuggerValues, level == DebuggerAccessLevel.StackAndValues);
     }
 
     /// <summary>The tool behind a name as the CLI reports it (with or without the MCP prefix).</summary>
@@ -108,8 +135,7 @@ public sealed class IdeContextRegistry
             return IdeToolResult.Success(JsonSerializer.Serialize(new
             {
                 disabled = true,
-                note = "The user turned off this access for this chat with a switch below the message box. " +
-                       "Do not retry; if you need it, ask the user to turn the switch on.",
+                note = TurnedOffNote,
             }));
         }
 

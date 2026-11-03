@@ -44,8 +44,10 @@ internal sealed class ErrorListReader : IDisposable
             var version = 17;
             foreach (var sink in sinks)
             {
-                stable &= sink.IsStable;
-                version = version * 31 + sink.Read(entries);
+                version = version * 31 + sink.Read(entries, out var complete);
+                // A snapshot that went away while it was read left its
+                // entries out, so the list may be incomplete.
+                stable &= sink.IsStable && complete;
             }
             return new ErrorListSnapshot(entries, stable, version.ToString("x8"));
         }
@@ -122,9 +124,14 @@ internal sealed class ErrorListReader : IDisposable
 
         public bool IsStable { get; set; } = true;
 
-        /// <summary>Adds this source's entries and returns a number that changes with them.</summary>
-        public int Read(List<ErrorListEntry> into)
+        /// <summary>
+        /// Adds this source's entries and returns a number that changes with
+        /// them. <paramref name="complete"/> is false when a factory or a
+        /// snapshot failed while it was read; its entries are then left out.
+        /// </summary>
+        public int Read(List<ErrorListEntry> into, out bool complete)
         {
+            complete = true;
             ITableEntry[] entries;
             ITableEntriesSnapshot[] snapshots;
             ITableEntriesSnapshotFactory[] factories;
@@ -141,29 +148,53 @@ internal sealed class ErrorListReader : IDisposable
             foreach (var entry in entries)
                 Add(into, (string key, out object value) => entry.TryGetValue(key, out value));
 
+            // The lists were copied under the lock, but a source may replace a
+            // snapshot and dispose the old one while it is read here. That
+            // costs only the entries of that snapshot.
             foreach (var factory in factories)
             {
-                version = unchecked(version * 31 + factory.CurrentVersionNumber);
-                if (factory.GetCurrentSnapshot() is { } snapshot)
-                    AddAll(into, snapshot);
+                try
+                {
+                    version = unchecked(version * 31 + factory.CurrentVersionNumber);
+                    if (factory.GetCurrentSnapshot() is { } snapshot)
+                        AddAll(into, snapshot);
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException)
+                {
+                    complete = false;
+                    Serilog.Log.Debug(ex, "[ErrorList] Could not read a snapshot factory");
+                }
             }
 
             foreach (var snapshot in snapshots)
             {
-                version = unchecked(version * 31 + snapshot.VersionNumber);
-                AddAll(into, snapshot);
+                try
+                {
+                    version = unchecked(version * 31 + snapshot.VersionNumber);
+                    AddAll(into, snapshot);
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException)
+                {
+                    complete = false;
+                    Serilog.Log.Debug(ex, "[ErrorList] Could not read a snapshot");
+                }
             }
 
             return version;
         }
 
+        // All of a snapshot's entries or none: one that fails part way through
+        // adds nothing, so no half list is reported as the whole.
         private static void AddAll(List<ErrorListEntry> into, ITableEntriesSnapshot snapshot)
         {
-            for (var i = 0; i < snapshot.Count; i++)
+            var read = new List<ErrorListEntry>();
+            var count = snapshot.Count;
+            for (var i = 0; i < count; i++)
             {
                 var index = i;
-                Add(into, (string key, out object value) => snapshot.TryGetValue(index, key, out value));
+                Add(read, (string key, out object value) => snapshot.TryGetValue(index, key, out value));
             }
+            into.AddRange(read);
         }
 
         private delegate bool ValueReader(string key, out object value);

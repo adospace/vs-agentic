@@ -117,6 +117,9 @@ public partial class ChatSessionControl : UserControl
     {
         DataContext = viewModel;
 
+        // "/model", "/effort" and "/fast", picked or typed, open the panel.
+        viewModel.OpenModelPanel = OpenModelPanel;
+
         viewModel.MessageAdded += (id, type, data) =>
             _ = ChatWebView.AddMessageAsync(id, type, data);
 
@@ -907,6 +910,8 @@ public partial class ChatSessionControl : UserControl
     {
         if (_suppressTextChanged) return;
 
+        UpdateSlashPopup();
+
         var text = InputTextBox.Text ?? "";
         var caret = InputTextBox.CaretIndex;
 
@@ -945,6 +950,10 @@ public partial class ChatSessionControl : UserControl
 
     private void InputTextBox_SelectionChanged(object sender, RoutedEventArgs e)
     {
+        // Moving the caret out of the command's name closes the menu.
+        if (SlashPopup.IsOpen && !TryGetSlashToken(InputTextBox.Text ?? "", InputTextBox.CaretIndex, out _))
+            CloseSlashPopup();
+
         if (_mentionStart < 0) return;
 
         var caret = InputTextBox.CaretIndex;
@@ -954,8 +963,9 @@ public partial class ChatSessionControl : UserControl
     private void InputTextBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
         // Don't close if focus moved into the popup (clicking a list item).
-        if (e.NewFocus is DependencyObject d && IsDescendantOf(d, MentionPopup.Child)) return;
+        if (e.NewFocus is DependencyObject d && (IsDescendantOf(d, MentionPopup.Child) || IsDescendantOf(d, SlashPopup.Child))) return;
         CloseMentionPopup();
+        CloseSlashPopup();
     }
 
     private static bool IsDescendantOf(DependencyObject? node, DependencyObject? root)
@@ -992,6 +1002,12 @@ public partial class ChatSessionControl : UserControl
                     return;
                 }
             }
+        }
+
+        if (SlashPopup.IsOpen && HandleSlashKey(e))
+        {
+            e.Handled = true;
+            return;
         }
 
         if (!MentionPopup.IsOpen) return;

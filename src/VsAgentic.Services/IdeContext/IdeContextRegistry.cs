@@ -119,11 +119,40 @@ public sealed class IdeContextRegistry
             arguments = empty.RootElement.Clone();
         }
 
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        // Not disposed: a tool that ignores the token may still hold it after
+        // the timeout below has answered for it.
+        var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(ToolTimeout);
+
+        Task<IdeToolResult> invoke;
         try
         {
-            return await tool.InvokeAsync(arguments, timeout.Token).ConfigureAwait(false);
+            invoke = tool.InvokeAsync(arguments, timeout.Token);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[IdeContext] Tool '{Name}' failed", name);
+            return IdeToolResult.Error($"The tool failed in Visual Studio: {ex.Message}");
+        }
+
+        // The token alone only stops a tool that checks it. One that waits on
+        // a synchronous DTE or COM call while Visual Studio is busy (a modal
+        // dialog, a build, a debugger stop) never does, so the delay answers
+        // for it.
+        var done = await Task.WhenAny(invoke, Task.Delay(ToolTimeout, cancellationToken)).ConfigureAwait(false);
+        if (done != invoke)
+        {
+            timeout.Cancel();
+            ObserveAbandoned(name, invoke);
+            if (cancellationToken.IsCancellationRequested)
+                return IdeToolResult.Error("The call was cancelled.");
+            _logger.LogWarning("[IdeContext] Tool '{Name}' timed out", name);
+            return IdeToolResult.Error($"Visual Studio did not answer within {ToolTimeout.TotalSeconds:0} seconds.");
+        }
+
+        try
+        {
+            return await invoke.ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -137,39 +166,16 @@ public sealed class IdeContextRegistry
         }
     }
 
-    /// <summary>
-    /// The summaries of all providers that answer within <paramref name="budget"/>.
-    /// A provider that is late or fails is left out, so the caller never waits
-    /// longer than the budget.
-    /// </summary>
-    public async Task<IReadOnlyList<IdeContextSection>> GetSummariesAsync(TimeSpan budget, CancellationToken cancellationToken)
+    // A call the timeout gave up on runs to its end in the background. Its
+    // failure is logged, not left unobserved.
+    private void ObserveAbandoned(string name, Task<IdeToolResult> invoke)
     {
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(budget);
-
-        var tasks = _providers
-            .Where(p => !p.Tools.Any(IsDisabled))
-            .Select(p => SafeSummaryAsync(p, cts.Token))
-            .ToList();
-        var all = Task.WhenAll(tasks);
-        await Task.WhenAny(all, Task.Delay(budget, cancellationToken)).ConfigureAwait(false);
-
-        return tasks
-            .Where(t => t.Status == TaskStatus.RanToCompletion && t.Result is not null)
-            .Select(t => t.Result!)
-            .ToList();
-    }
-
-    private async Task<IdeContextSection?> SafeSummaryAsync(IIdeContextProvider provider, CancellationToken cancellationToken)
-    {
-        try
+        invoke.ContinueWith(t =>
         {
-            return await provider.GetSummaryAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _logger.LogWarning(ex, "[IdeContext] {Provider} could not summarize", provider.GetType().Name);
-            return null;
-        }
+            if (t.Exception is { } ex)
+                _logger.LogWarning(ex.GetBaseException(), "[IdeContext] Tool '{Name}' failed after its timeout", name);
+            else if (!t.IsCanceled)
+                _logger.LogInformation("[IdeContext] Tool '{Name}' finished after its timeout", name);
+        }, TaskScheduler.Default);
     }
 }

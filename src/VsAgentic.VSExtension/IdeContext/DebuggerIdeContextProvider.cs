@@ -37,10 +37,6 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
     private const int MaxValueChars = 200;
     private const int MaxExceptionChars = 1000;
 
-    // In the summary only.
-    private const int SummaryMaxFrames = 8;
-    private const int SummaryMaxNames = 10;
-
     // A value is withheld when the variable is named like a secret, has a type
     // that holds one, or reads like a connection string or credential.
     private static readonly Regex SecretName = new(
@@ -87,72 +83,9 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
                 }}
                 """,
                 GetDebugContextAsync,
+                isReadOnly: true,
                 group: IdeToolGroups.Debugger),
         };
-    }
-
-    public async Task<IdeContextSection?> GetSummaryAsync(CancellationToken cancellationToken)
-    {
-        var state = _tracker.Read();
-        if (state.Mode == DBGMODE.DBGMODE_Design)
-            return null;
-
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
-        var debugger = GetDebugger();
-        if (debugger is null)
-            return null;
-
-        var sb = new StringBuilder();
-        if (state.Mode == DBGMODE.DBGMODE_Run)
-        {
-            sb.Append("Debugging ").Append(ProcessName(debugger.CurrentProcess) ?? "a program").Append("; it is running.");
-        }
-        else
-        {
-            var reason = BreakReason(debugger.LastBreakReason);
-            var top = debugger.CurrentStackFrame as StackFrame2;
-            sb.Append("Debugger stopped");
-            if (reason is not null) sb.Append(" (").Append(reason).Append(')');
-            if (top is not null) sb.Append(" in ").Append(top.FunctionName).Append(Location(top, prefix: " — "));
-            sb.Append('.');
-
-            if (state.Exception is { } exception)
-                sb.AppendLine().Append("Exception: ").Append(ExceptionLine(exception, ReadExceptionMessage(debugger.CurrentThread)));
-
-            var frames = ReadStack(debugger, SummaryMaxFrames, out _);
-            if (frames.Count > 0)
-            {
-                sb.AppendLine().Append("Call stack:");
-                foreach (var frame in frames)
-                {
-                    sb.AppendLine().Append("- ");
-                    if (frame.ExternalCount > 0) sb.Append("[External Code]");
-                    else sb.Append(frame.Function).Append(frame.File is null ? "" : $" — {Path.GetFileName(frame.File)}:{frame.Line}");
-                }
-            }
-
-            if (top is not null)
-            {
-                try
-                {
-                    var names = Names(top.get_Arguments2(false), "Arguments").Concat(Names(top.get_Locals2(false), "Locals")).ToList();
-                    if (names.Count > 0)
-                        sb.AppendLine().Append(string.Join("; ", names));
-                }
-                catch (System.Runtime.InteropServices.COMException)
-                {
-                    // No variables for this frame; the rest of the summary stands.
-                }
-            }
-        }
-
-        return new IdeContextSection(
-            "debugger",
-            sb.ToString(),
-            "Debugger",
-            DateTimeOffset.Now,
-            detailsAvailable: state.Mode == DBGMODE.DBGMODE_Break,
-            version: state.Mode == DBGMODE.DBGMODE_Break ? $"break-{state.BreakNumber}" : "run");
     }
 
     private async Task<IdeToolResult> GetDebugContextAsync(JsonElement arguments, CancellationToken cancellationToken)
@@ -441,23 +374,6 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
         return null;
     }
 
-    private static IEnumerable<string> Names(Expressions expressions, string label)
-    {
-        ThreadHelper.ThrowIfNotOnUIThread();
-
-        var names = new List<string>();
-        var total = 0;
-        foreach (Expression expression in expressions)
-        {
-            total++;
-            if (names.Count < SummaryMaxNames)
-                names.Add(string.IsNullOrEmpty(expression.Type) ? expression.Name : $"{expression.Name} ({expression.Type})");
-        }
-
-        if (total == 0) yield break;
-        yield return $"{label}: {string.Join(", ", names)}{(total > names.Count ? $", … ({total} in all)" : "")}";
-    }
-
     private static Debugger? GetDebugger()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -506,22 +422,6 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
         dbgEventReason.dbgEventReasonNone => null,
         _ => reason.ToString().Replace("dbgEventReason", ""),
     };
-
-    private static string Location(StackFrame2 frame, string prefix)
-    {
-        ThreadHelper.ThrowIfNotOnUIThread();
-        return string.IsNullOrEmpty(frame.FileName)
-            ? ""
-            : $"{prefix}{Path.GetFileName(frame.FileName)}:{frame.LineNumber}";
-    }
-
-    private static string ExceptionLine(DebuggerException exception, string? message)
-    {
-        var parts = new[] { exception.Name ?? "unknown", message, CleanDescription(exception.Description) }
-            .Where(p => !string.IsNullOrWhiteSpace(p));
-        var oneLine = Regex.Replace(string.Join(" — ", parts), @"\s*\r?\n\s*", " ");
-        return Truncate(oneLine, 300)!;
-    }
 
     // The engine marks words in bold for the Exception Helper, e.g. "Address.**get** returned null."
     private static string? CleanDescription(string? description)

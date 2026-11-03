@@ -324,11 +324,16 @@ internal static class RoslynSymbols
         var documentationId = separator < 0 ? id : id.Substring(0, separator);
         Guid.TryParse(separator < 0 ? null : id.Substring(separator + 1), out var projectGuid);
 
-        // The project the id came from first; after a reload its id may be
-        // gone, and the symbol is then looked for everywhere.
-        var projects = solution.Projects
-            .OrderBy(p => p.Id.Id == projectGuid ? 0 : 1)
-            .Where(p => p.SupportsCompilation);
+        // The project the id came from. Its compilation also holds the
+        // symbols of the projects it references, so a symbol that is not
+        // there is gone: renamed, or the code changed. Compiling every other
+        // project to say so would cost a long wait in a large solution. Only
+        // when that project is gone too (a reload gives it a new id) is the
+        // symbol looked for everywhere.
+        var own = solution.Projects.FirstOrDefault(p => p.Id.Id == projectGuid && p.SupportsCompilation);
+        var projects = own is not null
+            ? new[] { own }
+            : solution.Projects.Where(p => p.SupportsCompilation);
         foreach (var project in projects)
         {
             var compilation = await project.GetCompilationAsync(cancellationToken).ConfigureAwait(false);
@@ -346,14 +351,38 @@ internal static class RoslynSymbols
         Solution solution, string file, int line, int column,
         Func<SourceTextContainer, DocumentId?>? currentContext, CancellationToken cancellationToken)
     {
+        // Claude often passes a path relative to the repository. GetFullPath
+        // alone would resolve it against Visual Studio's working folder, so a
+        // relative path is tried against the solution's folder, and then
+        // matched by its tail: "src\Orders\OrderService.cs" against every
+        // document of the solution.
         string path;
-        try { path = Path.GetFullPath(file); }
+        var relative = false;
+        try
+        {
+            relative = !Path.IsPathRooted(file);
+            var baseFolder = relative && solution.FilePath is { } sln ? Path.GetDirectoryName(sln) : null;
+            path = Path.GetFullPath(baseFolder is null ? file : Path.Combine(baseFolder, file));
+        }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
         {
             return new SymbolResolution { Note = $"Not a valid file path: {file}" };
         }
 
         var ids = solution.GetDocumentIdsWithFilePath(path);
+        if (ids.IsEmpty && relative)
+        {
+            var tail = Path.DirectorySeparatorChar + file.Replace('/', Path.DirectorySeparatorChar).TrimStart('.', Path.DirectorySeparatorChar);
+            var paths = solution.Projects.SelectMany(p => p.Documents)
+                .Select(d => d.FilePath)
+                .Where(p => p is not null && p.EndsWith(tail, StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (paths.Count > 1)
+                return new SymbolResolution { Note = $"Several files end with {file}; pass the full path: {string.Join(", ", paths.Take(5))}" };
+            if (paths.Count == 1)
+                ids = solution.GetDocumentIdsWithFilePath(paths[0]);
+        }
         if (ids.IsEmpty)
             return new SymbolResolution { Note = "The file is not a C# or Visual Basic document of a project in the open solution." };
 
@@ -470,7 +499,7 @@ internal static class RoslynSymbols
         var inner = parameters.Trim().TrimStart('(').TrimEnd(')');
         var wanted = inner.Trim().Length == 0
             ? Array.Empty<string>()
-            : inner.Split(',').Select(p => NormalizeSpaces(p).Replace(" ", "")).ToArray();
+            : SplitParameters(inner).Select(p => NormalizeSpaces(p).Replace(" ", "")).ToArray();
         if (wanted.Length != actual.Count)
             return false;
 
@@ -478,6 +507,30 @@ internal static class RoslynSymbols
             w == p.Type.ToDisplayString(TypeFormat).Replace(" ", "") ||
             w == p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat).Replace(" ", "") ||
             w == p.Type.Name).All(match => match);
+    }
+
+    /// <summary>
+    /// The parameters of "Dictionary&lt;string, int&gt;, int[,], (int, int)":
+    /// split only on the commas outside &lt;&gt;, [] and (), which belong to
+    /// the types themselves.
+    /// </summary>
+    private static IEnumerable<string> SplitParameters(string inner)
+    {
+        var depth = 0;
+        var start = 0;
+        for (var i = 0; i < inner.Length; i++)
+        {
+            switch (inner[i])
+            {
+                case '<' or '[' or '(': depth++; break;
+                case '>' or ']' or ')': depth = Math.Max(0, depth - 1); break;
+                case ',' when depth == 0:
+                    yield return inner.Substring(start, i - start);
+                    start = i + 1;
+                    break;
+            }
+        }
+        yield return inner.Substring(start);
     }
 
     private static Project? ProjectOf(Solution solution, Location location)

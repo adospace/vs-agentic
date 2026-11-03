@@ -16,9 +16,17 @@ namespace VsAgentic.VSExtension.IdeContext;
 
 /// <summary>
 /// The debugger as IDE context: when the program is stopped, where it
-/// stopped, why, the call stack, and on request the arguments and locals of a
-/// frame. Claude reads the state the user is looking at instead of asking for
-/// a pasted call stack.
+/// stopped, why, and the call stack; and, through a second tool, the
+/// arguments and locals of a frame and the exception message. Claude reads
+/// the state the user is looking at instead of asking for a pasted call stack.
+///
+/// The two tools differ in what they send. Where the program stopped says
+/// little about its data, so <c>get_debug_context</c> runs without a prompt.
+/// Values and the exception message can hold anything, a connection string or
+/// a token included, and no filter on names or values catches all of it. So
+/// <c>get_debug_values</c> goes through the permission banner on every call,
+/// and the user sees what is asked before anything is sent. The filters below
+/// are a second layer only.
 ///
 /// Nothing here evaluates code. Locals and arguments are read with automatic
 /// property evaluation and implicit function calls turned off, so reading them
@@ -31,6 +39,11 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
     private const int DefaultMaxValues = 10;
     private const int MaxMaxValues = 30;
 
+    // Each frame is a synchronous COM call on the UI thread. A stack that is
+    // mostly external code (deep recursion, a stack overflow) is merged into
+    // a few entries, but every frame is still read; this caps the reading.
+    private const int MaxFramesRead = 200;
+
     // Names and types are cheap and say little about the data; values may
     // hold anything, so they have the lower limit.
     private const int MaxVariables = 50;
@@ -38,15 +51,20 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
     private const int MaxExceptionChars = 1000;
 
     // A value is withheld when the variable is named like a secret, has a type
-    // that holds one, or reads like a connection string or credential.
+    // that holds one, or reads like a credential. A second layer behind the
+    // permission banner: it cannot be complete.
     private static readonly Regex SecretName = new(
-        @"pass(word|wd|phrase)?|pwd|secret|token|api_?key|credential|connection_?string|private_?key|auth",
+        @"pass(word|wd|phrase)?|pwd|secret|token|api_?key|access_?key|credential|connection_?string|private_?key|auth|cookie|session|jwt|signature",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex SecretType = new(
-        @"SecureString|NetworkCredential|X509Certificate",
+        @"SecureString|NetworkCredential|X509Certificate|Cookie|AuthenticationHeaderValue",
         RegexOptions.CultureInvariant);
     private static readonly Regex SecretValue = new(
-        @"(password|pwd)\s*=|bearer\s+\S|-----BEGIN [A-Z ]*PRIVATE KEY",
+        @"(password|pwd|accountkey|sharedaccesskey|sig|token|secret)\s*=" +   // connection strings, SAS URLs, query strings
+        @"|\b(bearer|basic)\s+[A-Za-z0-9+/=._~-]{8,}" +                       // Authorization headers
+        @"|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}" +                        // JWT
+        @"|\b(AKIA|ASIA)[A-Z0-9]{16}\b" +                                      // AWS access key ids
+        @"|-----BEGIN [A-Z ]*PRIVATE KEY",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private readonly DebuggerStateTracker _tracker;
@@ -63,27 +81,44 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
                 "Reading the debugger state",
                 "Returns the state of the Visual Studio debugger: whether a program is being debugged and " +
                 "whether it is running or stopped. When stopped (break mode): why (breakpoint, step, " +
-                "exception, pause), the process and thread, the exception type, message and the debugger's description of the cause when an " +
-                "exception stopped it, the call stack of the current thread with file and line (1-based), " +
-                "and optionally the arguments and locals of one frame. Use it when the user asks about " +
+                "exception, pause), the process and thread, the exception type when an exception stopped " +
+                "it, and the call stack of the current thread with file and line (1-based). It returns no " +
+                "values: for the arguments and locals of a frame, or the exception message, call " +
+                "get_debug_values, which the user approves each time. Use this tool when the user asks about " +
                 "the program they are debugging (\"why is this null?\", \"how did it get here?\") instead " +
-                "of asking them to copy the call stack or values. Values are read without running code " +
-                "(no property getters, no ToString), so an object may show only its type. The result " +
-                "describes only the current break, numbered by breakNumber: after the user continues or " +
-                "steps, earlier results no longer hold; call the tool again. Values of variables that look " +
-                "like secrets are withheld.",
+                "of asking them to copy the call stack. The result describes only the current break, " +
+                "numbered by breakNumber: after the user continues or steps, earlier results no longer " +
+                "hold; call the tool again.",
                 """
                 {"type":"object","properties":{
                   "includeStack":{"type":"boolean","description":"Return the call stack. Default true."},
-                  "maxFrames":{"type":"integer","minimum":1,"maximum":50,"description":"Most stack frames to return. Default 10."},
-                  "frame":{"type":"integer","minimum":0,"description":"The frame whose arguments and locals to return, by depth (0 = top of the stack). Default: the frame selected in Visual Studio."},
-                  "includeArguments":{"type":"boolean","description":"Return the frame's arguments: names, types, and values up to maxValues. Default false."},
-                  "includeLocals":{"type":"boolean","description":"Return the frame's local variables: names, types, and values up to maxValues. Default false."},
-                  "maxValues":{"type":"integer","minimum":1,"maximum":30,"description":"Most values to return for arguments and for locals; past it, only names and types. Default 10."}
+                  "maxFrames":{"type":"integer","minimum":1,"maximum":50,"description":"Most stack frames to return. Default 10."}
                 }}
                 """,
                 GetDebugContextAsync,
                 isReadOnly: true,
+                group: IdeToolGroups.Debugger),
+            new IdeTool(
+                "get_debug_values",
+                "Reading values from the debugger",
+                "Returns values from the program stopped in the Visual Studio debugger: the arguments and " +
+                "local variables of one stack frame, and the message and the debugger's description of the " +
+                "exception it stopped on. Values can hold personal data or secrets, so the user is asked to " +
+                "allow each call; ask only for what you need, and call get_debug_context first to see where " +
+                "the program stopped. Values are read without running code (no property getters, no " +
+                "ToString), so an object may show only its type. Values of variables that look like " +
+                "secrets are withheld. The result holds only for the break numbered by breakNumber.",
+                """
+                {"type":"object","properties":{
+                  "frame":{"type":"integer","minimum":0,"maximum":199,"description":"The frame whose arguments and locals to return, by depth (0 = top of the stack). Default: the frame selected in Visual Studio."},
+                  "includeArguments":{"type":"boolean","description":"Return the frame's arguments: names, types, and values up to maxValues. Default true."},
+                  "includeLocals":{"type":"boolean","description":"Return the frame's local variables: names, types, and values up to maxValues. Default true."},
+                  "includeException":{"type":"boolean","description":"Return the message and description of the exception the program stopped on. Default true."},
+                  "maxValues":{"type":"integer","minimum":1,"maximum":30,"description":"Most values to return for arguments and for locals; past it, only names and types. Default 10."}
+                }}
+                """,
+                GetDebugValuesAsync,
+                isReadOnly: false,
                 group: IdeToolGroups.Debugger),
         };
     }
@@ -91,46 +126,13 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
     private async Task<IdeToolResult> GetDebugContextAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
         var includeStack = GetBool(arguments, "includeStack") ?? true;
-        var includeArguments = GetBool(arguments, "includeArguments") ?? false;
-        var includeLocals = GetBool(arguments, "includeLocals") ?? false;
         var maxFrames = GetInt(arguments, "maxFrames", DefaultMaxFrames, 1, MaxMaxFrames);
-        var maxValues = GetInt(arguments, "maxValues", DefaultMaxValues, 1, MaxMaxValues);
-        int? frameDepth = arguments.TryGetProperty("frame", out var f) && f.ValueKind == JsonValueKind.Number &&
-                          f.TryGetInt32(out var d) && d >= 0 ? d : null;
 
-        var state = _tracker.Read();
-        var capturedAt = DateTimeOffset.Now.ToString("o");
-
-        if (state.Mode == DBGMODE.DBGMODE_Design)
-        {
-            return IdeToolResult.Success(JsonSerializer.Serialize(new
-            {
-                capturedAt,
-                mode = "design",
-                note = "No program is being debugged in Visual Studio.",
-            }));
-        }
-
+        var stopped = await SwitchToStoppedDebuggerAsync(cancellationToken);
+        if (stopped.Answer is { } answer) return answer;
+        // Already there; repeated so the analyzer sees the switch.
         await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
-        var debugger = GetDebugger();
-        if (debugger is null)
-            return IdeToolResult.Error("The Visual Studio debugger is not available.");
-
-        var processes = ProcessNames(debugger);
-
-        if (state.Mode == DBGMODE.DBGMODE_Run)
-        {
-            var running = JsonSerializer.Serialize(new
-            {
-                capturedAt,
-                mode = "run",
-                processes,
-                note = "The program is running, so there is no current frame or stack. It stops at a breakpoint " +
-                       "or an exception, or when the user picks Debug > Break All.",
-            });
-            await TaskScheduler.Default;
-            return IdeToolResult.Success(running);
-        }
+        var (debugger, state, capturedAt) = (stopped.Debugger!, stopped.State!, stopped.CapturedAt);
 
         var thread = debugger.CurrentThread;
         var selected = debugger.CurrentStackFrame as StackFrame2;
@@ -140,11 +142,59 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
         if (includeStack)
             stack = ReadStack(debugger, maxFrames, out stackTruncated);
 
+        var result = JsonSerializer.Serialize(new
+        {
+            capturedAt,
+            mode = "break",
+            breakNumber = state.BreakNumber,
+            stoppedAt = state.BreakStartedAt?.ToString("o"),
+            reason = BreakReason(debugger.LastBreakReason),
+            processes = ProcessNames(debugger),
+            process = ProcessName(debugger.CurrentProcess),
+            thread = thread is null ? null : new { id = thread.ID, name = NullIfEmpty(thread.Name) },
+            exception = state.Exception is { } exception ? new { type = exception.Name } : null,
+            currentFrame = selected is null ? null : new
+            {
+                depth = (int)selected.Depth - 1,
+                function = selected.FunctionName,
+                file = NullIfEmpty(selected.FileName),
+                line = selected.LineNumber > 0 ? (int?)selected.LineNumber : null,
+                module = NullIfEmpty(selected.Module),
+                language = NullIfEmpty(selected.Language),
+                userCode = selected.UserCode,
+            },
+            stack = stack?.Select(s => s.ExternalCount > 0
+                ? (object)new { externalCode = s.ExternalCount }
+                : new { depth = s.Depth, function = s.Function, file = s.File, line = s.Line }),
+            stackTruncated = includeStack ? stackTruncated : (bool?)null,
+        });
+
+        await TaskScheduler.Default;
+        return IdeToolResult.Success(result);
+    }
+
+    private async Task<IdeToolResult> GetDebugValuesAsync(JsonElement arguments, CancellationToken cancellationToken)
+    {
+        var includeArguments = GetBool(arguments, "includeArguments") ?? true;
+        var includeLocals = GetBool(arguments, "includeLocals") ?? true;
+        var includeException = GetBool(arguments, "includeException") ?? true;
+        var maxValues = GetInt(arguments, "maxValues", DefaultMaxValues, 1, MaxMaxValues);
+        int? frameDepth = arguments.TryGetProperty("frame", out var f) && f.ValueKind == JsonValueKind.Number &&
+                          f.TryGetInt32(out var d) && d >= 0 && d < MaxFramesRead ? d : null;
+
+        var stopped = await SwitchToStoppedDebuggerAsync(cancellationToken);
+        if (stopped.Answer is { } answer) return answer;
+        // Already there; repeated so the analyzer sees the switch.
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
+        var (debugger, state, capturedAt) = (stopped.Debugger!, stopped.State!, stopped.CapturedAt);
+
+        var thread = debugger.CurrentThread;
+
         object? variables = null;
         string? frameNote = null;
         if (includeArguments || includeLocals)
         {
-            var target = frameDepth is { } depth ? FindFrame(thread, depth) : selected;
+            var target = frameDepth is { } depth ? FindFrame(thread, depth) : debugger.CurrentStackFrame as StackFrame2;
             if (target is null)
             {
                 frameNote = $"The current thread has no frame at depth {frameDepth}.";
@@ -164,35 +214,15 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
         var result = JsonSerializer.Serialize(new
         {
             capturedAt,
-            mode = "break",
             breakNumber = state.BreakNumber,
-            stoppedAt = state.BreakStartedAt?.ToString("o"),
-            reason = BreakReason(debugger.LastBreakReason),
-            processes,
-            process = ProcessName(debugger.CurrentProcess),
-            thread = thread is null ? null : new { id = thread.ID, name = NullIfEmpty(thread.Name) },
-            exception = state.Exception is { } exception
+            exception = includeException && state.Exception is { } exception
                 ? new
                 {
                     type = exception.Name,
-                    message = Truncate(ReadExceptionMessage(thread), MaxExceptionChars),
-                    description = Truncate(CleanDescription(exception.Description), MaxExceptionChars),
+                    message = FilterText(Truncate(ReadExceptionMessage(thread), MaxExceptionChars)),
+                    description = FilterText(Truncate(CleanDescription(exception.Description), MaxExceptionChars)),
                 }
                 : null,
-            currentFrame = selected is null ? null : new
-            {
-                depth = (int)selected.Depth - 1,
-                function = selected.FunctionName,
-                file = NullIfEmpty(selected.FileName),
-                line = selected.LineNumber > 0 ? (int?)selected.LineNumber : null,
-                module = NullIfEmpty(selected.Module),
-                language = NullIfEmpty(selected.Language),
-                userCode = selected.UserCode,
-            },
-            stack = stack?.Select(s => s.ExternalCount > 0
-                ? (object)new { externalCode = s.ExternalCount }
-                : new { depth = s.Depth, function = s.Function, file = s.File, line = s.Line }),
-            stackTruncated = includeStack ? stackTruncated : (bool?)null,
             variables,
             note = frameNote,
         });
@@ -200,6 +230,78 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
         await TaskScheduler.Default;
         return IdeToolResult.Success(result);
     }
+
+    private sealed class StoppedDebugger
+    {
+        /// <summary>Set when the program is not stopped: the answer to return as is.</summary>
+        public IdeToolResult? Answer { get; set; }
+        public Debugger? Debugger { get; set; }
+        public DebuggerState? State { get; set; }
+        public string CapturedAt { get; set; } = "";
+    }
+
+    /// <summary>
+    /// Switches to the UI thread and checks that the program is stopped. The
+    /// tracker is read first, off the UI thread, but the program can resume
+    /// before the switch completes, and the stack cannot be read while it
+    /// runs. So the mode is read again from the debugger on the UI thread, and
+    /// a program that runs by then gets the "running" answer, not an error.
+    /// On return the caller is on the UI thread unless <c>Answer</c> is set.
+    /// </summary>
+    private async Task<StoppedDebugger> SwitchToStoppedDebuggerAsync(CancellationToken cancellationToken)
+    {
+        var capturedAt = DateTimeOffset.Now.ToString("o");
+        if (_tracker.Read().Mode == DBGMODE.DBGMODE_Design)
+            return new StoppedDebugger { Answer = DesignAnswer(capturedAt) };
+
+        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
+        var debugger = GetDebugger();
+        if (debugger is null)
+        {
+            await TaskScheduler.Default;
+            return new StoppedDebugger { Answer = IdeToolResult.Error("The Visual Studio debugger is not available.") };
+        }
+
+        var mode = debugger.CurrentMode;
+        if (mode == dbgDebugMode.dbgBreakMode)
+        {
+            return new StoppedDebugger
+            {
+                Debugger = debugger,
+                // Read after the check, so the break number and exception
+                // belong to the break being read.
+                State = _tracker.Read(),
+                CapturedAt = capturedAt,
+            };
+        }
+
+        IdeToolResult answer;
+        if (mode == dbgDebugMode.dbgRunMode)
+        {
+            answer = IdeToolResult.Success(JsonSerializer.Serialize(new
+            {
+                capturedAt,
+                mode = "run",
+                processes = ProcessNames(debugger),
+                note = "The program is running, so there is no current frame or stack. It stops at a breakpoint " +
+                       "or an exception, or when the user picks Debug > Break All.",
+            }));
+        }
+        else
+        {
+            answer = DesignAnswer(capturedAt);
+        }
+        await TaskScheduler.Default;
+        return new StoppedDebugger { Answer = answer };
+    }
+
+    private static IdeToolResult DesignAnswer(string capturedAt) =>
+        IdeToolResult.Success(JsonSerializer.Serialize(new
+        {
+            capturedAt,
+            mode = "design",
+            note = "No program is being debugged in Visual Studio.",
+        }));
 
     /// <summary>
     /// The current thread's stack as the Call Stack window shows it with Just
@@ -214,8 +316,17 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
         if (debugger.CurrentThread?.StackFrames is not { } stackFrames)
             return frames;
 
+        var read = 0;
         foreach (StackFrame frame in stackFrames)
         {
+            // Counted before anything else: merged external frames cost a COM
+            // call each, the same as the frames that are returned.
+            if (++read > MaxFramesRead)
+            {
+                truncated = true;
+                break;
+            }
+
             if (frame is not StackFrame2 frame2) continue;
 
             if (!frame2.UserCode)
@@ -252,9 +363,12 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
         ThreadHelper.ThrowIfNotOnUIThread();
         if (thread?.StackFrames is not { } stackFrames) return null;
 
-        // EnvDTE numbers frames from 1.
+        // EnvDTE numbers frames from 1, top first, so the walk stops at the
+        // frame asked for and never reads more than that many.
+        var read = 0;
         foreach (StackFrame frame in stackFrames)
         {
+            if (++read > depth + 1) break;
             if (frame is StackFrame2 frame2 && frame2.Depth == depth + 1)
                 return frame2;
         }
@@ -310,17 +424,20 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
             return "<withheld: the name or type suggests a secret>";
 
         var value = expression.IsValidValue ? expression.Value : $"<not available: {expression.Value}>";
-        if (value is not null && SecretValue.IsMatch(value))
-            return "<withheld: the value looks like a credential>";
-
-        return Truncate(value, MaxValueChars);
+        return Truncate(FilterText(value), MaxValueChars);
     }
+
+    /// <summary>The text, or a note in its place when it reads like a credential.</summary>
+    private static string? FilterText(string? text)
+        => text is not null && SecretValue.IsMatch(text) ? "<withheld: the text looks like a credential>" : text;
 
     /// <summary>
     /// The message of the exception the program stopped on, read from the
-    /// <c>$exception</c> pseudo-variable. Message is a property, which is not
-    /// evaluated here, so the value comes from the field behind it. Null when
-    /// the language has no <c>$exception</c> or the field cannot be read.
+    /// <c>$exception</c> pseudo-variable. Only the <c>_message</c> field is
+    /// read. <c>Message</c> is a property: reading its value could run its
+    /// getter when the user has property evaluation on, and an exception type
+    /// can override it with any code. Null when the language has no
+    /// <c>$exception</c> or the field cannot be read.
     /// </summary>
     private static string? ReadExceptionMessage(EnvDTE.Thread? thread)
     {
@@ -350,7 +467,7 @@ internal sealed class DebuggerIdeContextProvider : IIdeContextProvider
         var groups = new List<Expression>();
         foreach (Expression member in members)
         {
-            if (member.Name is "_message" or "Message" &&
+            if (member.Name == "_message" &&
                 member.IsValidValue && member.Value is { } value && value.StartsWith("\"", StringComparison.Ordinal))
             {
                 return value.Trim('"');

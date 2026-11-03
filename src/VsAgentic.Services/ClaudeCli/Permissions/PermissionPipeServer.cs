@@ -127,10 +127,31 @@ internal sealed class PermissionPipeServer : IDisposable
 
                     _ = Task.Run(async () =>
                     {
-                        var response = await HandleRequestAsync(line, ct).ConfigureAwait(false);
+                        // Every request whose id can be read gets an answer:
+                        // the helper waits for one with no time limit, and so
+                        // does the CLI's tool call behind it.
+                        string? response;
+                        try
+                        {
+                            response = await HandleRequestAsync(line, ct).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "[PermissionPipeServer] request failed: {Line}", line);
+                            response = TryReadHeader(line, out var failedId, out var failedType)
+                                ? ErrorResponse(failedId, failedType, "Internal error in Visual Studio")
+                                : null;
+                        }
                         if (response is null) return;
 
-                        await writeLock.WaitAsync(ct).ConfigureAwait(false);
+                        try
+                        {
+                            await writeLock.WaitAsync(ct).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            return; // The connection is closing; the helper fails its pending calls.
+                        }
                         try
                         {
                             await writer.WriteLineAsync(response).ConfigureAwait(false);
@@ -153,19 +174,21 @@ internal sealed class PermissionPipeServer : IDisposable
         }
     }
 
-    /// <summary>The response line for one request, or null for a request that cannot be answered.</summary>
+    /// <summary>The response line for one request, or null when not even its id can be read.</summary>
     private async Task<string?> HandleRequestAsync(string line, CancellationToken ct)
     {
-        string id;
-        string type;
+        if (!TryReadHeader(line, out var id, out var type))
+        {
+            _logger.LogWarning("[PermissionPipeServer] request without a readable id: {Line}", line);
+            return null;
+        }
+
         string toolName = "";
         JsonElement input = default;
         try
         {
             using var doc = JsonDocument.Parse(line);
             var root = doc.RootElement;
-            id = root.GetProperty("id").GetString() ?? "";
-            type = root.TryGetProperty("type", out var tp) ? tp.GetString() ?? "" : "permission";
 
             // Clone so we can use them after the doc is disposed.
             if (type == "tools/call")
@@ -184,7 +207,7 @@ internal sealed class PermissionPipeServer : IDisposable
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "[PermissionPipeServer] malformed request: {Line}", line);
-            return null;
+            return ErrorResponse(id, type, "Malformed request");
         }
 
         switch (type)
@@ -201,9 +224,44 @@ internal sealed class PermissionPipeServer : IDisposable
 
             default:
                 _logger.LogWarning("[PermissionPipeServer] unknown request type '{Type}'", type);
-                return null;
+                return ErrorResponse(id, type, $"Unknown request type '{type}'");
         }
     }
+
+    /// <summary>The id and type of a request, as far as the line can be read.
+    /// A request without a type is a permission request.</summary>
+    private static bool TryReadHeader(string line, out string id, out string type)
+    {
+        id = "";
+        type = "permission";
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("id", out var idEl) || idEl.ValueKind != JsonValueKind.String)
+                return false;
+            id = idEl.GetString() ?? "";
+            if (root.TryGetProperty("type", out var tp) && tp.ValueKind == JsonValueKind.String)
+                type = tp.GetString() ?? "permission";
+            return id.Length > 0;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>An answer that ends the request with an error, in the shape
+    /// the helper expects for its type. A permission request, or one of an
+    /// unknown type, is denied.</summary>
+    private static string ErrorResponse(string id, string type, string message) => type switch
+    {
+        "tools/list" => "{\"id\":" + JsonSerializer.Serialize(id) + ",\"tools\":[]}",
+        "tools/call" => "{\"id\":" + JsonSerializer.Serialize(id) +
+                        ",\"text\":" + JsonSerializer.Serialize(message) + ",\"isError\":true}",
+        _ => SerializeDecision(id, PermissionDecision.Deny(message)),
+    };
 
     private async Task<PermissionDecision> DecidePermissionAsync(string id, string toolName, JsonElement input, CancellationToken ct)
     {

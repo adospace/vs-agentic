@@ -33,6 +33,11 @@ internal static class Program
     // the CLI's start.
     private static readonly TimeSpan ToolsListTimeout = TimeSpan.FromSeconds(5);
 
+    // The extension gives an IDE tool 30 seconds and then answers with an
+    // error itself. A little longer here, so a stuck extension still gets
+    // the CLI an answer, and the extension's own message wins otherwise.
+    private static readonly TimeSpan IdeToolCallTimeout = TimeSpan.FromSeconds(35);
+
     private static StreamWriter? _pipeWriter;
     private static StreamReader? _pipeReader;
     private static volatile bool _pipeBroken;
@@ -458,7 +463,17 @@ internal static class Program
             : "{}");
         sb.Append('}');
 
-        var response = await SendToParentAsync(requestId, sb.ToString()).ConfigureAwait(false);
+        string response;
+        try
+        {
+            response = await SendToParentAsync(requestId, sb.ToString(), IdeToolCallTimeout).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            Log($"tools/call {name}: no answer from the extension within {IdeToolCallTimeout.TotalSeconds:0} s");
+            return BuildIdeToolResult(
+                $"Visual Studio did not answer within {IdeToolCallTimeout.TotalSeconds:0} seconds.", isError: true);
+        }
 
         using var doc = JsonDocument.Parse(response);
         var root = doc.RootElement;

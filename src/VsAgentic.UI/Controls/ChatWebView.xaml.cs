@@ -611,12 +611,13 @@ public partial class ChatWebView : UserControl
     }
 
     /// <summary>
-    /// Offers a diff on a step that changed a file.
+    /// Offers a diff on a step that changed a file, or shows
+    /// <paramref name="summary"/> instead when there is no diff to show.
     /// </summary>
-    public Task SetFileChangeAsync(string id)
+    public Task SetFileChangeAsync(string id, string? summary)
     {
         return ExecuteOrQueueAsync(
-            $"setFileChange({JsonSerializer.Serialize(id)})");
+            $"setFileChange({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(summary)})");
     }
 
     public Task SetBodyAsync(string id, string body, OutputBodyMode bodyMode)

@@ -62,7 +62,64 @@ public static class FileChanges
         if (change.Hunks.Count == 0 && change.IsNewFile && after is { Length: > 0 })
             change.Hunks.Add(AddedFileHunk(after));
 
+        OmitLargeHunks(change);
         return change;
+    }
+
+    /// <summary>
+    /// Most characters of hunk text a step keeps. Above this the hunks are
+    /// dropped and only the line counts kept, so a session that creates or
+    /// rewrites large files does not grow <c>messages.json</c> by their size.
+    /// </summary>
+    public const int MaxSavedHunkChars = 256 * 1024;
+
+    internal static void OmitLargeHunks(FileChange change)
+    {
+        long chars = 0;
+        int added = 0, removed = 0;
+        foreach (var hunk in change.Hunks)
+        {
+            foreach (var line in hunk.Lines)
+            {
+                chars += line.Length;
+                if (line.Length == 0) continue;
+                if (line[0] == '+') added++;
+                else if (line[0] == '-') removed++;
+            }
+        }
+        if (chars <= MaxSavedHunkChars) return;
+
+        change.Hunks.Clear();
+        change.HunksOmitted = true;
+        change.AddedLines = added;
+        change.RemovedLines = removed;
+    }
+
+    /// <summary>
+    /// Says what a step did when there is no diff to show: the hunks were too
+    /// large to keep and the whole file is no longer held. Null when there is
+    /// a diff, or nothing to say.
+    /// </summary>
+    public static string? Summary(FileChange change)
+    {
+        if (ForStep(change) is not null || !change.HunksOmitted) return null;
+        if (change.IsNewFile)
+            return change.AddedLines == 1 ? "file created, 1 line" : $"file created, {change.AddedLines} lines";
+        return $"+{change.AddedLines} −{change.RemovedLines} lines";
+    }
+
+    /// <summary>
+    /// The file an Edit, MultiEdit or Write call would change, or null for any
+    /// other call. Reads only the tool input, never the file.
+    /// </summary>
+    public static string? EditedFilePath(string toolName, JsonElement input)
+    {
+        if (toolName is not ("Edit" or "MultiEdit" or "Write")) return null;
+        if (input.ValueKind != JsonValueKind.Object) return null;
+        var filePath = GetString(input, "file_path");
+        if (string.IsNullOrEmpty(filePath)) return null;
+        try { return Path.IsPathRooted(filePath) ? filePath : null; }
+        catch (ArgumentException) { return null; }
     }
 
     /// <summary>

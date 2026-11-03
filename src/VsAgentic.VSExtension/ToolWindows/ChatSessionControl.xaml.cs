@@ -54,8 +54,8 @@ public partial class ChatSessionControl : UserControl
         viewModel.MessageCanMoveToBackground += (id) =>
             _ = ChatWebView.SetCanMoveToBackgroundAsync(id);
 
-        viewModel.MessageFileChangeSet += (id) =>
-            _ = ChatWebView.SetFileChangeAsync(id);
+        viewModel.MessageFileChangeSet += (id, summary) =>
+            _ = ChatWebView.SetFileChangeAsync(id, summary);
 
         viewModel.FileDiffRequested += OnFileDiffRequested;
 

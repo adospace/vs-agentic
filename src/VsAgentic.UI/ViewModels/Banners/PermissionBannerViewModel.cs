@@ -1,8 +1,8 @@
 using System;
 using System.Text.Json;
+using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.ClaudeCli.Permissions;
 
 namespace VsAgentic.UI.ViewModels.Banners;
@@ -31,31 +31,41 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     [ObservableProperty]
     private string _alternativeText = "";
 
-    private readonly FileDiffContent? _diff;
-    private readonly Action<FileDiffContent>? _openDiff;
+    private readonly Func<Task<string?>>? _viewDiff;
 
     /// <summary>True for a file edit whose change can be shown before Allow.</summary>
-    public bool CanViewDiff => _diff is not null && _openDiff is not null;
+    public bool CanViewDiff => _viewDiff is not null;
 
+    /// <summary>Why the last View diff opened nothing, e.g. the edit no
+    /// longer matches the file. Empty when it opened.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasDiffNotice))]
+    private string _diffNotice = "";
+
+    public bool HasDiffNotice => !string.IsNullOrEmpty(DiffNotice);
+
+    /// <param name="viewDiff">Opens the diff of a file edit, read against the
+    /// file at the moment of the click. Returns what to tell the user when it
+    /// opened nothing. Null for a call that edits no file.</param>
     public PermissionBannerViewModel(
         PermissionRequest request,
         Action<PermissionDecision> onResolved,
-        FileDiffContent? diff = null,
-        Action<FileDiffContent>? openDiff = null)
+        Func<Task<string?>>? viewDiff = null)
     {
         _request = request;
         _onResolved = onResolved;
-        _diff = diff;
-        _openDiff = openDiff;
+        _viewDiff = viewDiff;
         BodyText = FormatBody(request);
     }
 
     /// <summary>Opens the file as it is now against the file with the edit
     /// applied. The banner stays: the user decides after looking.</summary>
     [RelayCommand]
-    private void ViewDiff()
+    private async Task ViewDiffAsync()
     {
-        if (_diff is not null) _openDiff?.Invoke(_diff);
+        if (_viewDiff is null) return;
+        DiffNotice = "";
+        DiffNotice = await _viewDiff() ?? "";
     }
 
     partial void OnIsOtherModeChanged(bool value)

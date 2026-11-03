@@ -55,6 +55,16 @@
                         Visibility="{Binding CanViewDiff, Converter={StaticResource BoolToVis}}"/>
             </StackPanel>
 
+            <!-- Why View diff opened nothing: the edit no longer matches the
+                 file, or the file is too large. -->
+            <TextBlock Text="{Binding DiffNotice}"
+                       Visibility="{Binding HasDiffNotice, Converter={StaticResource BoolToVis}}"
+                       FontSize="12"
+                       Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                       Opacity="0.8"
+                       Margin="12,0,12,10"
+                       TextWrapping="Wrap"/>
+
             <!-- Other... state: textbox for alternative instructions, Submit
                  sends them as a wrapped deny, the small icon button to the
                  right of Submit returns to the initial state. -->

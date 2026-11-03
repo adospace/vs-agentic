@@ -329,6 +329,11 @@ html, body {
     flex-shrink: 0;
 }
 .toolstep-diffbtn:hover { background: var(--bg-input); }
+.toolstep-diffnote {
+    font-size: 11px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
 
 /* Notice: a one-line event from the extension, e.g. a background command that
    ended. Indented like a step, in muted text, with a colored outcome icon. */
@@ -1238,7 +1243,7 @@ function addMessage(id, type, dataJson) {
         header.appendChild(statusSpan);
         header.appendChild(nameSpan);
         div.appendChild(header);
-        if (data.HasFileChange) addDiffButton(header, id);
+        if (data.HasFileChange) addDiffButton(header, id, data.FileChangeSummary);
 
         // Streaming expander
         if (data.IsStreaming) {
@@ -1527,15 +1532,29 @@ function setCanMoveToBackground(id) {
 }
 
 // Offers the diff of what an Edit, MultiEdit or Write step did to its file.
-// The host opens it in the Visual Studio diff viewer.
-function setFileChange(id) {
+// The host opens it in the Visual Studio diff viewer. A change too large to
+// keep comes with a summary, shown in place of the button.
+function setFileChange(id, summary) {
     var el = messageElement(id);
     if (!el) return;
     var header = el.querySelector('.toolstep-header');
-    if (header) addDiffButton(header, id);
+    if (header) addDiffButton(header, id, summary);
 }
 
-function addDiffButton(header, id) {
+function addDiffButton(header, id, summary) {
+    if (summary) {
+        var old = header.querySelector('.toolstep-diffbtn');
+        if (old) old.remove();
+        var note = header.querySelector('.toolstep-diffnote');
+        if (!note) {
+            note = document.createElement('span');
+            note.className = 'toolstep-diffnote';
+            note.title = 'The change was too large to keep for a diff';
+            header.appendChild(note);
+        }
+        note.textContent = summary;
+        return;
+    }
     if (header.querySelector('.toolstep-diffbtn')) return;
     var btn = document.createElement('button');
     btn.className = 'toolstep-diffbtn';

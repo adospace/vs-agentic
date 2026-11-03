@@ -55,7 +55,10 @@ internal sealed class RoslynIdeContextProvider : IIdeContextProvider
                 "find_references and find_implementations. A name that matches several symbols returns " +
                 "the candidates.",
                 "{\"type\":\"object\",\"properties\":{" + QueryProperties + "}}",
-                GetSymbolContextAsync),
+                GetSymbolContextAsync,
+                // The three symbol tools read the solution's source, which
+                // Claude can read anyway. No banner.
+                isReadOnly: true),
             new IdeTool(
                 "find_references",
                 "Finding references",
@@ -68,7 +71,8 @@ internal sealed class RoslynIdeContextProvider : IIdeContextProvider
                 "{\"type\":\"object\",\"properties\":{" + QueryProperties + "," +
                 "\"maxResults\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":200,\"description\":\"Default 25.\"}," +
                 "\"skip\":{\"type\":\"integer\",\"minimum\":0,\"description\":\"References to skip, to continue a truncated list.\"}}}",
-                FindReferencesAsync),
+                FindReferencesAsync,
+                isReadOnly: true),
             new IdeTool(
                 "find_implementations",
                 "Finding implementations",
@@ -77,21 +81,9 @@ internal sealed class RoslynIdeContextProvider : IIdeContextProvider
                 "no arguments: the symbol under the caret.",
                 "{\"type\":\"object\",\"properties\":{" + QueryProperties + "," +
                 "\"maxResults\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":200,\"description\":\"Default 25.\"}}}",
-                FindImplementationsAsync),
+                FindImplementationsAsync,
+                isReadOnly: true),
         };
-    }
-
-    public async Task<IdeContextSection?> GetSummaryAsync(CancellationToken cancellationToken)
-    {
-        var (resolution, _) = await ResolveAsync(new SymbolQuery(null, null, null, null, null), cancellationToken);
-        if (resolution?.Symbol is not { } symbol)
-            return null;
-
-        var summary = $"Caret on {RoslynSymbols.KindName(symbol)} {RoslynSymbols.Display(symbol)}";
-        if (resolution.Enclosing is { } enclosing && !SymbolEqualityComparer.Default.Equals(enclosing, symbol))
-            summary += $" in {RoslynSymbols.Display(enclosing)}";
-
-        return new IdeContextSection("symbol", summary, "Roslyn", DateTimeOffset.Now, detailsAvailable: true);
     }
 
     private async Task<IdeToolResult> GetSymbolContextAsync(JsonElement arguments, CancellationToken cancellationToken)

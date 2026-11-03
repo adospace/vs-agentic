@@ -35,22 +35,11 @@ internal sealed class EditorIdeContextProvider : IIdeContextProvider
                 "have selected, with the selected text as the editor holds it (saved or not). Use it " +
                 "when the user refers to \"this\", \"here\" or \"the selected code\" without naming a file.",
                 """{"type":"object","properties":{}}""",
-                GetEditorContextAsync),
+                GetEditorContextAsync,
+                // The open file and its selection: Claude can read the same
+                // file itself, so no banner.
+                isReadOnly: true),
         };
-    }
-
-    public async Task<IdeContextSection?> GetSummaryAsync(CancellationToken cancellationToken)
-    {
-        await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
-        if (_tracker.ReadActive() is not { } context)
-            return null;
-
-        return new IdeContextSection(
-            "editor",
-            context.HasSelection ? $"Editing {context.Reference} (selection)" : $"Editing {context.FilePath}",
-            "Editor",
-            DateTimeOffset.Now,
-            detailsAvailable: context.HasSelection);
     }
 
     private async Task<IdeToolResult> GetEditorContextAsync(JsonElement arguments, CancellationToken cancellationToken)

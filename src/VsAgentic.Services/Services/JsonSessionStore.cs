@@ -159,6 +159,7 @@ public class JsonSessionStore : ISessionStore
             await WriteJsonAsync(indexPath, index);
 
             var sessionDir = GetSessionDir(folderPath, sessionId);
+            _searchCache.TryRemove(Path.Combine(sessionDir, "messages.json"), out _);
             if (Directory.Exists(sessionDir))
                 Directory.Delete(sessionDir, recursive: true);
         }
@@ -168,17 +169,65 @@ public class JsonSessionStore : ISessionStore
         }
     }
 
-    public async Task DeleteSessionsOlderThanAsync(string folderPath, int days)
+    public async Task SetSessionArchivedAsync(string folderPath, int sessionId, bool archived)
+    {
+        var semaphore = GetLock(folderPath);
+        await semaphore.WaitAsync();
+        try
+        {
+            var indexPath = GetSessionIndexPath(folderPath);
+            var index = await ReadJsonAsync<List<SessionEntry>>(indexPath) ?? new List<SessionEntry>();
+
+            var entry = index.Find(s => s.Id == sessionId);
+            if (entry is null) return;
+
+            entry.ArchivedUtc = archived ? DateTime.UtcNow : null;
+
+            // A restore counts as activity. Without it a session the clean-up
+            // archived is still past the cutoff, and the next startup archives
+            // it again.
+            if (!archived)
+                entry.LastActivityUtc = DateTime.UtcNow;
+
+            await WriteJsonAsync(indexPath, index);
+
+            // session.json is the copy a session folder carries for itself; it
+            // is rewritten so the two do not disagree after a restore.
+            var sessionPath = Path.Combine(GetSessionDir(folderPath, sessionId), "session.json");
+            if (File.Exists(sessionPath))
+                await WriteJsonAsync(sessionPath, entry);
+        }
+        finally
+        {
+            semaphore.Release();
+        }
+    }
+
+    public async Task PurgeOldSessionsAsync(string folderPath, int days)
     {
         if (days <= 0) return;
 
         var cutoffUtc = DateTime.UtcNow.AddDays(-days);
+
+        // The index is read once and iterated over a copy, because both calls
+        // below rewrite it.
         var index = await GetSessionIndexAsync(folderPath);
 
         foreach (var entry in index)
         {
-            if (entry.LastActivityUtc < cutoffUtc)
-                await DeleteSessionAsync(folderPath, entry.Id);
+            if (entry.ArchivedUtc is DateTime archivedUtc)
+            {
+                // Stage two: archived long enough, so now it really goes.
+                if (archivedUtc < cutoffUtc)
+                    await DeleteSessionAsync(folderPath, entry.Id);
+            }
+            else if (entry.LastActivityUtc < cutoffUtc)
+            {
+                // Stage one: idle long enough. This used to delete the session
+                // outright; it now archives it, so the next startup is what
+                // removes it and the user has until then to restore it.
+                await SetSessionArchivedAsync(folderPath, entry.Id, archived: true);
+            }
         }
     }
 
@@ -225,6 +274,134 @@ public class JsonSessionStore : ISessionStore
             semaphore.Release();
         }
     }
+
+    // --- Search ---
+
+    // Characters of context kept on each side of a match in a search hit.
+    private const int HitContextBefore = 30;
+    private const int HitContextAfter = 80;
+
+    private static readonly string[] SearchedItemTypes = { "User", "Assistant" };
+
+    /// <summary>
+    /// The searchable text of each messages.json, keyed by path and tagged with
+    /// the file's size and write time. A search runs on every pause in typing
+    /// and reads every session, and a messages.json also carries full tool
+    /// output, so parsing them all again each time would cost far more than
+    /// the text it yields.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, SearchableMessages> _searchCache = new();
+
+    private sealed class SearchableMessages
+    {
+        public DateTime LastWriteUtc { get; init; }
+        public long Length { get; init; }
+        public IReadOnlyList<string> Texts { get; init; } = Array.Empty<string>();
+    }
+
+    public Task<IReadOnlyList<SessionSearchHit>> SearchMessagesAsync(
+        string folderPath, string query, CancellationToken cancellationToken = default)
+    {
+        // Parsing is synchronous and can run to megabytes, so keep it off the
+        // caller's thread, which is the UI thread.
+        return Task.Run(async () =>
+        {
+            var hits = new List<SessionSearchHit>();
+            if (string.IsNullOrWhiteSpace(query)) return (IReadOnlyList<SessionSearchHit>)hits;
+
+            var index = await GetSessionIndexAsync(folderPath).ConfigureAwait(false);
+            foreach (var entry in index)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var path = Path.Combine(GetSessionDir(folderPath, entry.Id), "messages.json");
+                var texts = ReadSearchableTexts(path);
+                foreach (var text in texts)
+                {
+                    var at = text.IndexOf(query, StringComparison.OrdinalIgnoreCase);
+                    if (at < 0) continue;
+
+                    hits.Add(CreateHit(entry.Id, text, at, query.Length));
+                    break;
+                }
+            }
+
+            return (IReadOnlyList<SessionSearchHit>)hits;
+        }, cancellationToken);
+    }
+
+    private IReadOnlyList<string> ReadSearchableTexts(string path)
+    {
+        try
+        {
+            var file = new FileInfo(path);
+            if (!file.Exists)
+            {
+                _searchCache.TryRemove(path, out _);
+                return Array.Empty<string>();
+            }
+
+            if (_searchCache.TryGetValue(path, out var cached)
+                && cached.LastWriteUtc == file.LastWriteTimeUtc
+                && cached.Length == file.Length)
+            {
+                return cached.Texts;
+            }
+
+            var messages = JsonSerializer.Deserialize<List<PersistedMessage>>(
+                File.ReadAllText(path, Encoding.UTF8), JsonOptions) ?? new List<PersistedMessage>();
+
+            var texts = messages
+                .Where(m => SearchedItemTypes.Contains(m.ItemType) && !string.IsNullOrEmpty(m.Content))
+                .Select(m => m.Content)
+                .ToList();
+
+            _searchCache[path] = new SearchableMessages
+            {
+                LastWriteUtc = file.LastWriteTimeUtc,
+                Length = file.Length,
+                Texts = texts
+            };
+            return texts;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            // A session that is being written to right now. Search what was
+            // read last time; the next search reads it again.
+            return _searchCache.TryGetValue(path, out var cached) ? cached.Texts : Array.Empty<string>();
+        }
+    }
+
+    private static SessionSearchHit CreateHit(int sessionId, string text, int at, int length)
+    {
+        var start = Math.Max(0, at - HitContextBefore);
+        var end = Math.Min(text.Length, at + length + HitContextAfter);
+
+        // Start and end on a word, so the line does not open on half of one.
+        if (start > 0)
+        {
+            var space = text.IndexOf(' ', start, at - start);
+            if (space >= 0) start = space + 1;
+        }
+        if (end < text.Length)
+        {
+            var space = text.LastIndexOf(' ', end - 1, end - (at + length));
+            if (space >= 0) end = space;
+        }
+
+        return new SessionSearchHit
+        {
+            SessionId = sessionId,
+            Before = (start > 0 ? "…" : "") + CollapseWhitespace(text.Substring(start, at - start)),
+            Match = CollapseWhitespace(text.Substring(at, length)),
+            After = CollapseWhitespace(text.Substring(at + length, end - at - length)) + (end < text.Length ? "…" : "")
+        };
+    }
+
+    // The hit shows on a single line, so line breaks and runs of spaces in the
+    // message would only push the match out of view.
+    private static string CollapseWhitespace(string text)
+        => System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ");
 
     // --- AI Conversation History ---
 

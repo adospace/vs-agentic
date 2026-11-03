@@ -20,6 +20,12 @@ public class ChatMessageData
     public bool IsStreaming { get; init; }
 
     /// <summary>
+    /// The id of the Agent step a subagent's step goes under. Null for the
+    /// main conversation.
+    /// </summary>
+    public string? ParentId { get; init; }
+
+    /// <summary>
     /// Data URIs for images attached to a user message, rendered inside the
     /// prompt block. Null when the message has none.
     /// </summary>

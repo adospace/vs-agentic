@@ -23,12 +23,19 @@ internal static class StreamJsonProtocol
 
     /// <summary>
     /// Build the JSON line for a plain-text user message sent to the CLI over stdin.
+    ///
+    /// <paramref name="uuid"/> names the message. The CLI repeats it in the
+    /// <c>command_lifecycle</c> events for the message and in the
+    /// <c>user_message_uuids</c> of the turn's result, which is how a result is
+    /// matched to the message that started the turn. A CLI that predates the
+    /// field ignores it.
     /// </summary>
-    public static string BuildUserTextMessage(string text)
+    public static string BuildUserTextMessage(string text, string uuid)
     {
         var msg = new
         {
             type = "user",
+            uuid,
             message = new
             {
                 role = "user",
@@ -45,10 +52,12 @@ internal static class StreamJsonProtocol
     ///
     /// Images come before the text: the API reads a prompt that refers to
     /// "this screenshot" more reliably when the image is already in context.
+    /// <paramref name="uuid"/> is as in <see cref="BuildUserTextMessage"/>.
     /// </summary>
     public static string BuildUserMessageWithImages(
         string text,
-        IReadOnlyList<ChatImageAttachment> images)
+        IReadOnlyList<ChatImageAttachment> images,
+        string uuid)
     {
         var content = new List<object>(images.Count + 1);
 
@@ -75,6 +84,7 @@ internal static class StreamJsonProtocol
         var msg = new
         {
             type = "user",
+            uuid,
             message = new
             {
                 role = "user",
@@ -111,17 +121,17 @@ internal static class StreamJsonProtocol
     }
 
     /// <summary>
-    /// Build the control request that changes the model and/or effort of the
-    /// running process. A setting is sent only when its <c>include</c> flag is
-    /// set; a null value then returns it to the CLI default.
+    /// Build one control request line:
+    /// <c>{"type":"control_request","request_id":…,"request":{"subtype":…, …}}</c>.
+    /// <paramref name="writeFields"/> adds the request's own fields after the
+    /// subtype.
     ///
     /// Written by hand rather than through <see cref="SerializerOptions"/>,
-    /// because that drops null values and the null is the message here.
+    /// because that drops null values, and for some requests the null is the
+    /// message.
     /// </summary>
-    public static string BuildApplyFlagSettings(
-        string requestId,
-        bool includeModel, string? model,
-        bool includeEffort, string? effort)
+    public static string BuildControlRequest(
+        string requestId, string subtype, Action<Utf8JsonWriter>? writeFields = null)
     {
         using var buffer = new MemoryStream();
         using (var w = new Utf8JsonWriter(buffer))
@@ -130,16 +140,146 @@ internal static class StreamJsonProtocol
             w.WriteString("type", "control_request");
             w.WriteString("request_id", requestId);
             w.WriteStartObject("request");
-            w.WriteString("subtype", "apply_flag_settings");
-            w.WriteStartObject("settings");
-            if (includeModel) WriteStringOrNull(w, "model", model);
-            if (includeEffort) WriteStringOrNull(w, "effortLevel", effort);
-            w.WriteEndObject();
+            w.WriteString("subtype", subtype);
+            writeFields?.Invoke(w);
             w.WriteEndObject();
             w.WriteEndObject();
         }
         return Encoding.UTF8.GetString(buffer.ToArray());
     }
+
+    /// <summary>
+    /// Build the control request that asks for the plan rate limits.
+    /// <c>skip_behaviors</c> skips a scan of the last seven days of local
+    /// transcripts that only the /usage dialog needs.
+    /// </summary>
+    public static string BuildGetUsage(string requestId) =>
+        BuildControlRequest(requestId, "get_usage", w => w.WriteBoolean("skip_behaviors", true));
+
+    /// <summary>
+    /// Build the <c>initialize</c> request. It registers nothing: no hooks, no
+    /// SDK MCP servers, no prompt changes. The point is the answer, which
+    /// describes the process (see <see cref="CliProcessInfo"/>).
+    ///
+    /// <c>forwardSubagentText</c> asks for the text and thinking of subagents
+    /// as well; without it the CLI sends only their tool calls, and nothing
+    /// at all from a subagent that a subagent started. A CLI that predates the
+    /// field ignores it, which a command-line flag it does not know would not.
+    ///
+    /// <c>perTaskStopAffordance</c> tells the CLI that the user can stop each
+    /// background task on its own (the Stop button on the background tasks
+    /// strip). Without it, an interrupt also kills the background subagents,
+    /// because the CLI assumes nothing else could stop them.
+    /// </summary>
+    public static string BuildInitialize(string requestId) =>
+        BuildControlRequest(requestId, "initialize", w =>
+        {
+            w.WriteBoolean("forwardSubagentText", true);
+            w.WriteBoolean("perTaskStopAffordance", true);
+        });
+
+    /// <summary>
+    /// Build the <c>stop_task</c> request, which stops one background task.
+    /// The CLI then sends the task's <c>task_notification</c> with status
+    /// "stopped".
+    /// </summary>
+    public static string BuildStopTask(string requestId, string taskId) =>
+        BuildControlRequest(requestId, "stop_task", w => w.WriteString("task_id", taskId));
+
+    /// <summary>
+    /// Build the <c>background_tasks</c> request for one tool call: the
+    /// command or subagent that tool call is running in the foreground moves
+    /// to the background, and the turn goes on. Ctrl+B in the terminal.
+    /// </summary>
+    public static string BuildBackgroundTask(string requestId, string toolUseId) =>
+        BuildControlRequest(requestId, "background_tasks", w => w.WriteString("tool_use_id", toolUseId));
+
+    /// <summary>
+    /// Build the <c>get_task_output</c> request: the last 8 KiB a shell task
+    /// has written so far.
+    /// </summary>
+    public static string BuildGetTaskOutput(string requestId, string taskId) =>
+        BuildControlRequest(requestId, "get_task_output", w => w.WriteString("task_id", taskId));
+
+    /// <summary>
+    /// Build the <c>interrupt</c> request, which aborts the running turn.
+    /// <c>cancel_queued</c> also drops the messages still waiting in the CLI's
+    /// queue, so Stop leaves nothing behind that would start on its own. A CLI
+    /// that predates the field ignores it.
+    /// </summary>
+    public static string BuildInterrupt(string requestId) =>
+        BuildControlRequest(requestId, "interrupt", w => w.WriteBoolean("cancel_queued", true));
+
+    /// <summary>
+    /// Build the <c>set_model</c> request. A null model returns the session to
+    /// the account's default model, not to the <c>--model</c> the process was
+    /// started with (measured on CLI 2.1.296).
+    /// </summary>
+    public static string BuildSetModel(string requestId, string? model) =>
+        BuildControlRequest(requestId, "set_model", w => WriteStringOrNull(w, "model", model));
+
+    /// <summary>
+    /// Build the <c>get_settings</c> request. Its answer carries, under
+    /// <c>applied</c>, the model and effort the next request will use.
+    /// </summary>
+    public static string BuildGetSettings(string requestId) =>
+        BuildControlRequest(requestId, "get_settings");
+
+    /// <summary>
+    /// Build the <c>mcp_status</c> request. Its answer lists every MCP server
+    /// with the <c>error</c> text that <c>system/init</c> leaves out.
+    /// </summary>
+    public static string BuildMcpStatus(string requestId) =>
+        BuildControlRequest(requestId, "mcp_status");
+
+    /// <summary>
+    /// Build the <c>get_context_usage</c> request. Its answer carries
+    /// <c>totalTokens</c>, what the conversation now takes of the context
+    /// window: what <c>/context</c> shows in the terminal.
+    /// </summary>
+    public static string BuildGetContextUsage(string requestId) =>
+        BuildControlRequest(requestId, "get_context_usage");
+
+    /// <summary>
+    /// Build the control request that changes the model and/or effort of the
+    /// running process. A setting is sent only when its <c>include</c> flag is
+    /// set; a null value then returns it to the CLI default.
+    ///
+    /// The model goes through <see cref="BuildSetModel"/>; this carries it only
+    /// for a CLI that does not know that request.
+    /// </summary>
+    public static string BuildApplyFlagSettings(
+        string requestId,
+        bool includeModel, string? model,
+        bool includeEffort, string? effort) =>
+        BuildControlRequest(requestId, "apply_flag_settings", w =>
+        {
+            w.WriteStartObject("settings");
+            if (includeModel) WriteStringOrNull(w, "model", model);
+            if (includeEffort) WriteStringOrNull(w, "effortLevel", effort);
+            w.WriteEndObject();
+        });
+
+    /// <summary>
+    /// Build the control request that switches the permission mode of the
+    /// running process. The CLI answers with the mode now in effect and also
+    /// emits <c>system/status</c> with it.
+    /// </summary>
+    public static string BuildSetPermissionMode(string requestId, string mode) =>
+        BuildControlRequest(requestId, "set_permission_mode", w => w.WriteString("mode", mode));
+
+    /// <summary>
+    /// Build the request that turns fast mode on or off:
+    /// <c>apply_flag_settings {fastMode}</c>. There is no request of its own
+    /// for it; the SDK's flag-settings example uses this key.
+    /// </summary>
+    public static string BuildFastMode(string requestId, bool on) =>
+        BuildControlRequest(requestId, "apply_flag_settings", w =>
+        {
+            w.WriteStartObject("settings");
+            w.WriteBoolean("fastMode", on);
+            w.WriteEndObject();
+        });
 
     private static void WriteStringOrNull(Utf8JsonWriter w, string name, string? value)
     {

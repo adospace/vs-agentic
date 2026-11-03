@@ -116,4 +116,29 @@
     <None Include="source.extension.vsixmanifest" SubType="Designer" />
   </ItemGroup>
 
+  <!--
+    Force the intermediate manifest to be regenerated when the source one changes.
+
+    The VSSDK packs $(IntermediateOutputPath)extension.vsixmanifest, not
+    source.extension.vsixmanifest. Observed with MSBuild.exe (VS 18, MSBuild
+    18.6.3, Microsoft.VSSDK.BuildTools 17.14.2120): after a merge raised the
+    source manifest version, two builds in a row with an obj folder from the
+    earlier build packed a .vsix still stamped with the old version. The DLLs
+    were current. Deleting the intermediate copy fixed it. It has not been
+    reproduced with dotnet build, and the cause in the VSSDK targets is not known.
+
+    Version is the one that bites hardest, because VSIXInstaller keys on it —
+    a .vsix still stamped with the old version silently fails to install over
+    itself.
+
+    Inputs/Outputs make this a no-op once the intermediate is current, so the
+    delete only happens on the builds that actually need it.
+  -->
+  <Target Name="ForceRefreshIntermediateVsixManifest"
+          BeforeTargets="DetokenizeVsixManifestFile"
+          Inputs="source.extension.vsixmanifest"
+          Outputs="$(IntermediateOutputPath)extension.vsixmanifest">
+    <Delete Files="$(IntermediateOutputPath)extension.vsixmanifest" />
+  </Target>
+
 </Project>

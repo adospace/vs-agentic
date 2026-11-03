@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace VsAgentic.Services.Abstractions;
 
@@ -26,6 +27,9 @@ public enum UsageLevel
 ///    the last call. It falls back down after a compaction.
 ///  - The rolling windows are machine-wide, span every session and survive a
 ///    restart, because that is the scope the rate limit itself applies at.
+///    They are the fallback: once the CLI reports the plan limits
+///    (<see cref="ShortWindowLimit"/>, <see cref="LongWindowLimit"/>), those
+///    are shown instead.
 /// </summary>
 public record SessionUsage
 {
@@ -53,12 +57,16 @@ public record SessionUsage
     /// Tokens the last API call carried into the model: fresh input, plus both
     /// halves of the cache, plus what came back out. This is the number that has
     /// to stay under the model's context window.
-    ///
-    /// The window itself is not part of this snapshot. It follows the model, and
-    /// the model has its own source (<see cref="IChatService.CurrentModel"/>,
-    /// or a preview of it before the first turn), so the host pairs the two.
     /// </summary>
     public long ContextTokens { get; init; }
+
+    /// <summary>
+    /// The context window the CLI applies to the session's model, as reported
+    /// in the last result event. Null before the first result and after a
+    /// model change; the host then estimates the window from the model id
+    /// (<see cref="IChatService.CurrentModel"/>, or a preview of it).
+    /// </summary>
+    public long? ContextWindowTokens { get; init; }
 
     // ── Rolling rate-limit windows ────────────────────────────────────────
 
@@ -82,9 +90,27 @@ public record SessionUsage
 
     public bool HasAny => TotalTokens > 0;
 
-    public UsageLevel ShortWindowLevel => LevelOf(ShortWindowFraction);
+    // ── Plan limits reported by the CLI ───────────────────────────────────
+    // When present, these replace the local estimate for their window: they
+    // are the server's reading for the whole account. Null when the CLI has
+    // not reported yet, cannot (an older CLI), or the window has reset since.
 
-    public UsageLevel LongWindowLevel => LevelOf(LongWindowFraction);
+    /// <summary>The 5-hour plan window, as the CLI last reported it.</summary>
+    public PlanLimitWindow? ShortWindowLimit { get; init; }
+
+    /// <summary>The weekly plan window, as the CLI last reported it.</summary>
+    public PlanLimitWindow? LongWindowLimit { get; init; }
+
+    /// <summary>Weekly windows that apply to one model only, e.g. Fable.</summary>
+    public IReadOnlyList<PlanLimitWindow> ModelLimits { get; init; } = Array.Empty<PlanLimitWindow>();
+
+    /// <summary>
+    /// Only a reported limit warns. The estimate has no colour: its budget is a
+    /// guess, and a guess should not turn the status bar red.
+    /// </summary>
+    public UsageLevel ShortWindowLevel => ShortWindowLimit is { } l ? LevelOf(l.Fraction) : UsageLevel.Normal;
+
+    public UsageLevel LongWindowLevel => LongWindowLimit is { } l ? LevelOf(l.Fraction) : UsageLevel.Normal;
 
     /// <summary>
     /// Warn at three quarters, escalate at nine tenths. The warning band is

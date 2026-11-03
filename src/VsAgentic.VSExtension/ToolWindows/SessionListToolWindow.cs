@@ -14,4 +14,10 @@ public class SessionListToolWindow : ToolWindowPane
         SessionListControl = new SessionListControl();
         Content = SessionListControl;
     }
+
+    protected override void OnClose()
+    {
+        SessionListControl.Shutdown();
+        base.OnClose();
+    }
 }

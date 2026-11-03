@@ -13,6 +13,21 @@ namespace VsAgentic.VSExtension.Options;
 [Guid("a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d")]
 public class VsAgenticOptionsPage : DialogPage
 {
+    /// <summary>
+    /// Raised after the user clicks OK/Apply. Already-open chat sessions hold
+    /// their own copy of the options captured when their tool window was
+    /// created, so the package needs this to push changes (e.g. the Appearance
+    /// toggles) into them live instead of waiting for the next session.
+    /// </summary>
+    public event EventHandler? Applied;
+
+    protected override void OnApply(PageApplyEventArgs e)
+    {
+        base.OnApply(e);
+        if (e.ApplyBehavior == ApplyKind.Apply)
+            Applied?.Invoke(this, EventArgs.Empty);
+    }
+
     [Category("Claude CLI")]
     [DisplayName("Claude CLI Path")]
     [Description("Path to the Claude Code CLI executable. Defaults to 'claude' (assumes it's on PATH).")]
@@ -21,7 +36,7 @@ public class VsAgenticOptionsPage : DialogPage
 
     [Category("Claude CLI")]
     [DisplayName("CLI Permission Mode")]
-    [Description("Controls how the CLI handles tool permissions. Default: every gated tool call surfaces an Allow/Deny banner in the chat (safest). AcceptEdits: file edits (Edit, Write, NotebookEdit) auto-accept; everything else still prompts. BypassPermissions: auto-accept every tool call without prompting (use only in trusted environments).")]
+    [Description("The permission mode a new chat starts in. The dropdown under the chat input changes it for one chat. Default (the default): every gated tool call surfaces an Allow/Deny banner in the chat. CliSetting: no mode is passed, so permissions.defaultMode from your Claude Code settings applies, as in a terminal. This includes the .claude/settings.json committed to the repository you open, so an unfamiliar repository can start the chat in a mode that applies edits without asking. AcceptEdits: file edits (Edit, Write, NotebookEdit) auto-accept; everything else still prompts. Plan: Claude plans and does not change anything until the plan is approved. Auto: a classifier approves the calls it considers safe; the rest still prompt. BypassPermissions: auto-accept every tool call without prompting, except those an ask rule in your Claude Code settings matches (use only in trusted environments).")]
     [DefaultValue(CliPermissionMode.Default)]
     public CliPermissionMode CliPermissionMode { get; set; } = CliPermissionMode.Default;
 
@@ -38,6 +53,18 @@ public class VsAgenticOptionsPage : DialogPage
     public ClaudeEffort Effort { get; set; } = ClaudeEffort.Default;
 
     [Category("Claude CLI")]
+    [DisplayName("Use my user MCP servers")]
+    [Description("False (default): the CLI loads only VsAgentic's own MCP server, which asks you before gated tools run. True: the CLI also loads the MCP servers you added with the user scope (claude mcp add --scope user), which Claude Code keeps in ~/.claude.json. Servers in a project's .mcp.json, servers added with the local scope, plugin servers and claude.ai connectors are not loaded, so opening a repository never starts a server it defines. Servers that do not connect are listed in the chat. Applies to sessions started after the change.")]
+    [DefaultValue(false)]
+    public bool UseClaudeMcpServers { get; set; }
+
+    [Category("Claude CLI")]
+    [DisplayName("Background command limit")]
+    [Description("Most time Claude may give a shell command before the CLI stops it. The CLI treats this extension as an unattended session: it stops a background command (a dev server, a watcher) after 30 minutes unless Claude asks for longer, and allows at most 2 hours. The other values raise that maximum through BASH_MAX_TIMEOUT_MS. The CLI applies the variable to every Bash command, so the maximum for a foreground command rises as well. The default timeouts stay. CliDefault leaves the variable alone. A value already set in the environment Visual Studio started with is kept. Applies to sessions started after the change.")]
+    [DefaultValue(BackgroundCommandLimit.CliDefault)]
+    public BackgroundCommandLimit BackgroundCommandLimit { get; set; } = BackgroundCommandLimit.CliDefault;
+
+    [Category("Claude CLI")]
     [DisplayName("Check for CLI updates")]
     [Description("On startup, compare the Claude Code CLI against the latest release published on the npm registry and show a banner when a newer one exists. The banner offers to run 'claude update' in a console window. Nothing is installed without a click.")]
     [DefaultValue(true)]
@@ -45,7 +72,7 @@ public class VsAgenticOptionsPage : DialogPage
 
     [Category("Usage meters")]
     [DisplayName("Plan")]
-    [Description("Subscription the 5-hour and weekly readings under the chat input are sized against. Display only — nothing here is sent to the CLI. Choose Unlimited to hide those readings.")]
+    [Description("Subscription the 5-hour and weekly estimates under the chat input are sized against. Once Claude Code reports your plan's real limits, after the first reply, those replace the estimates. Display only — nothing here is sent to the CLI. Choose Unlimited to hide those readings.")]
     [DefaultValue(ClaudeUsagePlan.Pro)]
     public ClaudeUsagePlan UsagePlan { get; set; } = ClaudeUsagePlan.Pro;
 
@@ -67,9 +94,54 @@ public class VsAgenticOptionsPage : DialogPage
     [DefaultValue(100)]
     public int ZoomPercent { get; set; } = 100;
 
+    [Category("Appearance")]
+    [DisplayName("Working - animate tab title")]
+    [Description("Show a spinner on chat window's tab title while a turn is running. Turn off if you prefer a static title.")]
+    [DefaultValue(true)]
+    public bool AnimateTitleWhileBusy { get; set; } = true;
+
+    [Category("Appearance")]
+    [DisplayName("Waiting for input - animate tab title")]
+    [Description("Make the waiting for input more visible by showing a waving hand on chat window's tab title. Applies to input from you, such as permission or question banner. Also shows when window is backgrounded.")]
+    [DefaultValue(true)]
+    public bool AnimateTitleWhileWaiting { get; set; } = true;
+
+    [Category("Appearance")]
+    [DisplayName("Waiting for input - flash status bar")]
+    [Description("Pulse the background of the bar under the chat input while a permission or question banner needs an answer.")]
+    [DefaultValue(true)]
+    public bool FlashStatusBarWhileWaiting { get; set; } = true;
+
+    // Property name kept from when this switched a tab icon rather than a title
+    // marker: DialogPage persists by property name, so renaming it would quietly
+    // reset anyone who had turned it off.
+    [Category("Appearance")]
+    [DisplayName("Completed - show title marker")]
+    [Description("Show a sparkle on the chat window's tab title once a turn finishes, until you switch to that tab. Also shows when the window is backgrounded. Turn off to leave the title alone when a turn ends.")]
+    [DefaultValue(true)]
+    public bool ShowCompletedIndicator { get; set; } = true;
+
+    [Category("Appearance")]
+    [DisplayName("Completed - animate tab title")]
+    [Description("Pulse the completed marker rather than showing it still. Has no effect unless 'Completed - show title marker' is on.")]
+    [DefaultValue(true)]
+    public bool AnimateTitleWhenComplete { get; set; } = true;
+
+    [Category("Appearance")]
+    [DisplayName("Completed - flash status bar")]
+    [Description("Pulse the background of the bar under the chat input once a turn finishes, until you switch to that tab.")]
+    [DefaultValue(true)]
+    public bool FlashStatusBarWhenComplete { get; set; } = true;
+
+    [Category("Editor context")]
+    [DisplayName("Suggest the active file and selection")]
+    [Description("Offer the file open in the editor, and the lines selected in it, as a faded chip above the chat input. Nothing is sent until you click the chip; it then goes out with the next message like an attached file. Selected text is sent as well, so unsaved changes reach Claude too.")]
+    [DefaultValue(true)]
+    public bool SuggestEditorContext { get; set; } = true;
+
     [Category("Sessions")]
     [DisplayName("Keep days of activity")]
-    [Description("When the extension starts, sessions whose last activity is older than this many days are deleted. Default: 30. Set to 0 to disable cleanup.")]
+    [Description("When the extension starts, a session whose last activity is older than this many days is archived, and a session that has been in the archive for this long is deleted. A session is therefore kept for twice this many days before anything is lost. Restoring a session counts as activity. The Claude CLI removes its own copy of a conversation after its cleanupPeriodDays setting (default 30). When it no longer has a session's conversation, the next message in that session starts a new one, and Claude does not see the earlier messages. Default: 30. Set to 0 to disable cleanup.")]
     [DefaultValue(30)]
     public int KeepActivityDays { get; set; } = 30;
 }

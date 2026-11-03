@@ -16,6 +16,7 @@ using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
 using Serilog;
 using VsAgentic.Services.Configuration;
+using VsAgentic.VSExtension.Editor;
 using VsAgentic.VSExtension.Options;
 using VsAgentic.VSExtension.ToolWindows;
 using Task = System.Threading.Tasks.Task;
@@ -46,6 +47,13 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     private uint _solutionEventsCookie;
     private Action<double>? _persistZoom;
     private DispatcherTimer? _zoomSaveTimer;
+    private EditorContextTracker? _editorContext;
+
+    // For "Add to VsAgentic Chat": the open chat windows, the one the user was
+    // in last, and an editor context waiting for a window still being opened.
+    private readonly Dictionary<string, ChatSessionToolWindow> _chatWindows = new();
+    private string? _lastActiveSessionId;
+    private EditorContext? _pendingEditorContext;
 
     public static bool IsLoaded => _instance is not null;
 
@@ -92,6 +100,15 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
         InitializeZoom();
 
+        if (await GetServiceAsync(typeof(SVsShellMonitorSelection)) is IVsMonitorSelection monitorSelection)
+        {
+            // Read on every call, so turning the option off in Tools → Options
+            // takes effect in chats that are already open.
+            var editorOptions = (VsAgenticOptionsPage?)GetDialogPage(typeof(VsAgenticOptionsPage));
+            _editorContext = new EditorContextTracker(
+                monitorSelection, () => editorOptions?.SuggestEditorContext ?? true);
+        }
+
         // Listen for solution open/close/switch events
         if (await GetServiceAsync(typeof(SVsSolution)) is IVsSolution solutionService)
         {
@@ -136,6 +153,8 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         var optionsPage = (VsAgenticOptionsPage?)GetDialogPage(typeof(VsAgenticOptionsPage));
         if (optionsPage is null) return;
 
+        optionsPage.Applied += OnOptionsApplied;
+
         ChatZoom.Initialize(optionsPage.ZoomPercent / 100.0);
 
         // Coalesced rather than written per step: SaveSettingsToStorage
@@ -172,6 +191,35 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         }
     }
 
+    /// <summary>
+    /// Pushes Appearance-tab changes into every chat session tool window that's
+    /// already open. Each one was handed its own copy of the options when its
+    /// window was created (see <see cref="CreateChatViewModel"/>), so without
+    /// this a toggle would only apply the next time a session is opened.
+    /// </summary>
+    private void OnOptionsApplied(object? sender, EventArgs e)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        if (sender is not VsAgenticOptionsPage optionsPage) return;
+
+        foreach (var kvp in _sessionWindowMap)
+        {
+            var window = FindToolWindow(typeof(ChatSessionToolWindow), kvp.Value, false);
+            if (window is ChatSessionToolWindow chatWindow
+                && chatWindow.ChatControl.DataContext is ChatSessionViewModel vm)
+            {
+                vm.ApplyAppearanceOptions(
+                    optionsPage.AnimateTitleWhileBusy,
+                    optionsPage.AnimateTitleWhileWaiting,
+                    optionsPage.FlashStatusBarWhileWaiting,
+                    optionsPage.ShowCompletedIndicator,
+                    optionsPage.AnimateTitleWhenComplete,
+                    optionsPage.FlashStatusBarWhenComplete);
+            }
+        }
+    }
+
     private async Task InitializeSessionPersistenceAsync()
     {
         if (_sessionStore is null || _solutionDirectory is null || _sessionListViewModel is null) return;
@@ -197,7 +245,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         {
             var optionsPage = (VsAgenticOptionsPage?)GetDialogPage(typeof(VsAgenticOptionsPage));
             var keepDays = optionsPage?.KeepActivityDays ?? 30;
-            await _sessionStore.DeleteSessionsOlderThanAsync(_solutionDirectory, keepDays);
+            await _sessionStore.PurgeOldSessionsAsync(_solutionDirectory, keepDays);
         }
         catch (Exception ex)
         {
@@ -265,9 +313,17 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 options.CliPermissionMode = optionsPage.CliPermissionMode;
                 options.Model = optionsPage.Model;
                 options.Effort = optionsPage.Effort;
+                options.UseClaudeMcpServers = optionsPage.UseClaudeMcpServers;
+                options.BackgroundCommandLimit = optionsPage.BackgroundCommandLimit;
                 options.UsagePlan = optionsPage.UsagePlan;
                 options.FiveHourTokenBudget = optionsPage.FiveHourTokenBudget;
                 options.WeeklyTokenBudget = optionsPage.WeeklyTokenBudget;
+                options.AnimateTitleWhileBusy = optionsPage.AnimateTitleWhileBusy;
+                options.AnimateTitleWhileWaiting = optionsPage.AnimateTitleWhileWaiting;
+                options.FlashStatusBarWhileWaiting = optionsPage.FlashStatusBarWhileWaiting;
+                options.ShowCompletedIndicator = optionsPage.ShowCompletedIndicator;
+                options.AnimateTitleWhenComplete = optionsPage.AnimateTitleWhenComplete;
+                options.FlashStatusBarWhenComplete = optionsPage.FlashStatusBarWhenComplete;
             }
         });
 
@@ -286,6 +342,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         var vmLogger = provider.GetService<Microsoft.Extensions.Logging.ILogger<ChatSessionViewModel>>();
 
         var vm = new ChatSessionViewModel(chatService, outputListener, optionsAccessor, permissionBroker, questionBroker, vmLogger);
+        vm.EditorContextProvider = _editorContext;
 
         // The status bar pickers only change this session; persisting the choice so
         // the next one starts the same way is the host's side of the deal.
@@ -355,6 +412,51 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         }
     }
 
+    /// <summary>
+    /// Attaches the editor's selection, or the whole file, to the chat the
+    /// user was last in, and brings that chat forward. With no chat open, a new
+    /// session takes it.
+    /// </summary>
+    public static async Task AddEditorContextToChatAsync()
+    {
+        if (_instance is null) return;
+
+        await _instance.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+        if (_instance._editorContext?.ReadActive() is not { } context)
+            return;
+
+        _instance._pendingEditorContext = context;
+
+        var sessions = _instance._sessionListViewModel;
+        if (_instance._lastActiveSessionId is { } id &&
+            _instance._chatWindows.ContainsKey(id) &&
+            sessions?.Sessions.FirstOrDefault(s => s.Id == id) is { } session)
+        {
+            await OpenOrActivateSessionAsync(session);
+        }
+        else if (sessions is not null)
+        {
+            // Opens through SessionOpenRequested, which delivers the context
+            // once the window is up.
+            await sessions.NewSessionAsync();
+        }
+    }
+
+    private void DeliverPendingEditorContext(string sessionId)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        if (_pendingEditorContext is not { } context ||
+            !_chatWindows.TryGetValue(sessionId, out var window))
+        {
+            return;
+        }
+
+        _pendingEditorContext = null;
+        window.ChatControl.AttachFromEditor(context);
+    }
+
     private static async Task OpenOrActivateSessionAsync(SessionInfo session)
     {
         if (_instance is null) return;
@@ -374,6 +476,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 {
                     existingFrame.Show();
                 }
+
+                _instance._lastActiveSessionId = session.Id;
+                _instance.DeliverPendingEditorContext(session.Id);
             }
             catch (Exception ex)
             {
@@ -419,6 +524,14 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                     // Wire up the UI event handlers BEFORE restoring messages,
                     // so the MessagesRestored event is received by the WebView.
                     chatWindow.ChatControl.Initialize(viewModel);
+
+                    _instance._chatWindows[session.Id] = chatWindow;
+                    _instance._lastActiveSessionId = session.Id;
+                    chatWindow.ChatControl.IsKeyboardFocusWithinChanged += (_, e) =>
+                    {
+                        if (e.NewValue is true && _instance is not null)
+                            _instance._lastActiveSessionId = session.Id;
+                    };
 
                     // Enable persistence on the view model
                     if (session.PersistedId.HasValue && _instance._sessionStore is not null && _instance._solutionDirectory is not null)
@@ -483,6 +596,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                     chatWindow.Closed += () =>
                     {
                         _instance?._sessionWindowMap.Remove(session.Id);
+                        _instance?._chatWindows.Remove(session.Id);
+                        if (_instance?._lastActiveSessionId == session.Id)
+                            _instance._lastActiveSessionId = null;
                         session.PropertyChanged -= onSessionChanged;
                         session.IsActive = false;
                         viewModel.Dispose();
@@ -493,6 +609,8 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 {
                     frame.Show();
                 }
+
+                _instance.DeliverPendingEditorContext(session.Id);
             }
         }
         catch (Exception ex)
@@ -566,6 +684,12 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         try
         {
             await _sessionStore.EnsureWorkspaceAsync(_solutionDirectory);
+
+            // The clean-up at start-up only covered the folder known when the
+            // package loaded. That is the user profile when the package loads
+            // before the solution, which is the usual order.
+            await PurgeOldSessionsAsync();
+
             _sessionListViewModel.Initialize(_sessionStore, _solutionDirectory);
             await _sessionListViewModel.LoadSessionsAsync();
         }
@@ -781,18 +905,25 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         {
             ChatWebView.FileLinkRequested -= OnFileLinkRequested;
 
+            _editorContext?.Dispose();
+            _editorContext = null;
+
             if (_persistZoom is not null)
             {
                 ChatZoom.Changed -= _persistZoom;
                 _persistZoom = null;
             }
 
-            // A zoom step in the last half-second still has its write pending;
-            // flush it rather than lose it on the way out.
-            if (_zoomSaveTimer is { IsEnabled: true }
-                && GetDialogPage(typeof(VsAgenticOptionsPage)) is VsAgenticOptionsPage optionsPage)
+            if (GetDialogPage(typeof(VsAgenticOptionsPage)) is VsAgenticOptionsPage optionsPage)
             {
-                SaveZoomSetting(optionsPage);
+                optionsPage.Applied -= OnOptionsApplied;
+
+                // A zoom step in the last half-second still has its write pending;
+                // flush it rather than lose it on the way out.
+                if (_zoomSaveTimer is { IsEnabled: true })
+                {
+                    SaveZoomSetting(optionsPage);
+                }
             }
             _zoomSaveTimer?.Stop();
 

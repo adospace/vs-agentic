@@ -10,6 +10,11 @@ public interface IChatService
     /// which keeps the wire format identical to what it was before images
     /// existed.
     /// </param>
+    /// <param name="cancellationToken">
+    /// Stops the turn. The CLI is told to abort it too, and the call throws
+    /// <see cref="OperationCanceledException"/> once the CLI has closed the
+    /// turn, or after a short wait if it does not.
+    /// </param>
     IAsyncEnumerable<string> SendMessageAsync(
         string userMessage,
         IReadOnlyList<ChatImageAttachment>? images = null,
@@ -80,6 +85,84 @@ public interface IChatService
     void ApplyModelAndEffort(string modelAlias, ClaudeEffort effort);
 
     /// <summary>
+    /// The permission mode this session asks for: the one it started with, or
+    /// the last one picked. Follows the CLI when the CLI changes the mode
+    /// itself, for example when a plan is approved.
+    /// </summary>
+    CliPermissionMode PermissionMode { get; }
+
+    /// <summary>
+    /// The permission mode the CLI reports as in force, in its own spelling
+    /// ("default", "acceptEdits", "plan", "auto" …). Null before the running
+    /// process has reported it, and while a restart that changes it is pending.
+    /// </summary>
+    string? ReportedPermissionMode { get; }
+
+    /// <summary>
+    /// Raised when <see cref="PermissionMode"/> or <see cref="ReportedPermissionMode"/>
+    /// changes. Raised on a background thread; hosts must marshal to the UI thread.
+    /// </summary>
+    event Action? PermissionModeChanged;
+
+    /// <summary>
+    /// Raised when the running CLI refuses a mode, with its error text. The
+    /// session keeps the mode it had, and <see cref="PermissionModeChanged"/>
+    /// fires with it. Raised on a background thread.
+    /// </summary>
+    event Action<string>? PermissionModeRejected;
+
+    /// <summary>
+    /// Switches the permission mode for this session.
+    ///
+    /// A running process takes the change at once, also within a running turn.
+    /// A process started later gets it as a start-up flag. Two changes need a
+    /// restart, which the next <see cref="SendMessageAsync"/> does while
+    /// resuming the conversation: <see cref="CliPermissionMode.CliSetting"/>,
+    /// because no request returns a process to its settings, and
+    /// <see cref="CliPermissionMode.BypassPermissions"/> when the process was not
+    /// started in it. A no-op when the mode did not change.
+    /// </summary>
+    void ApplyPermissionMode(CliPermissionMode mode);
+
+    /// <summary>
+    /// The effort level the CLI will send on its next request, as it reports
+    /// it — what <see cref="ClaudeEffort.Default"/> resolves to, or the chosen
+    /// level after the CLI lowered it for a model that does not support it.
+    /// Null when not known yet, and when the model has no effort setting.
+    /// </summary>
+    ClaudeEffort? AppliedEffort { get; }
+
+    /// <summary>
+    /// Raised when <see cref="AppliedEffort"/> changes. Raised on a background
+    /// thread; hosts must marshal to the UI thread.
+    /// </summary>
+    event Action<ClaudeEffort?>? AppliedEffortChanged;
+
+    /// <summary>
+    /// Asks for fast mode for the rest of this session, or stops asking. A
+    /// running process takes it from its next request; a process started later
+    /// gets it before the first message. Not stored anywhere: a new session
+    /// starts without it.
+    /// </summary>
+    void SetFastMode(bool on);
+
+    /// <summary>Whether the user asked for fast mode in this session.</summary>
+    bool FastModeRequested { get; }
+
+    /// <summary>
+    /// Fast mode as the CLI last reported it. Whether a request runs fast
+    /// depends on this, not on <see cref="FastModeRequested"/>: the model, the
+    /// plan or the account can keep it off.
+    /// </summary>
+    FastModeStatus FastMode { get; }
+
+    /// <summary>
+    /// Raised when <see cref="FastMode"/> changes. Raised on a background
+    /// thread; hosts must marshal to the UI thread.
+    /// </summary>
+    event Action<FastModeStatus>? FastModeChanged;
+
+    /// <summary>
     /// Raised when the underlying CLI returned an authentication / login-required
     /// error. The string argument is the original error text from the CLI so the
     /// host can surface it to the user. Hosts should respond by showing a login
@@ -94,6 +177,73 @@ public interface IChatService
     /// new credentials.
     /// </summary>
     void LaunchLogin();
+
+    /// <summary>
+    /// Raised when the CLI starts a turn without a <see cref="SendMessageAsync"/>
+    /// call, for example when a background command finishes and wakes the
+    /// model. The turn's output arrives through the output listener as usual,
+    /// also while a sent message waits in the CLI's queue behind the turn.
+    /// Raised on a background thread; hosts must marshal to the UI thread.
+    /// The argument is true for a check the model scheduled for itself
+    /// (<c>CronCreate</c>, or a <c>/loop</c> wakeup).
+    /// </summary>
+    event Action<bool>? UnsolicitedTurnStarted;
+
+    /// <summary>
+    /// Raised when a turn announced by <see cref="UnsolicitedTurnStarted"/>
+    /// ends, is stopped, or is cut off by the process exiting. Also raised
+    /// when the CLI takes a queued message into the turn: from then on the
+    /// turn's output belongs to that message. Raised on a background thread.
+    /// </summary>
+    event Action? UnsolicitedTurnCompleted;
+
+    /// <summary>
+    /// Stops the turn the CLI started on its own. Like stopping a
+    /// <see cref="SendMessageAsync"/> call, this interrupts the turn in the
+    /// CLI; <see cref="UnsolicitedTurnCompleted"/> follows when the CLI has
+    /// closed it. Returns at once. A no-op when no such turn is running.
+    /// </summary>
+    void StopUnsolicitedTurn();
+
+    /// <summary>
+    /// Raised when the work a tool step moved to the background starts or
+    /// ends. Arguments: the step id (the same id the output listener used for
+    /// the step), the new state, the CLI's summary when the work ended,
+    /// e.g. <c>Background command "…" failed with exit code 3</c>, and the
+    /// file the CLI wrote a shell command's output to (null for other work).
+    /// Can fire between turns. Raised on a background thread; hosts must
+    /// marshal to the UI thread.
+    /// </summary>
+    event Action<string, BackgroundStepState, string?, string?>? StepBackgroundStateChanged;
+
+    /// <summary>
+    /// Raised when a step's command or subagent, still running in the
+    /// foreground, can be moved to the background with
+    /// <see cref="MoveStepToBackgroundAsync"/>. The CLI reports this a few
+    /// seconds after the tool call starts. The argument is the step id.
+    /// Raised on a background thread; hosts must marshal to the UI thread.
+    /// </summary>
+    event Action<string>? StepCanMoveToBackground;
+
+    /// <summary>
+    /// Moves the command or subagent of a running step to the background. The
+    /// tool call returns at once and the turn goes on. Returns false when the
+    /// step no longer runs in the foreground, or when no CLI process runs.
+    /// </summary>
+    Task<bool> MoveStepToBackgroundAsync(string stepId);
+
+    /// <summary>
+    /// Stops one of the <see cref="BackgroundTasks"/>. The other tasks and the
+    /// turn, if one runs, go on. Returns false when the CLI did not take the
+    /// request.
+    /// </summary>
+    Task<bool> StopBackgroundTaskAsync(string taskId);
+
+    /// <summary>
+    /// The end of what a background shell task has written so far. Null when
+    /// the CLI could not say, e.g. for a subagent task.
+    /// </summary>
+    Task<BackgroundTaskOutput?> GetBackgroundTaskOutputAsync(string taskId);
 
     /// <summary>
     /// The tasks the CLI is running in the background right now. Empty when

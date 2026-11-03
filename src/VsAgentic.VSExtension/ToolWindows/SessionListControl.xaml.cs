@@ -4,6 +4,8 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Microsoft.VisualStudio.PlatformUI;
+using Microsoft.VisualStudio.Shell;
 using VsAgentic.UI.ViewModels;
 
 namespace VsAgentic.VSExtension.ToolWindows;
@@ -18,10 +20,68 @@ public partial class SessionListControl : UserControl
     /// </summary>
     private bool _suppressOpenOnSelection;
 
+    /// <summary>
+    /// The environment brushes this window binds, each paired with the palette
+    /// color that carries the same meaning in a Visual Studio 2026 theme. See
+    /// <see cref="ShellPalette"/> for why the pairing is needed.
+    /// </summary>
+    // VsBrushes exposes its keys as object, which is also what a resource
+    // dictionary takes, so the pairs are held that way.
+    private static readonly (object Key, string ShellColor)[] ChromeBrushes =
+    {
+        (VsBrushes.ButtonFaceKey, "ControlFillDefault"),
+        (VsBrushes.ButtonTextKey, "TextFillPrimary"),
+        (VsBrushes.ComboBoxBackgroundKey, "ControlFillActiveInput"),
+        (VsBrushes.ComboBoxBorderKey, "ControlStrokeDefault"),
+        (VsBrushes.WindowTextKey, "TextFillPrimary"),
+        (VsBrushes.GrayTextKey, "TextFillSecondary"),
+        (VsBrushes.CommandBarMouseOverBackgroundGradientKey, "SubtleFillSecondary"),
+        (VsBrushes.CommandBarMouseDownBackgroundGradientKey, "SubtleFillTertiary"),
+        (VsBrushes.CommandBarSelectedKey, "SubtleFillTertiary"),
+        // A context menu sits on top of the window, so it takes the raised
+        // surface and the flyout edge rather than the window's own.
+        (VsBrushes.CommandBarMenuBackgroundGradientKey, "CardBackgroundFillTertiary"),
+        (VsBrushes.CommandBarMenuBorderKey, "SurfaceStrokeFlyout"),
+        (VsBrushes.CommandBarTextActiveKey, "TextFillPrimary"),
+        (VsBrushes.CommandBarTextHoverKey, "TextFillPrimary"),
+    };
+
+    /// <summary>
+    /// The icon gutter of the context menu is themed against this color, so it
+    /// has to follow the menu background above.
+    /// </summary>
+    private static readonly (object Key, string ShellColor)[] ChromeColors =
+    {
+        (VsColors.CommandBarMenuBackgroundGradientBeginKey, "CardBackgroundFillTertiary"),
+    };
+
     public SessionListControl()
     {
         InitializeComponent();
         Loaded += OnLoaded;
+
+        ApplyShellBrushes();
+        VSColorTheme.ThemeChanged += OnThemeChanged;
+    }
+
+    /// <summary>
+    /// Drops the static-event subscription this control took out in its
+    /// constructor. Called when the tool window closes.
+    /// </summary>
+    public void Shutdown()
+    {
+        VSColorTheme.ThemeChanged -= OnThemeChanged;
+    }
+
+    private void OnThemeChanged(ThemeChangedEventArgs e)
+    {
+        Dispatcher.BeginInvoke(new Action(ApplyShellBrushes));
+    }
+
+    private void ApplyShellBrushes()
+    {
+        ShellPalette.OverrideBrushes(this, ChromeBrushes);
+        ShellPalette.OverrideColors(this, ChromeColors);
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)

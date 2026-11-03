@@ -3,7 +3,9 @@ using VsAgentic.Services.Abstractions;
 
 namespace VsAgentic.UI.ViewModels;
 
-public enum ChatItemType { User, Assistant, ToolStep, Thinking }
+// Notice: a one-line event from the extension rather than the model, e.g.
+// "a background command failed". Shown in the open, never folded with steps.
+public enum ChatItemType { User, Assistant, ToolStep, Thinking, Notice }
 
 public partial class ChatItemViewModel : ObservableObject
 {

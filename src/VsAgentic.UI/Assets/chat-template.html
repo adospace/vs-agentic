@@ -42,6 +42,10 @@ html, body {
     overflow-x: hidden;
     height: 100%;
     padding: 8px 0;
+    /* Chromium draws the scrolled content on a layer of its own and keeps
+       ClearType only where that layer is opaque; without a background of its
+       own, all chat text falls back to grayscale antialiasing. */
+    background: var(--bg-primary);
 }
 
 /* Custom scrollbar styling */
@@ -97,6 +101,62 @@ html, body {
     color: var(--accent);
     border-color: var(--accent);
 }
+
+/* Find bar: opened with Ctrl+F, floats over the top-right of the chat. */
+#find-bar {
+    position: fixed;
+    top: 6px;
+    right: 14px;
+    z-index: 950;
+    display: none;
+    align-items: center;
+    gap: 2px;
+    padding: 3px 4px 3px 6px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+#find-bar.visible { display: flex; }
+#find-bar input {
+    width: 180px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 2px 6px;
+    font: inherit;
+    font-size: 12px;
+    outline: none;
+}
+#find-bar input:focus { border-color: var(--accent); }
+.find-count {
+    min-width: 64px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.find-count.none { color: var(--error); }
+.find-btn {
+    width: 22px;
+    height: 22px;
+    background: transparent;
+    border: none;
+    border-radius: 3px;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+.find-btn:hover {
+    background: var(--bg-input);
+    color: var(--text-primary);
+}
+::highlight(find-match) { background-color: rgba(234, 179, 8, 0.35); }
+::highlight(find-current) { background-color: rgba(249, 115, 22, 0.9); color: #000; }
 
 /* Copy button on hover */
 .msg {
@@ -202,6 +262,35 @@ html, body {
     margin-bottom: 6px;
     color: var(--prompt-accent);
 }
+/* A long prompt, usually something pasted, is capped like a step's output so
+   it does not push the conversation off the screen. */
+.msg-user .msg-content.capped {
+    max-height: 220px;
+    overflow: hidden;
+    position: relative;
+}
+.msg-user .msg-content.capped::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 30px;
+    background: linear-gradient(transparent, var(--prompt-bg));
+}
+.msg-user .show-more-link { margin-left: 0; }
+/* Headings and paragraph gaps in a prompt mostly come along with pasted text,
+   such as a card copied from a tracker. At the reply's sizes they make the
+   prompt look like a document and take twice the room. */
+.msg-user .md-content h1,
+.msg-user .md-content h2,
+.msg-user .md-content h3 {
+    font-size: 1.1em;
+    margin: 0.3em 0;
+    border-bottom: none;
+    padding-bottom: 0;
+}
+.msg-user .md-content p { margin: 0.2em 0; }
 
 .msg-assistant {
     padding: 0 8px;
@@ -228,6 +317,80 @@ html, body {
 }
 .toolstep-status { font-size: 10px; }
 .toolstep-name { color: var(--text-muted); }
+
+/* Mark on a step whose work runs on in the background (run_in_background).
+   The step itself completes at once; this follows the work it started. */
+.toolstep-bg {
+    font-size: 11px;
+    padding: 0 6px;
+    border: 1px solid currentColor;
+    border-radius: 8px;
+    cursor: default;
+}
+.toolstep-bg-Running { color: var(--info); animation: bg-pulse 1.6s ease-in-out infinite; }
+.toolstep-bg-Completed { color: var(--success); }
+.toolstep-bg-Failed { color: var(--error); }
+.toolstep-bg-Stopped { color: var(--text-muted); }
+@keyframes bg-pulse { 50% { opacity: 0.45; } }
+
+/* "Run in background" on a step whose command or subagent still holds the
+   turn. Shaped like the mark it turns into. */
+.toolstep-bgbtn {
+    font: inherit;
+    font-size: 11px;
+    padding: 0 6px;
+    color: var(--info);
+    background: transparent;
+    border: 1px solid currentColor;
+    border-radius: 8px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.toolstep-bgbtn:hover { background: var(--bg-input); }
+.toolstep-bgbtn:disabled { opacity: 0.5; cursor: default; }
+
+/* Notice: a one-line event from the extension, e.g. a background command that
+   ended. Indented like a step, in muted text, with a colored outcome icon. */
+.msg-notice {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.notice-icon { font-weight: bold; }
+.notice-Success .notice-icon { color: var(--success); }
+.notice-Error .notice-icon { color: var(--error); }
+.notice-Info .notice-icon { color: var(--text-muted); }
+
+/* A line the CLI reports about the session: a retry, a hook's message. */
+.msg-session-line {
+    margin: 2px 12px;
+    padding: 2px 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.session-line-header {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+}
+.session-line-header .msg-status { font-size: 10px; flex: none; }
+.msg-session-line .msg-body {
+    margin: 2px 0 0 16px;
+    font-size: 11px;
+}
+/* A compaction divides the conversation, so it is drawn as a divider. */
+.msg-session-line.session-line-divider .session-line-header {
+    justify-content: center;
+}
+.msg-session-line.session-line-divider .session-line-header::before,
+.msg-session-line.session-line-divider .session-line-header::after {
+    content: '';
+    flex: 1;
+    border-top: 1px solid var(--border);
+    align-self: center;
+}
 
 .toolstep-expander {
     margin: 4px 0 0 18px;
@@ -402,6 +565,37 @@ html, body {
     padding: 2px 0;
 }
 .activity-items.visible { display: block; }
+/* A subagent's row, inside its Agent step and lined up with the step's body. */
+.activity.subagent { margin: 4px 0 0 18px; }
+
+/* Scheduled checks: a run of checks the model scheduled for itself, folded
+   into one block. Most of them find nothing, and one block per check buries
+   the replies that matter. The header says when the last check ran and how
+   many there were; the last check is shown below it, the earlier ones are
+   behind the header. */
+.check-header {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin: 6px 12px 2px;
+    font-size: 12px;
+    color: var(--text-muted);
+    user-select: none;
+}
+.check-block.has-history > .check-header { cursor: pointer; }
+.check-header .activity-arrow { visibility: hidden; }
+.check-block.has-history > .check-header .activity-arrow { visibility: visible; }
+.check-history {
+    display: none;
+    margin: 0 12px 4px 14px;
+    border-left: 2px solid var(--border);
+}
+.check-history.visible { display: block; }
+.check-tick-time {
+    margin: 6px 12px 0;
+    font-size: 11px;
+    color: var(--text-muted);
+}
 
 /* Streaming indicator */
 .streaming-cursor::after {
@@ -551,6 +745,39 @@ var STATUS_COLORS = { Pending: 'var(--info)', Success: 'var(--success)', Error: 
 // File path regex: require extension starts lowercase to avoid false positives like RTR.MobileApp
 var filePathRe = /(?:[A-Za-z]:[\\\/]|\.{0,2}\/|(?=[\w@]))(?:[\w\-\.@]+[\\\/])+[\w\-\.]+\.[a-z][a-zA-Z0-9]{0,9}(?::(\d+)(?:-\d+)?)?/g;
 
+// The same shape, anchored so that the whole string has to be the path, with
+// a space allowed between the words of a segment that has a separator on both
+// sides. The first segment of a relative path and the file name stay without
+// spaces, so a command followed by arguments (`dotnet build src/App/App.csproj`,
+// `git add src/a.cs src/b.cs`) is not read as one path. In a segment with a
+// space no word starts with "-" or has a ".": an option (`python -m pkg/x.py`)
+// or a file name (`./build.sh --out bin/x.dll`, `src/a.cs src/b.cs`) then
+// cannot pass as a folder name.
+// A space may only be part of a path where something other than the pattern
+// says where the path ends: a code span, or double quotes. In running text
+// nothing does, and a greedy segment would eat the words between two paths.
+var wholePathRe = /^(?:(?:[A-Za-z]:[\\\/]|\.{0,2}\/)(?:(?:[\w\-\.@]+|[\w@][\w\-@]*(?: [\w@][\w\-@]*)+)[\\\/])+|(?=[\w@])[\w\-\.@]+[\\\/](?:(?:[\w\-\.@]+|[\w@][\w\-@]*(?: [\w@][\w\-@]*)+)[\\\/])*)[\w\-\.]+\.[a-z][a-zA-Z0-9]{0,9}(?::(\d+)(?:-\d+)?)?$/;
+
+// Scans plain text for a bare path, or for a double-quoted run to try
+// wholePathRe on. Single quotes are left out on purpose: an apostrophe in
+// ordinary prose opens a run that swallows half a sentence.
+var textScanRe = new RegExp('"[^"\\r\\n]+"|' + filePathRe.source, 'g');
+
+// Appends txt[from, start) as text and txt[start, end) as a file link, and
+// returns where the next piece starts.
+function appendFileLink(frag, txt, from, start, end) {
+    if (start > from)
+        frag.appendChild(document.createTextNode(txt.slice(from, start)));
+    var a = document.createElement('a');
+    a.href = '#';
+    a.className = 'file-link';
+    a.dataset.path = txt.slice(start, end).trim();
+    a.textContent = txt.slice(start, end);
+    a.title = 'Open in editor';
+    frag.appendChild(a);
+    return end;
+}
+
 function linkifyFilePaths(container) {
     var codes = container.querySelectorAll('code');
     for (var i = 0; i < codes.length; i++) {
@@ -558,13 +785,14 @@ function linkifyFilePaths(container) {
         if (code.closest('pre')) continue;
         if (code.querySelector('a')) continue;
         var text = code.textContent;
-        filePathRe.lastIndex = 0;
-        if (filePathRe.test(text) && text.match(filePathRe).length === 1 && text.trim() === text.match(filePathRe)[0]) {
-            var match = text.match(filePathRe)[0];
+        var whole = text.trim();
+        // The backticks are the boundary, so the whole span either is a path
+        // or is not one.
+        if (wholePathRe.test(whole)) {
             var a = document.createElement('a');
             a.href = '#';
             a.className = 'file-link';
-            a.dataset.path = match;
+            a.dataset.path = whole;
             a.textContent = text;
             a.title = 'Open in editor';
             code.textContent = '';
@@ -592,24 +820,34 @@ function linkifyFilePaths(container) {
         var node = textNodes[k];
         if (node.parentNode.closest('pre, code, a')) continue;
         var txt = node.nodeValue;
-        filePathRe.lastIndex = 0;
-        if (!filePathRe.test(txt)) continue;
-        filePathRe.lastIndex = 0;
+        textScanRe.lastIndex = 0;
+        if (!textScanRe.test(txt)) continue;
+        textScanRe.lastIndex = 0;
         var frag = document.createDocumentFragment();
         var lastIdx = 0;
         var m;
-        while ((m = filePathRe.exec(txt)) !== null) {
-            if (m.index > lastIdx)
-                frag.appendChild(document.createTextNode(txt.slice(lastIdx, m.index)));
-            var a = document.createElement('a');
-            a.href = '#';
-            a.className = 'file-link';
-            a.dataset.path = m[0];
-            a.textContent = m[0];
-            a.title = 'Open in editor';
-            frag.appendChild(a);
-            lastIdx = filePathRe.lastIndex;
+        while ((m = textScanRe.exec(txt)) !== null) {
+            if (m[0].charAt(0) !== '"') {
+                lastIdx = appendFileLink(frag, txt, lastIdx, m.index, m.index + m[0].length);
+                continue;
+            }
+            var start = m.index + 1;
+            var end = m.index + m[0].length - 1;
+            if (wholePathRe.test(txt.slice(start, end).trim())) {
+                // The quotes stay as text; only what is between them is the link.
+                lastIdx = appendFileLink(frag, txt, lastIdx, start, end);
+                continue;
+            }
+            // Quoted, but not a path. A plain path inside the quoted sentence
+            // is still a link. Scanning goes on after the closing quote, so
+            // that quote cannot pair with the next opening one.
+            var inner = txt.slice(start, end);
+            var p;
+            filePathRe.lastIndex = 0;
+            while ((p = filePathRe.exec(inner)) !== null)
+                lastIdx = appendFileLink(frag, txt, lastIdx, start + p.index, start + p.index + p[0].length);
         }
+        if (lastIdx === 0) continue; // only quoted runs that are not paths
         if (lastIdx < txt.length)
             frag.appendChild(document.createTextNode(txt.slice(lastIdx)));
         node.parentNode.replaceChild(frag, node);
@@ -721,6 +959,16 @@ function isTurnFailure(type, data) {
     return type === 'ToolStep' && data.Status === 'Error' && data.ToolName === 'ClaudeCli';
 }
 
+// What the CLI reports about the session rather than a step toward the answer:
+// an API retry, a compaction, a hook's message. The service reports these as
+// steps with a tool name of their own (SessionLineSteps). Each is a line in the
+// transcript, where it is read in order, not one more step in the folded row.
+var SESSION_LINE_TOOLS = ['Retry', 'Compact', 'CliMessage'];
+
+function isSessionLine(type, data) {
+    return type === 'ToolStep' && SESSION_LINE_TOOLS.indexOf(data.ToolName) >= 0;
+}
+
 function setActivityLabel(group, text) {
     var label = group.querySelector('.activity-label');
     if (label) label.textContent = text || '';
@@ -761,8 +1009,9 @@ function activityDetailFrom(body) {
 
 // `before` is the message the row has to open above: a group born of text that
 // is only now shown to have been commentary belongs where that text was, not
-// at the end of the chat.
-function createActivityGroup(before) {
+// at the end of the chat. `host` is where a row without `before` goes; the
+// chat, unless it is a subagent's row inside its Agent step.
+function createActivityGroup(before, host) {
     var group = document.createElement('div');
     group.className = 'activity running';
     group._tools = [];
@@ -812,8 +1061,8 @@ function createActivityGroup(before) {
 
     group.appendChild(header);
     group.appendChild(items);
-    if (before) _container.insertBefore(group, before);
-    else _container.appendChild(group);
+    if (before) before.parentNode.insertBefore(group, before);
+    else (host || outputHost()).appendChild(group);
     return group;
 }
 
@@ -827,9 +1076,11 @@ function absorbPendingText() {
     _activityGroup.querySelector('.activity-items').appendChild(text);
 }
 
-function addToActivityGroup(div, type, data) {
-    if (!_activityGroup) _activityGroup = createActivityGroup();
-    var group = _activityGroup;
+function addToActivityGroup(div, type, data, group) {
+    if (!group) {
+        if (!_activityGroup) _activityGroup = createActivityGroup();
+        group = _activityGroup;
+    }
 
     group.querySelector('.activity-items').appendChild(div);
     group._count++;
@@ -840,7 +1091,10 @@ function addToActivityGroup(div, type, data) {
     // restored session, which is why the dot never turned red on one.
     if (data.Status === 'Error') group.classList.add('has-error');
 
-    var tool = type === 'Thinking' ? 'Thinking' : (data.ToolName || 'tool');
+    // A subagent goes by its description, so the row names which one ran.
+    var tool = type === 'Thinking' ? 'Thinking'
+             : (data.ToolName === 'Agent' && data.Title) ? data.Title
+             : (data.ToolName || 'tool');
     var seen = group._tools.indexOf(tool);
     if (seen >= 0) group._tools.splice(seen, 1);
     group._tools.push(tool);
@@ -852,6 +1106,101 @@ function addToActivityGroup(div, type, data) {
         setActivityLabel(group, data.Title || ('Using ' + tool));
         setActivityDetail(group, activityDetailFrom(data.Body));
     }
+}
+
+// --- Subagent steps ---
+// A subagent's steps go under the Agent step that started it, in a folded row
+// of their own like the turn's. A subagent can start one in turn, so rows nest.
+// The row is live while the Agent step or any step in it is still running; a
+// background subagent outlives its Agent step, and its row comes back to life
+// with each step it sends.
+
+// Steps whose Agent step is not on the page yet, by the Agent step's id. A
+// step is saved when it completes, and an Agent step completes after its own
+// steps, so a restored transcript lists them first.
+var _orphanSteps = {};
+
+function addSubagentStep(div, type, data) {
+    // The Agent step may itself still wait for its own: an inner subagent's
+    // steps are saved before the inner Agent step, and that before the outer.
+    var agent = messageElement(data.ParentId);
+    if (!agent) {
+        (_orphanSteps[data.ParentId] = _orphanSteps[data.ParentId] || []).push({ div: div, type: type, data: data });
+        return;
+    }
+
+    var group = agent._subagentGroup;
+    if (!group) {
+        group = createActivityGroup(null, agent);
+        group.classList.add('subagent');
+        group._subagent = true;
+        agent._subagentGroup = group;
+    }
+
+    if (type === 'Assistant') {
+        // The subagent's report. Not a step, so it neither counts nor names
+        // the row, but it is part of what the subagent did.
+        group.querySelector('.activity-items').appendChild(div);
+    } else {
+        addToActivityGroup(div, type, data, group);
+    }
+    refreshSubagentGroup(group);
+}
+
+// A message by id, also one still waiting for its Agent step, or inside one
+// that is: a restored transcript sets the body of a step right after adding
+// it, and nests steps before their outer Agent step has arrived.
+function messageElement(id) {
+    var el = document.getElementById('msg-' + id);
+    if (el) return el;
+    for (var parentId in _orphanSteps) {
+        if (!_orphanSteps.hasOwnProperty(parentId)) continue;
+        var waiting = _orphanSteps[parentId];
+        for (var i = 0; i < waiting.length; i++) {
+            var div = waiting[i].div;
+            if (div.id === 'msg-' + id) return div;
+            var inner = div.querySelector('#msg-' + id);
+            if (inner) return inner;
+        }
+    }
+    return null;
+}
+
+function adoptOrphanSteps(id) {
+    var waiting = _orphanSteps[id];
+    if (!waiting) return;
+    delete _orphanSteps[id];
+    for (var i = 0; i < waiting.length; i++) {
+        addSubagentStep(waiting[i].div, waiting[i].type, waiting[i].data);
+    }
+}
+
+// Steps whose Agent step never arrived, in a transcript saved while one was
+// still running. Shown with the turn's other steps rather than lost.
+function releaseOrphanSteps() {
+    var waiting = _orphanSteps;
+    _orphanSteps = {};
+    for (var parentId in waiting) {
+        if (!waiting.hasOwnProperty(parentId)) continue;
+        for (var i = 0; i < waiting[parentId].length; i++) {
+            var o = waiting[parentId][i];
+            o.data.ParentId = null;
+            placeMessage(o.div, o.type, o.data);
+        }
+    }
+}
+
+function refreshSubagentGroup(group) {
+    var agent = group.parentNode;
+    var running = agent.dataset.status === 'Pending'
+        || !!group.querySelector('.activity-items .msg[data-status="Pending"]');
+    if (running) {
+        group.classList.add('running');
+        return;
+    }
+    group.classList.remove('running');
+    setActivityLabel(group, activitySummary(group));
+    setActivityDetail(group, '');
 }
 
 function closeActivityGroup() {
@@ -866,6 +1215,110 @@ function closeActivityGroup() {
     setActivityDetail(group, '');
 }
 
+// --- Scheduled checks ---
+// A check the model scheduled for itself (CronCreate, /loop) is a turn the CLI
+// starts on its own, opened by a notice with the ScheduledCheck tool name.
+// Consecutive checks go into one block: the last check stays in the open and
+// the ones before it fold behind the block's header, which counts them.
+//
+// A check that edited files or failed is not folded away: the next check opens
+// a block of its own. So does anything that comes between two checks. Shell
+// commands do not count as edits; most checks read the folder with one.
+
+var CHECK_KEEPS = '.msg[data-tool="Edit"], .msg[data-tool="Write"], .msg[data-tool="MultiEdit"], .msg[data-tool="NotebookEdit"], .msg[data-tool="ClaudeCli"][data-status="Error"]';
+
+// The block whose check is running; its output goes there.
+var _checkBlock = null;
+
+function isScheduledCheck(type, data) {
+    return type === 'Notice' && data.ToolName === 'ScheduledCheck';
+}
+
+// Where output that is not part of a row goes: the running check, or the chat.
+function outputHost() {
+    return _checkBlock ? _checkBlock._current : _container;
+}
+
+function createCheckBlock() {
+    var block = document.createElement('div');
+    block.className = 'check-block';
+    block._count = 0;
+
+    var header = document.createElement('div');
+    header.className = 'check-header';
+    var arrow = document.createElement('span');
+    arrow.className = 'activity-arrow';
+    arrow.textContent = '▶';
+    var icon = document.createElement('span');
+    icon.className = 'notice-icon';
+    icon.textContent = '↻';
+    var label = document.createElement('span');
+    label.className = 'check-label';
+    header.appendChild(arrow);
+    header.appendChild(icon);
+    header.appendChild(label);
+
+    var history = document.createElement('div');
+    history.className = 'check-history';
+    var current = document.createElement('div');
+    current.className = 'check-current';
+
+    header.addEventListener('click', function() {
+        if (!block.classList.contains('has-history')) return;
+        var show = !history.classList.contains('visible');
+        history.classList.toggle('visible', show);
+        arrow.classList.toggle('expanded', show);
+        header.title = show ? 'Hide the earlier checks' : 'Show the earlier checks';
+        if (show) applyPendingBodyCaps(history);
+    });
+
+    block.appendChild(header);
+    block.appendChild(history);
+    block.appendChild(current);
+    block._label = label;
+    block._header = header;
+    block._history = history;
+    block._current = current;
+    _container.appendChild(block);
+    return block;
+}
+
+// The block the next check can join: the last thing in the chat, with a last
+// check that changed nothing.
+function foldableCheckBlock() {
+    var last = _container.lastElementChild;
+    if (!last || !last.classList.contains('check-block')) return null;
+    return last._current.querySelector(CHECK_KEEPS) ? null : last;
+}
+
+function startScheduledCheck(data) {
+    endScheduledCheck();
+    var block = foldableCheckBlock();
+    if (block) {
+        var tick = document.createElement('div');
+        tick.className = 'check-tick';
+        var time = document.createElement('div');
+        time.className = 'check-tick-time';
+        time.textContent = block._time;
+        tick.appendChild(time);
+        while (block._current.firstChild) tick.appendChild(block._current.firstChild);
+        block._history.appendChild(tick);
+        block.classList.add('has-history');
+        if (!block._header.title) block._header.title = 'Show the earlier checks';
+    } else {
+        block = createCheckBlock();
+    }
+    block._count++;
+    block._time = data.Title || '';
+    block._label.textContent = 'Scheduled check' + (block._time ? ' · ' + block._time : '')
+        + (block._count > 1 ? ' · ' + block._count + ' checks' : '');
+    _checkBlock = block;
+}
+
+function endScheduledCheck() {
+    _checkBlock = null;
+}
+
 // --- Public API ---
 
 // Called by the host when the turn is over. Without it a group whose last step
@@ -873,6 +1326,7 @@ function closeActivityGroup() {
 // message happened to close it.
 function endActivity() {
     closeActivityGroup();
+    endScheduledCheck();
 }
 
 function addMessage(id, type, dataJson) {
@@ -881,6 +1335,8 @@ function addMessage(id, type, dataJson) {
     div.id = 'msg-' + id;
     div.className = 'msg';
     div.dataset.type = type;
+    // Read by a subagent's row to tell whether anything in it still runs.
+    div.dataset.status = data.Status || 'Pending';
 
     if (type === 'User') {
         div.classList.add('msg-user');
@@ -918,6 +1374,10 @@ function addMessage(id, type, dataJson) {
         linkifyFilePaths(content);
         addBlockCopyButtons(content);
         div.appendChild(content);
+        // Capped before it is placed, so a long prompt never shows at full
+        // height first; measured once it is laid out.
+        content.classList.add('capped');
+        requestAnimationFrame(function() { applyPromptCap(content, data.Content || ''); });
     }
     else if (type === 'Assistant') {
         div.classList.add('msg-assistant');
@@ -937,8 +1397,33 @@ function addMessage(id, type, dataJson) {
         inner.appendChild(content);
         div.appendChild(inner);
     }
+    else if (isSessionLine(type, data)) {
+        div.classList.add('msg-session-line');
+        if (data.ToolName === 'Compact') div.classList.add('session-line-divider');
+        var header = document.createElement('div');
+        header.className = 'session-line-header';
+        var statusSpan = document.createElement('span');
+        statusSpan.className = 'msg-status';
+        statusSpan.style.color = STATUS_COLORS[data.Status] || STATUS_COLORS.Pending;
+        statusSpan.textContent = STATUS_SYMBOLS[data.Status] || STATUS_SYMBOLS.Pending;
+        // The title is the message. Text, not markup: it is the CLI's or a
+        // hook's own words.
+        var title = document.createElement('span');
+        title.className = 'msg-expander-title';
+        title.textContent = data.ExpanderTitle || data.Title || '';
+        header.appendChild(statusSpan);
+        header.appendChild(title);
+        div.appendChild(header);
+
+        var body = document.createElement('div');
+        body.className = 'md-content msg-body';
+        body.style.display = 'none';
+        div.appendChild(body);
+    }
     else if (type === 'ToolStep') {
         div.classList.add('msg-toolstep');
+        // Read by a scheduled check, to tell whether it edited files.
+        div.dataset.tool = data.ToolName || '';
         // Header row
         var header = document.createElement('div');
         header.className = 'toolstep-header';
@@ -949,6 +1434,10 @@ function addMessage(id, type, dataJson) {
         var nameSpan = document.createElement('span');
         nameSpan.className = 'toolstep-name';
         nameSpan.textContent = '[' + (data.ToolName || '') + ']';
+        // An Agent step's title is the description the model gave its
+        // subagent. The expander that shows it is hidden once the step is
+        // done, and without it two subagents cannot be told apart.
+        if (data.ToolName === 'Agent' && data.Title) nameSpan.textContent += ' ' + data.Title;
         header.appendChild(statusSpan);
         header.appendChild(nameSpan);
         div.appendChild(header);
@@ -989,6 +1478,28 @@ function addMessage(id, type, dataJson) {
         body.className = 'md-content toolstep-body msg-body';
         body.style.display = 'none';
         div.appendChild(body);
+    }
+    else if (type === 'Notice') {
+        div.classList.add('msg-notice', 'notice-' + (data.Status || 'Info'));
+        var icon = document.createElement('span');
+        icon.className = 'notice-icon';
+        icon.textContent = NOTICE_ICONS[data.Status] || NOTICE_ICONS.Info;
+        var text = document.createElement('span');
+        text.className = 'notice-text';
+        text.textContent = data.Content || '';
+        div.appendChild(icon);
+        div.appendChild(text);
+        // A shell command that ran in the background: the file the CLI wrote
+        // its output to. It opens like any other file link.
+        if (data.Body) {
+            var output = document.createElement('a');
+            output.href = '#';
+            output.className = 'file-link';
+            output.dataset.path = data.Body;
+            output.title = data.Body;
+            output.textContent = 'Open output';
+            div.appendChild(output);
+        }
     }
     else if (type === 'Thinking') {
         div.classList.add('msg-thinking');
@@ -1052,9 +1563,23 @@ function addMessage(id, type, dataJson) {
         div.appendChild(content);
     }
 
-    if (type === 'User') {
+    placeMessage(div, type, data);
+    adoptOrphanSteps(id);
+}
+
+function placeMessage(div, type, data) {
+    if (data.ParentId) {
+        addSubagentStep(div, type, data);
+        maybeScrollToBottom();
+    } else if (isScheduledCheck(type, data)) {
+        // The notice is not shown; the check's block says it all.
+        closeActivityGroup();
+        startScheduledCheck(data);
+        maybeScrollToBottom();
+    } else if (type === 'User') {
         // A new prompt ends the previous turn's row for good.
         closeActivityGroup();
+        endScheduledCheck();
         _container.appendChild(div);
         // A prompt the user just sent themselves: take them to it no matter
         // where they were reading. Only output that arrives on its own is
@@ -1062,11 +1587,28 @@ function addMessage(id, type, dataJson) {
         _userScrolledUp = false;
         scrollToBottom();
         updateScrollButton();
+    } else if (type === 'Notice') {
+        // Background work ending is a boundary like a prompt: the CLI wakes up
+        // after it and starts a turn of its own. Close the row so that turn's
+        // steps do not fold into the last one, nor take its reply with them,
+        // and leave the notice standing.
+        closeActivityGroup();
+        endScheduledCheck();
+        _container.appendChild(div);
+        maybeScrollToBottom();
+    } else if (isSessionLine(type, data)) {
+        // Steps after the notice open a row of their own below it, so the
+        // transcript keeps the order things happened in. Text standing before
+        // it stays where it is: it may be the reply, which a Stop hook's
+        // message follows.
+        closeActivityGroup();
+        outputHost().appendChild(div);
+        maybeScrollToBottom();
     } else if (isTurnFailure(type, data)) {
         // Left standing, and the text before it left alone: when a turn ends in
         // an error, that text is usually as far as the answer got, and folding
         // it away takes both the answer and the reason off the screen at once.
-        _container.appendChild(div);
+        outputHost().appendChild(div);
         maybeScrollToBottom();
     } else if (isActivityType(type)) {
         absorbPendingText();
@@ -1079,7 +1621,7 @@ function addMessage(id, type, dataJson) {
         // "Processing stopped." or "Error:" message the view model adds when a
         // turn is cancelled or throws — and the reply it interrupts has to stay
         // where it can be read.
-        _container.appendChild(div);
+        outputHost().appendChild(div);
         _pendingText = div;
         maybeScrollToBottom();
     }
@@ -1113,6 +1655,7 @@ function updateContent(id, contentMarkdown) {
 function updateStatus(id, status, expanderTitle) {
     var el = document.getElementById('msg-' + id);
     if (!el) return;
+    el.dataset.status = status;
     var st = el.querySelector('.msg-status');
     if (st) {
         st.textContent = STATUS_SYMBOLS[status] || STATUS_SYMBOLS.Pending;
@@ -1122,19 +1665,90 @@ function updateStatus(id, status, expanderTitle) {
         var et = el.querySelector('.msg-expander-title');
         if (et) et.textContent = expanderTitle;
     }
+    if (status !== 'Pending') removeMoveToBackground(id);
+
+    if (el._subagentGroup) refreshSubagentGroup(el._subagentGroup);
 
     // The folded row speaks for whichever step is in flight, so a title that
     // moves on (thinking counting its seconds) has to move the row with it.
     var group = el.closest('.activity');
     if (!group) return;
     if (status === 'Error') group.classList.add('has-error');
+    if (group._subagent) refreshSubagentGroup(group);
     if (!group.classList.contains('running') || !expanderTitle) return;
     var items = group.querySelector('.activity-items');
     if (items.lastElementChild === el) setActivityLabel(group, expanderTitle);
 }
 
-function setBody(id, bodyContent, bodyMode) {
+var NOTICE_ICONS = { Success: '✓', Error: '✗', Info: '■' };
+
+var BG_LABELS = {
+    Running: '⧗ running in background',
+    Completed: '✓ background done',
+    Failed: '✗ background failed',
+    Stopped: '■ background stopped'
+};
+
+// Marks a tool step whose work runs on in the background. Called again with
+// the outcome when the CLI reports the work ended; the summary (e.g. the exit
+// code) goes into the tooltip.
+function setBackgroundState(id, state, summary) {
+    removeMoveToBackground(id);
     var el = document.getElementById('msg-' + id);
+    if (!el) return;
+    var header = el.querySelector('.toolstep-header');
+    if (!header) return;
+    var badge = header.querySelector('.toolstep-bg');
+    if (!badge) {
+        badge = document.createElement('span');
+        header.appendChild(badge);
+    }
+    badge.className = 'toolstep-bg toolstep-bg-' + state;
+    badge.textContent = BG_LABELS[state] || state;
+    badge.title = summary || '';
+}
+
+// Offers "Run in background" on a step whose command or subagent holds the
+// turn. The CLI makes that possible a few seconds into the step. While the
+// step runs it is usually folded into the activity row, so the button goes on
+// the row's header, which is what the user sees; a step outside a row gets it
+// on its own header.
+function setCanMoveToBackground(id) {
+    var el = document.getElementById('msg-' + id);
+    if (!el || el.dataset.done || moveToBackgroundButton(id)) return;
+    var group = el.closest('.activity');
+    var host = group ? group.querySelector('.activity-header') : el.querySelector('.toolstep-header');
+    if (!host) return;
+
+    var btn = document.createElement('button');
+    btn.className = 'toolstep-bgbtn';
+    btn.dataset.bgStep = id;
+    btn.textContent = 'Run in background';
+    btn.title = 'Let ' + (el.querySelector('.toolstep-name') || {textContent: 'this step'}).textContent +
+        ' go on in the background and continue the turn';
+    btn.addEventListener('click', function(e) {
+        // The row header opens and closes the row on a click.
+        e.stopPropagation();
+        btn.disabled = true;
+        window.chrome.webview.postMessage(JSON.stringify({type:'moveToBackground', id:id}));
+    });
+    host.insertBefore(btn, group ? host.querySelector('.activity-count') : null);
+}
+
+function moveToBackgroundButton(id) {
+    var buttons = document.querySelectorAll('.toolstep-bgbtn');
+    for (var i = 0; i < buttons.length; i++)
+        if (buttons[i].dataset.bgStep === id) return buttons[i];
+    return null;
+}
+
+function removeMoveToBackground(id) {
+    var btn = moveToBackgroundButton(id);
+    if (btn) btn.remove();
+}
+
+function setBody(id, bodyContent, bodyMode) {
+    var el = messageElement(id);
     if (!el) return;
     var body = el.querySelector('.msg-body');
     if (!body) return;
@@ -1174,9 +1788,10 @@ function applyBodyCap(el, body) {
         body.classList.remove('capped');
         return;
     }
-    // Add show more link if not already present
-    var existing = el.querySelector('.show-more-link');
-    if (existing) return;
+    // Add show more link if not already present. Only the body's own: an
+    // Agent step also holds the links of its subagent's steps.
+    var existing = body.nextElementSibling;
+    if (existing && existing.classList.contains('show-more-link')) return;
     var link = document.createElement('span');
     link.className = 'show-more-link';
     link.textContent = 'Show more';
@@ -1188,16 +1803,48 @@ function applyBodyCap(el, body) {
     body.parentNode.insertBefore(link, body.nextSibling);
 }
 
+// The cap stays only when it hides enough to be worth a click: a prompt a few
+// lines over the cap shows in full. Reads scrollHeight, so the prompt has to
+// be laid out.
+var PROMPT_CAP = 220;
+var PROMPT_CAP_SLACK = 80;
+function applyPromptCap(content, source) {
+    if (content.scrollHeight <= PROMPT_CAP + PROMPT_CAP_SLACK) {
+        content.classList.remove('capped');
+    } else {
+        var lines = source.split('\n').filter(function(l) { return l.trim(); }).length;
+        var showAll = 'Show all (' + lines + ' lines)';
+        var link = document.createElement('span');
+        link.className = 'show-more-link';
+        link.textContent = showAll;
+        link.addEventListener('click', function() {
+            var isCapped = content.classList.contains('capped');
+            var linkTop = link.getBoundingClientRect().top;
+            content.classList.toggle('capped', !isCapped);
+            link.textContent = isCapped ? 'Show less' : showAll;
+            // Folded back from its end, a long prompt would leave the reader
+            // far below it. Keep the link where it was on screen.
+            if (!isCapped) _container.scrollTop += link.getBoundingClientRect().top - linkTop;
+        });
+        content.parentNode.insertBefore(link, content.nextSibling);
+    }
+    // Either way the prompt's height changed after the scroll that placed it.
+    if (!_userScrolledUp) scrollToBottom();
+}
+
 function applyPendingBodyCaps(items) {
     var pending = items.querySelectorAll('.msg-body[data-cap-pending]');
     for (var i = 0; i < pending.length; i++) {
         var body = pending[i];
+        // Still hidden in a subagent's row that stays shut; measured when
+        // that row opens.
+        if (body.offsetParent === null) continue;
         applyBodyCap(body.closest('.msg'), body);
     }
 }
 
 function completeMessage(id) {
-    var el = document.getElementById('msg-' + id);
+    var el = messageElement(id);
     if (!el) return;
     var type = el.dataset.type;
 
@@ -1209,6 +1856,9 @@ function completeMessage(id) {
     if (type === 'ToolStep') {
         var exp = el.querySelector('.msg-expander');
         if (exp) exp.style.display = 'none';
+        // The offer can arrive just after the step ended; it must not stand.
+        el.dataset.done = '1';
+        removeMoveToBackground(id);
     }
 }
 
@@ -1216,6 +1866,8 @@ function clearAll() {
     if (_container) _container.innerHTML = '';
     _activityGroup = null;
     _pendingText = null;
+    _checkBlock = null;
+    _orphanSteps = {};
     _userScrolledUp = false;
     updateScrollButton();
 }
@@ -1234,9 +1886,11 @@ function loadMessages(jsonArray) {
             completeMessage(m.Id);
         }
     }
+    releaseOrphanSteps();
     // Nothing in a restored transcript is still running, including a run of
     // steps that the session ended on.
     closeActivityGroup();
+    endScheduledCheck();
     _userScrolledUp = false;
     scrollToBottom();
     updateScrollButton();
@@ -1269,6 +1923,27 @@ document.addEventListener('click', function(e) {
     }
 });
 
+// Clicking in the transcript means the user is looking at this session, which
+// is one of the things that clears its "turn finished" indicator. The host
+// cannot see it for itself: this page is a browser child window, so the click
+// is neither a WPF mouse event nor necessarily a change of WPF focus.
+// pointerdown in the capture phase, so a handler that stops propagation (the
+// file links above, text selection) cannot swallow the signal.
+document.addEventListener('pointerdown', function() {
+    window.chrome.webview.postMessage(JSON.stringify({type:'click'}));
+}, true);
+
+// Whether the user is in this session at all, for the same reason: focus
+// sitting in the transcript is focus the host cannot see. blur fires when the
+// browser hands focus back to the chrome around it and when the whole
+// application goes to the background, which is the distinction the host wants.
+function reportFocus(hasFocus) {
+    window.chrome.webview.postMessage(JSON.stringify({type:'focus', hasFocus:hasFocus}));
+}
+
+window.addEventListener('focus', function() { reportFocus(true); });
+window.addEventListener('blur', function() { reportFocus(false); });
+
 // --- Zoom ---
 // The host owns the zoom level, because it also scales the input box and the
 // banners that sit outside this page. Ctrl+wheel and Ctrl+/- are swallowed by
@@ -1297,6 +1972,276 @@ window.addEventListener('keydown', function(e) {
     e.preventDefault();
 });
 
+// --- Find in transcript ---
+// Ctrl+F opens a bar over the top of the chat. Matches are painted with the
+// CSS Custom Highlight API instead of being wrapped in elements: messages keep
+// their markdown source on the elements, and a streaming reply rewrites its
+// element on every chunk. Extra spans would get in the way of both.
+
+var _findBar, _findInput, _findCount;
+var _findMatches = [];
+var _findIndex = -1;
+var _findObserver = null;
+var _findRefreshTimer = 0;
+var _findCanPaint = !!(window.CSS && CSS.highlights && window.Highlight);
+
+// Text that belongs to the page's own controls, not to the conversation.
+var FIND_SKIP = '.msg-label, .msg-status, .msg-copy-btn, .code-copy-btn, .quote-copy-btn, ' +
+    '.show-more-link, .activity-arrow, .toolstep-expander-arrow, .thinking-arrow';
+
+var ICON_ARROW_UP = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="13.5" x2="8" y2="3.5"/><polyline points="3.5 7.5 8 3 12.5 7.5"/></svg>';
+var ICON_CLOSE = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>';
+
+function findButton(icon, title, run) {
+    var btn = document.createElement('button');
+    btn.className = 'find-btn';
+    btn.title = title;
+    btn.innerHTML = icon;
+    // Keep the focus in the input, so Enter goes on working after a click.
+    btn.addEventListener('mousedown', function(e) { e.preventDefault(); });
+    btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        run();
+    });
+    return btn;
+}
+
+function createFindBar() {
+    _findBar = document.createElement('div');
+    _findBar.id = 'find-bar';
+
+    _findInput = document.createElement('input');
+    _findInput.type = 'text';
+    _findInput.placeholder = 'Find in chat';
+    _findInput.spellcheck = false;
+    _findInput.addEventListener('input', function() { runFind(true); });
+    _findInput.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            stepFind(e.shiftKey ? -1 : 1);
+        } else if (e.key === 'Escape') {
+            e.preventDefault();
+            closeFind();
+        }
+    });
+
+    _findCount = document.createElement('span');
+    _findCount.className = 'find-count';
+
+    _findBar.appendChild(_findInput);
+    _findBar.appendChild(_findCount);
+    _findBar.appendChild(findButton(ICON_ARROW_UP, 'Previous match (Shift+Enter)', function() { stepFind(-1); }));
+    _findBar.appendChild(findButton(ICON_ARROW_DOWN, 'Next match (Enter)', function() { stepFind(1); }));
+    _findBar.appendChild(findButton(ICON_CLOSE, 'Close (Esc)', closeFind));
+    document.body.appendChild(_findBar);
+}
+
+function isFindOpen() {
+    return !!_findBar && _findBar.classList.contains('visible');
+}
+
+// Called by the page on Ctrl+F, and by the host when the key reaches it first.
+function openFind() {
+    if (!_findBar) createFindBar();
+
+    // A short selection on one line is most likely what the user wants found.
+    var sel = window.getSelection().toString();
+    if (sel && sel.length <= 100 && sel.indexOf('\n') < 0) _findInput.value = sel;
+
+    var reopened = isFindOpen();
+    _findBar.classList.add('visible');
+    _findInput.focus();
+    _findInput.select();
+
+    if (!_findObserver && window.MutationObserver) {
+        // Output keeps arriving while the bar is open. Recount after it settles,
+        // without moving the view.
+        _findObserver = new MutationObserver(function() {
+            clearTimeout(_findRefreshTimer);
+            _findRefreshTimer = setTimeout(function() { runFind(false); }, 200);
+        });
+        _findObserver.observe(_container, { childList: true, subtree: true, characterData: true });
+    }
+
+    if (!reopened) runFind(true);
+}
+
+// F3 and Shift+F3, whether the page or the host saw the key. A closed bar
+// opens instead, as in a browser.
+function findNext(direction) {
+    if (isFindOpen()) stepFind(direction);
+    else openFind();
+}
+
+function closeFind() {
+    if (!_findBar) return;
+    _findBar.classList.remove('visible');
+    clearTimeout(_findRefreshTimer);
+    if (_findObserver) {
+        _findObserver.disconnect();
+        _findObserver = null;
+    }
+    _findMatches = [];
+    _findIndex = -1;
+    paintFind();
+}
+
+function collectMatches(query) {
+    var matches = [];
+    if (!query) return matches;
+    var needle = query.toLowerCase();
+
+    var walker = document.createTreeWalker(_container, NodeFilter.SHOW_TEXT, {
+        acceptNode: function(node) {
+            var parent = node.parentElement;
+            if (!parent || parent.closest(FIND_SKIP)) return NodeFilter.FILTER_REJECT;
+            // Hidden for good, not folded: an empty step body, or the live
+            // output of a step that has finished.
+            if (parent.closest('[style*="display: none"]')) return NodeFilter.FILTER_REJECT;
+            return NodeFilter.FILTER_ACCEPT;
+        }
+    });
+
+    var node;
+    while ((node = walker.nextNode())) {
+        var text = node.nodeValue.toLowerCase();
+        var from = 0, at;
+        while ((at = text.indexOf(needle, from)) >= 0) {
+            var range = document.createRange();
+            range.setStart(node, at);
+            range.setEnd(node, Math.min(at + needle.length, node.nodeValue.length));
+            matches.push(range);
+            from = at + needle.length;
+        }
+    }
+    return matches;
+}
+
+// Where a match sits on screen. A match inside a folded group has no box of
+// its own, so the nearest ancestor that is shown stands in for it.
+function findAnchorTop(range) {
+    var rect = range.getBoundingClientRect();
+    if (rect.width || rect.height) return rect.top;
+    var el = range.startContainer.parentElement;
+    while (el && !el.getClientRects().length) el = el.parentElement;
+    return el ? el.getBoundingClientRect().top : 0;
+}
+
+// The first match in view, else the next one below it, else the last one
+// above it — the one closest to where the user is reading.
+function pickStartIndex() {
+    var box = _container.getBoundingClientRect();
+    for (var i = 0; i < _findMatches.length; i++) {
+        if (findAnchorTop(_findMatches[i]) >= box.top) return i;
+    }
+    return _findMatches.length - 1;
+}
+
+// jump: a new term, so go to the nearest match. Otherwise the transcript
+// changed under the bar; keep the same match current and leave the view alone.
+function runFind(jump) {
+    var current = _findMatches[_findIndex];
+    _findMatches = collectMatches(_findInput.value);
+
+    if (!_findMatches.length) {
+        _findIndex = -1;
+    } else if (jump) {
+        _findIndex = pickStartIndex();
+    } else {
+        var same = -1;
+        for (var i = 0; current && i < _findMatches.length; i++) {
+            if (_findMatches[i].startContainer === current.startContainer &&
+                _findMatches[i].startOffset === current.startOffset) { same = i; break; }
+        }
+        _findIndex = same >= 0 ? same : Math.min(Math.max(_findIndex, 0), _findMatches.length - 1);
+    }
+
+    paintFind();
+    if (jump && _findIndex >= 0) revealMatch(_findMatches[_findIndex]);
+}
+
+function stepFind(direction) {
+    if (!_findMatches.length) return;
+    _findIndex = (_findIndex + direction + _findMatches.length) % _findMatches.length;
+    paintFind();
+    revealMatch(_findMatches[_findIndex]);
+}
+
+function paintFind() {
+    if (_findCount) {
+        var hasQuery = isFindOpen() && _findInput.value;
+        _findCount.textContent = !hasQuery ? ''
+            : _findMatches.length ? (_findIndex + 1) + ' of ' + _findMatches.length
+            : 'No results';
+        _findCount.classList.toggle('none', !!hasQuery && !_findMatches.length);
+    }
+
+    if (!_findCanPaint) return;
+    if (_findMatches.length) {
+        CSS.highlights.set('find-match', new Highlight(..._findMatches));
+        var current = new Highlight(_findMatches[_findIndex]);
+        current.priority = 1;
+        CSS.highlights.set('find-current', current);
+    } else {
+        CSS.highlights.delete('find-match');
+        CSS.highlights.delete('find-current');
+    }
+}
+
+// Unfolds whatever hides the match, then scrolls it into view.
+function revealMatch(range) {
+    var el = range.startContainer.parentElement;
+    if (!el) return;
+
+    // Outermost first: a folded check holds the rows of its own turn.
+    var checks = el.closest('.check-history');
+    if (checks && !checks.classList.contains('visible')) {
+        checks.parentNode.querySelector('.check-header').click();
+    }
+    var items = el.closest('.activity-items');
+    if (items && !items.classList.contains('visible')) {
+        items.parentNode.querySelector('.activity-header').click();
+    }
+    var thinking = el.closest('.thinking-content');
+    if (thinking && !thinking.classList.contains('visible')) {
+        thinking.previousElementSibling.click();
+    }
+    var live = el.closest('.toolstep-expander-content');
+    if (live && !live.classList.contains('visible')) {
+        live.previousElementSibling.click();
+    }
+
+    // After the frame in which an opened block caps its own height, so the
+    // cap can be taken off again when the match lies below it.
+    requestAnimationFrame(function() {
+        var capped = el.closest('.capped');
+        if (capped) {
+            capped.classList.remove('capped');
+            var link = capped.nextElementSibling;
+            if (link && link.classList.contains('show-more-link')) link.textContent = 'Show less';
+        }
+
+        var rect = range.getBoundingClientRect();
+        var box = _container.getBoundingClientRect();
+        // The bar covers the top of the chat.
+        if (rect.top < box.top + 40 || rect.bottom > box.bottom - 20) {
+            _container.scrollTop += rect.top - box.top - _container.clientHeight / 3;
+        }
+    });
+}
+
+window.addEventListener('keydown', function(e) {
+    if (e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        openFind();
+    } else if (e.key === 'F3' && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        findNext(e.shiftKey ? -1 : 1);
+    } else if (e.key === 'Escape' && isFindOpen() && document.activeElement !== _findInput) {
+        closeFind();
+    }
+});
+
 // --- Copy button ---
 // SVG icons for copy button
 var ICON_COPY = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M3.5 10.5h-1a1.5 1.5 0 01-1.5-1.5v-6a1.5 1.5 0 011.5-1.5h6a1.5 1.5 0 011.5 1.5v1"/></svg>';
@@ -1319,6 +2264,9 @@ function getMessageText(msgEl) {
     } else if (type === 'Thinking') {
         var tc = msgEl.querySelector('.thinking-content');
         return tc ? tc.textContent : '';
+    } else if (type === 'Notice') {
+        var nt = msgEl.querySelector('.notice-text');
+        return nt ? nt.textContent : '';
     }
     return '';
 }

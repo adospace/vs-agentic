@@ -971,7 +971,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             "failed" => BackgroundStepState.Failed,
             _ => BackgroundStepState.Stopped,
         };
-        var summary = CliProcessInfo.ReadString(evt, "summary");
+        var summary = task?.Type == "local_agent"
+            ? AgentSummary(task.Description, state)
+            : CliProcessInfo.ReadString(evt, "summary");
 
         // For a task that was stopped, the CLI's summary is the task's
         // description and nothing else, which reads as if it were still
@@ -985,6 +987,24 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (string.IsNullOrEmpty(outputFile)) outputFile = null;
 
         RaiseStepBackgroundStateChanged(toolUseId, state, summary, outputFile);
+    }
+
+    /// <summary>
+    /// The line for a subagent that ended in the background. For a subagent,
+    /// the CLI's summary is the subagent's whole report (measured on 2.1.316),
+    /// which the Agent step shows already. A shell command's summary is one
+    /// line, such as <c>Background command "…" completed (exit code 0)</c>.
+    /// </summary>
+    internal static string AgentSummary(string? description, BackgroundStepState state)
+    {
+        var name = string.IsNullOrWhiteSpace(description) ? "Background agent" : $"Agent \"{description}\"";
+        var outcome = state switch
+        {
+            BackgroundStepState.Completed => "finished",
+            BackgroundStepState.Failed => "failed",
+            _ => "stopped",
+        };
+        return $"{name} {outcome}";
     }
 
     private void RaiseStepBackgroundStateChanged(string stepId, BackgroundStepState state, string? summary, string? outputFile)

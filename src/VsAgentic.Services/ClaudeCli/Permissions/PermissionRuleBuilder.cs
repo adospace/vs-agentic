@@ -139,6 +139,19 @@ public static class PermissionRuleBuilder
     /// </summary>
     private static List<(string Text, bool Piped)>? SplitCommands(string command, bool posix)
     {
+        if (!posix)
+        {
+            // PowerShell takes the curly quotes ‘ ’ ‚ ‛ “ ” „ for quotes, so
+            // Write-Output “x ; Remove-Item foo” prints one string. Read as
+            // plain characters, the ; inside it would split the line.
+            foreach (var c in command)
+                if (c is >= '‘' and <= '‛' or >= '“' and <= '„') return null;
+
+            // After --% PowerShell passes the rest of the line as text, so
+            // nothing after it is a command of its own.
+            if (command.IndexOf("--%", StringComparison.Ordinal) >= 0) return null;
+        }
+
         var escape = posix ? '\\' : '`';
         var commands = new List<(string Text, bool Piped)>();
         var current = new StringBuilder();
@@ -285,6 +298,13 @@ public static class PermissionRuleBuilder
                 continue;
             }
 
+            // Bash ends a command only at a line feed. A carriage return on its
+            // own is a character of the word: git status<CR>rm -rf x is one
+            // command to bash, but would read as two here. It is refused rather
+            // than kept, as it hides the second line on the banner as well. A
+            // CR before a LF is the Windows line end and stays a separator.
+            if (posix && c == '\r' && next != '\n') return null;
+
             if (c == ';' || c == '\n' || c == '\r')
             {
                 // A pipe at the end of a line carries on into the next one, so
@@ -362,6 +382,12 @@ public static class PermissionRuleBuilder
             return ExactRule(segment);
         }
 
+        // A prefix rule covers every flag of the command, the ones on the banner
+        // and any added later. A flag that runs a program (git grep -O, go env
+        // -w GOFLAGS=-toolexec=…, npm run --script-shell) turns the rule into
+        // "run anything", so a line that has one gets the command as written.
+        if (HasCodeRunningFlag(words)) return ExactRule(segment);
+
         // Read-only commands take no subcommand: cd src would otherwise yield
         // Bash(cd src:*), which never matches the next cd. The list is held to
         // commands that only read, so the widest thing a rule from it can allow
@@ -370,10 +396,12 @@ public static class PermissionRuleBuilder
         if (quoted is null && ReadOnlyCommands.Contains(name))
             return head + ":*";
 
-        // git log --oneline -5 keys on "git log". Only for a tool known to take
-        // a subcommand there, and only for a subcommand that does one thing of
-        // its own: the second word of any other program, or of git submodule,
-        // can be a program to run, a file to write or a branch name.
+        // git log --oneline -5 keys on "git log", but only for a subcommand on
+        // a short list of ones that read or build and have no flag that runs
+        // a program. Every other subcommand gets the command as written: the
+        // subcommands that run code (git grep -O, go env -w, dotnet run, cargo
+        // run, docker container …) are no list that is ever complete, so the
+        // list goes the other way.
         //
         // One subcommand, not two: two looks right on gh issue list but
         // misreads git ls-tree main, where the second word is a branch name and
@@ -382,8 +410,7 @@ public static class PermissionRuleBuilder
         // it is what turned git -C . status into Bash(git:*). The quotes of a
         // program named by its path stay in the rule, because the CLI compares
         // against the command as written.
-        if (SubcommandTools.Contains(name) && words.Count >= 2 && IsPlainWord(words[1])
-            && !OpenSubcommands.Contains(name + " " + words[1]))
+        if (words.Count >= 2 && IsPlainWord(words[1]) && PrefixSubcommands.Contains(name + " " + words[1]))
             return head + " " + words[1] + ":*";
 
         // Nothing here can be generalised from, so the rule is the command as
@@ -685,38 +712,61 @@ public static class PermissionRuleBuilder
     };
 
     /// <summary>
-    /// Tools whose second word is a subcommand, and the only ones that get a
-    /// rule for it (<c>git log:*</c>). Any other program gets the command as
-    /// written: its second word can be a path to delete (<c>rm old</c>), a
-    /// file to write (<c>tee log</c>) or a program to run (<c>poetry run</c>,
-    /// <c>busybox sh</c>), and no list of such programs is ever complete.
+    /// The only subcommands that get a prefix rule (<c>git log:*</c>): ones
+    /// that read or build, and have no flag that runs a program other than the
+    /// ones <see cref="HasCodeRunningFlag"/> refuses. Any other subcommand, and
+    /// the second word of any other program, gets the command as written: it
+    /// can be a path to delete (<c>rm old</c>), a file to write
+    /// (<c>tee log</c>), a program to run (<c>poetry run</c>,
+    /// <c>dotnet run</c>) or a setting that a later command runs
+    /// (<c>go env -w</c>, <c>git config</c>).
     /// </summary>
-    private static readonly HashSet<string> SubcommandTools = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> PrefixSubcommands = new(StringComparer.OrdinalIgnoreCase)
     {
-        "git", "dotnet", "npm", "pnpm", "yarn", "cargo", "go", "docker", "kubectl",
+        "git status", "git log", "git diff", "git show", "git branch", "git ls-files",
+        "dotnet build", "dotnet restore", "dotnet test",
+        "npm install", "npm ls",
+        "cargo build", "cargo check", "cargo test",
+        "go build", "go vet",
+        "docker ps", "docker images",
+        "kubectl get", "kubectl describe", "kubectl logs",
     };
 
     /// <summary>
-    /// Subcommands of <see cref="SubcommandTools"/> that run code they are
-    /// handed, start a program, or change what later commands of the tool run.
-    /// They get the command as written. <see cref="RunnerSubcommands"/> holds
-    /// the ones that also count as runners.
+    /// Flags that make a command run a program it is handed: git grep
+    /// <c>-O</c>/<c>--open-files-in-pager</c>, git fetch
+    /// <c>--upload-pack</c>, git push <c>--receive-pack</c>/<c>--exec</c>,
+    /// git clone <c>-u</c>, npm <c>--script-shell</c>, go test
+    /// <c>-exec</c>, go build <c>-toolexec</c>, cargo <c>--config</c>
+    /// (<c>build.rustc-wrapper=…</c>) and git <c>-c</c> (a config value, such
+    /// as a pager, for this one call).
     /// </summary>
-    private static readonly HashSet<string> OpenSubcommands = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly string[] CodeRunningFlags =
     {
-        // foreach runs a command in each submodule; config can set an alias,
-        // a pager or a hook path that a later git log then runs; rebase --exec,
-        // bisect run, filter-branch and the diff and merge tools run commands.
-        "git submodule", "git config", "git rebase", "git bisect", "git filter-branch",
-        "git difftool", "git mergetool", "git daemon",
-
-        "dotnet dnx", "dotnet tool", "dotnet exec",
-        "npm exec", "npm x", "npm init", "npm create",
-        "pnpm exec", "pnpm dlx", "pnpm create", "yarn exec", "yarn dlx", "yarn create",
-        "go run", "go generate",
-        "docker run", "docker exec", "docker compose", "docker cp",
-        "kubectl exec", "kubectl run", "kubectl cp", "kubectl debug", "kubectl attach", "kubectl plugin",
+        "-O", "--open-files-in-pager", "--upload-pack", "--receive-pack", "--exec", "-u",
+        "--script-shell", "-exec", "-toolexec", "--config", "-c",
     };
+
+    /// <summary>
+    /// Whether a word after the program is one of <see cref="CodeRunningFlags"/>,
+    /// alone, with <c>=value</c>, or, for a single-letter flag, with its value
+    /// joined on (<c>-O'echo x'</c>). Quotes around the word do not hide it.
+    /// </summary>
+    private static bool HasCodeRunningFlag(List<string> words)
+    {
+        foreach (var raw in words.Skip(1))
+        {
+            var word = Unquote(raw);
+            foreach (var flag in CodeRunningFlags)
+            {
+                if (word == flag || word.StartsWith(flag + "=", StringComparison.Ordinal)) return true;
+                var singleLetter = flag.Length == 2 && flag[0] == '-' && flag[1] != '-';
+                if (singleLetter && word.StartsWith(flag, StringComparison.Ordinal)) return true;
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Programs that read their input and write only their output, so a rule
@@ -756,14 +806,27 @@ public static class PermissionRuleBuilder
     ///
     /// Returns null for anything that would not name the one file on the banner:
     /// a relative path is resolved against a directory we cannot see, a glob
-    /// matches more files, and a trailing separator or a <c>..</c> segment makes
-    /// the rule cover a directory — gitignore syntax then covers everything
-    /// under it.
+    /// matches more files, and a trailing separator, a <c>..</c> segment or a
+    /// path that is a directory makes the rule cover a directory — gitignore
+    /// syntax then covers everything under it, so a Read of <c>~/.ssh</c>
+    /// would allow reading every key in it. Spaces at either end are refused
+    /// as well: gitignore matching drops trailing spaces, so the rule would not
+    /// name the path the request did.
     /// </summary>
     private static string? FileRulePath(string? path)
     {
         if (string.IsNullOrWhiteSpace(path)) return null;
-        if (path!.IndexOfAny(new[] { '*', '?', '[', ']', '!', '#', '{', '}' }) >= 0) return null;
+        if (path!.Trim() != path) return null;
+        if (path.IndexOfAny(new[] { '*', '?', '[', ']', '!', '#', '{', '}' }) >= 0) return null;
+
+        try
+        {
+            if (System.IO.Directory.Exists(path)) return null;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.IO.IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
 
         var p = path.Replace('\\', '/');
 

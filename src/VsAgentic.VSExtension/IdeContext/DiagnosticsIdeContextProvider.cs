@@ -1,5 +1,4 @@
 using System.IO;
-using System.Text;
 using System.Text.Json;
 using System.Threading;
 using Microsoft.VisualStudio.Shell;
@@ -19,9 +18,6 @@ internal sealed class DiagnosticsIdeContextProvider : IIdeContextProvider
 {
     private const int DefaultMaxResults = 50;
     private const int MaxMaxResults = 200;
-
-    // In the summary only: enough to start on, short enough for every message.
-    private const int SummaryMaxItems = 10;
 
     private const string BuildOnlyNote =
         "The Error List is set to \"Build Only\", so Visual Studio is not producing live entries " +
@@ -61,50 +57,11 @@ internal sealed class DiagnosticsIdeContextProvider : IIdeContextProvider
                   "maxResults":{"type":"integer","minimum":1,"maximum":200,"description":"Default 50."}
                 }}
                 """,
-                GetDiagnosticsAsync),
+                GetDiagnosticsAsync,
+                // What the user sees in the Error List; Claude could get the
+                // same by building. No banner.
+                isReadOnly: true),
         };
-    }
-
-    public Task<IdeContextSection?> GetSummaryAsync(CancellationToken cancellationToken)
-    {
-        var snapshot = _reader.Read();
-        var entries = Visible(snapshot.Entries).ToList();
-        var errors = entries.Where(e => e.Severity == __VSERRORCATEGORY.EC_ERROR).ToList();
-        var warnings = entries.Count(e => e.Severity == __VSERRORCATEGORY.EC_WARNING);
-
-        if (errors.Count == 0 && warnings == 0)
-            return Task.FromResult<IdeContextSection?>(null);
-
-        var sb = new StringBuilder();
-        sb.Append(Count(errors.Count, "error")).Append(", ").Append(Count(warnings, "warning"))
-          .Append(" in the Error List");
-
-        // Warnings only when there is nothing more pressing.
-        var top = errors.Count > 0
-            ? errors
-            : entries.Where(e => e.Severity == __VSERRORCATEGORY.EC_WARNING).ToList();
-        foreach (var entry in Order(top).Take(SummaryMaxItems))
-        {
-            sb.AppendLine();
-            sb.Append("- ");
-            if (entry.Code is not null) sb.Append(entry.Code).Append(' ');
-            if (entry.Document is not null)
-            {
-                sb.Append(Path.GetFileName(entry.Document));
-                if (entry.Line >= 0) sb.Append(':').Append(entry.Line + 1);
-                sb.Append(' ');
-            }
-            sb.Append(entry.Text);
-        }
-
-        return Task.FromResult<IdeContextSection?>(new IdeContextSection(
-            "diagnostics",
-            sb.ToString(),
-            "Error List",
-            DateTimeOffset.Now,
-            detailsAvailable: true,
-            isStale: !snapshot.IsStable,
-            version: snapshot.Version));
     }
 
     private async Task<IdeToolResult> GetDiagnosticsAsync(JsonElement arguments, CancellationToken cancellationToken)
@@ -211,8 +168,6 @@ internal sealed class DiagnosticsIdeContextProvider : IIdeContextProvider
         __VSERRORCATEGORY.EC_WARNING => "warning",
         _ => "message",
     };
-
-    private static string Count(int count, string noun) => count == 1 ? $"1 {noun}" : $"{count} {noun}s";
 
     private static string? GetString(JsonElement arguments, string name)
         => arguments.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String &&

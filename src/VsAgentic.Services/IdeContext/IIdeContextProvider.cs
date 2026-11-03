@@ -6,22 +6,14 @@ using System.Threading.Tasks;
 namespace VsAgentic.Services.IdeContext;
 
 /// <summary>
-/// One source of IDE state for Claude. It answers on two levels: a cheap
-/// summary the chat can attach to a message, and tools Claude calls through
-/// the <c>vsagentic</c> MCP server when it needs the details.
+/// One source of IDE state for Claude: tools Claude calls through the
+/// <c>vsagentic</c> MCP server when it needs to know what Visual Studio shows.
 ///
-/// Implemented by the Visual Studio host. Both levels are called off the UI
+/// Implemented by the Visual Studio host. The tools are called off the UI
 /// thread; a provider switches to it only where the API it reads demands it.
 /// </summary>
 public interface IIdeContextProvider
 {
-    /// <summary>
-    /// The current state in brief, or null when there is nothing worth
-    /// saying (no errors, no document open). Must return quickly: a provider
-    /// that runs out of time is left out rather than holding up Send.
-    /// </summary>
-    Task<IdeContextSection?> GetSummaryAsync(CancellationToken cancellationToken);
-
     /// <summary>The tools this provider adds to the MCP server.</summary>
     IReadOnlyList<IdeTool> Tools { get; }
 }
@@ -44,10 +36,11 @@ public sealed class IdeTool
     public string Title { get; }
 
     /// <summary>
-    /// True when the tool only reads IDE state. Such a tool runs without a
-    /// permission banner: it shows Claude nothing it could not already see
-    /// by reading files, and a banner for every look at the Error List would
-    /// make the tool useless.
+    /// True when the tool only reads IDE state that Claude could see anyway,
+    /// for example by reading files. Such a tool runs without a permission
+    /// banner. False sends each call through the banner. Every tool states
+    /// this itself; there is no default, so a new tool cannot skip the banner
+    /// by accident.
     /// </summary>
     public bool IsReadOnly { get; }
 
@@ -59,7 +52,7 @@ public sealed class IdeTool
         string description,
         string inputSchemaJson,
         Func<JsonElement, CancellationToken, Task<IdeToolResult>> invoke,
-        bool isReadOnly = true)
+        bool isReadOnly)
     {
         Name = name;
         Title = title;

@@ -142,7 +142,9 @@ public class VsAgenticOptionsPage : DialogPage
 
     [Category("Debugger")]
     [DisplayName("Let Claude read the debugger")]
-    [Description("What Claude may see while you debug a program. Off (the default): Claude sees nothing from the debugger. WhereItStopped: Claude sees the line, the call stack and the exception type, never your data, e.g. \"NullReferenceException at Program.cs:64\". Choose this when you debug with real customer or production data. WhereItStoppedAndValues: Claude can also ask for variables and the exception message, e.g. \"customer = null, count = 42\"; you approve each request. Choose this when you work with test data and want direct answers like \"customer is null because...\". The Debugger button below the chat input changes this for one chat. New chats start with this setting.")]
+    // Short enough for the three lines the Options pane shows. The Debugger
+    // button's menu explains the levels with examples.
+    [Description("Off (default): nothing. WhereItStopped: line, call stack, exception type, never your data; for real data. WhereItStoppedAndValues: also variables, after you click Allow; for test data.")]
     [DefaultValue(DebuggerAccessLevel.Off)]
     public DebuggerAccessLevel DebuggerAccess { get; set; } = DebuggerAccessLevel.Off;
 

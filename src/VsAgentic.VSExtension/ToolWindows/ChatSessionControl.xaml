@@ -969,7 +969,7 @@
                                                 BorderThickness="1"
                                                 CornerRadius="4"
                                                 Padding="0,4"
-                                                Width="340"
+                                                Width="400"
                                                 SnapsToDevicePixels="True"
                                                 TextElement.FontSize="11"
                                                 TextElement.Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}">

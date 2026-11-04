@@ -37,15 +37,27 @@ public sealed class PermissionDecision
     public string? UpdatedInputJson { get; }
     public string? Message { get; }
 
-    private PermissionDecision(PermissionBehavior behavior, string? updatedInputJson, string? message)
+    /// <summary>
+    /// Permission mode the CLI switches to as it allows the call, e.g.
+    /// <c>acceptEdits</c> when the user approves a plan and lets Claude edit
+    /// without asking. Null leaves the mode to the CLI.
+    /// </summary>
+    public string? Mode { get; }
+
+    private PermissionDecision(PermissionBehavior behavior, string? updatedInputJson, string? message, string? mode = null)
     {
         Behavior = behavior;
         UpdatedInputJson = updatedInputJson;
         Message = message;
+        Mode = mode;
     }
 
     public static PermissionDecision Allow(string updatedInputJson)
         => new PermissionDecision(PermissionBehavior.Allow, updatedInputJson, null);
+
+    /// <summary>Allow the call, and switch the session to <paramref name="mode"/>.</summary>
+    public static PermissionDecision AllowAndSetMode(string updatedInputJson, string mode)
+        => new PermissionDecision(PermissionBehavior.Allow, updatedInputJson, null, mode);
 
     public static PermissionDecision Deny(string message)
         => new PermissionDecision(PermissionBehavior.Deny, null, message);

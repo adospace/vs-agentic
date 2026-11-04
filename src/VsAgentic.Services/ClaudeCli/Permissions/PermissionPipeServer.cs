@@ -260,6 +260,7 @@ internal sealed class PermissionPipeServer : IDisposable
             sb.Append(JsonSerializer.Serialize(id));
             sb.Append(",\"behavior\":\"allow\",\"updatedInput\":");
             sb.Append(decision.UpdatedInputJson ?? "{}");
+            AppendMode(sb, decision);
             sb.Append("}");
             return sb.ToString();
         }
@@ -273,6 +274,23 @@ internal sealed class PermissionPipeServer : IDisposable
             sb.Append("}");
             return sb.ToString();
         }
+    }
+
+    /// <summary>
+    /// Appends the mode switch the CLI reads off an allow response. With
+    /// destination <c>session</c> it changes the running session only and
+    /// writes nothing to disk. Measured on CLI 2.1.316 for <c>ExitPlanMode</c>:
+    /// the CLI switches before it runs the call and reports the new mode in
+    /// <c>system/status</c>, so the mode picker follows. The helper process
+    /// forwards every field of this object except <c>id</c>.
+    /// </summary>
+    private static void AppendMode(StringBuilder sb, PermissionDecision decision)
+    {
+        if (decision.Mode is null) return;
+
+        sb.Append(",\"updatedPermissions\":[{\"type\":\"setMode\",\"mode\":");
+        sb.Append(JsonSerializer.Serialize(decision.Mode));
+        sb.Append(",\"destination\":\"session\"}]");
     }
 
     public void Dispose()

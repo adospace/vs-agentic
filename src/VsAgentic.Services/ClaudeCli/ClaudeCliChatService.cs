@@ -333,6 +333,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     // the interrupt; a measured gap is a few milliseconds.
     private static readonly TimeSpan InterruptResultTimeout = TimeSpan.FromSeconds(5);
 
+    /// <summary>The tool Claude calls in plan mode to put its plan to the user.</summary>
+    public const string PlanToolName = "ExitPlanMode";
+
     private void ClearActiveTurn(TurnState turn)
     {
         lock (_activeTurnLock)
@@ -1910,7 +1913,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         FinalizeResponseItem(turn);
         FinalizeToolItem(turn);
 
-        var toolTitle = $"Using {toolName}";
+        // A plan waits for the user, not for a tool; the bar under the chat says so.
+        var toolTitle = toolName == PlanToolName ? "Waiting for plan approval" : $"Using {toolName}";
         string? toolBody = null;
         if (block.TryGetProperty("input", out var input))
         {
@@ -1999,8 +2003,6 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             if (!block.TryGetProperty("type", out var bt)) continue;
             if (bt.GetString() != "tool_result") continue;
             if (CloseAgentStep(turn, block)) continue;
-            if (!block.TryGetProperty("is_error", out var ep)) continue;
-            if (ep.ValueKind != JsonValueKind.True) continue;
 
             // Only the open step can be marked. A result for any other call
             // belongs to a step that is already closed, or to one the UI never
@@ -2008,7 +2010,13 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             var toolUseId = block.TryGetProperty("tool_use_id", out var tp) ? tp.GetString() : null;
             if (turn.ToolItem == null || toolUseId != turn.ToolItem.Id) continue;
 
-            CompleteToolItem(turn, OutputItemStatus.Error);
+            var isError = block.TryGetProperty("is_error", out var ep) && ep.ValueKind == JsonValueKind.True;
+            if (isError)
+                CompleteToolItem(turn, OutputItemStatus.Error);
+            // A plan's result is the user's answer: approved, or (as an error)
+            // sent back. Closed here, so only an answered plan reads as approved.
+            else if (turn.ToolItem.ToolName == PlanToolName)
+                CompleteToolItem(turn, OutputItemStatus.Success);
         }
     }
 
@@ -2265,7 +2273,13 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     {
         if (turn.ToolItem == null) return;
         if (turn.ToolItem.Status == OutputItemStatus.Pending)
-            CompleteToolItem(turn, OutputItemStatus.Success);
+        {
+            // A plan still open here got no answer: the turn was stopped
+            // while it waited. It was neither approved nor sent back.
+            CompleteToolItem(turn, turn.ToolItem.ToolName == PlanToolName
+                ? OutputItemStatus.Info
+                : OutputItemStatus.Success);
+        }
         turn.ToolItem = null;
     }
 
@@ -2445,6 +2459,12 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
             if (toolName == "TodoWrite" && input.TryGetProperty("todos", out var todos) && todos.ValueKind == JsonValueKind.Array)
                 return FormatTodoList(todos);
+
+            // The plan is markdown written for the user; the transcript shows
+            // it whole, as the plan card.
+            if (toolName == PlanToolName && input.TryGetProperty("plan", out var plan)
+                && plan.ValueKind == JsonValueKind.String)
+                return plan.GetString() ?? "";
 
             if (toolName == "WebFetch")
                 return FormatWebFetch(input);

@@ -476,6 +476,11 @@
         <DataTemplate DataType="{x:Type bvm:PermissionBannerViewModel}">
             <bv:PermissionBannerControl/>
         </DataTemplate>
+        <!-- A plan is a permission prompt too; WPF picks this template over the
+             one above because it matches the type exactly. -->
+        <DataTemplate DataType="{x:Type bvm:PlanBannerViewModel}">
+            <bv:PlanBannerControl/>
+        </DataTemplate>
         <DataTemplate DataType="{x:Type bvm:LoginBannerViewModel}">
             <bv:LoginBannerControl/>
         </DataTemplate>

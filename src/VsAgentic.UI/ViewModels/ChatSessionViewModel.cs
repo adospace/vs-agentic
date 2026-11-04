@@ -780,11 +780,17 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 _logger.LogInformation(
                     "[VM] Permission prompt requested (id={Id}, tool={Tool})",
                     request.Id, request.ToolName);
-                ActiveBanner = new PermissionBannerViewModel(request, decision =>
+                void OnResolved(PermissionDecision decision)
                 {
                     Dispatch(() => ActiveBanner = null);
                     _permissionBroker?.Resolve(request.Id, decision);
-                });
+                }
+
+                // A plan gets its own answers; the plan itself is the card in
+                // the transcript.
+                ActiveBanner = request.ToolName == Services.ClaudeCli.ClaudeCliChatService.PlanToolName
+                    ? new PlanBannerViewModel(request, OnResolved)
+                    : new PermissionBannerViewModel(request, OnResolved);
             }
             catch (Exception ex)
             {

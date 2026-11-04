@@ -2011,12 +2011,20 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             if (turn.ToolItem == null || toolUseId != turn.ToolItem.Id) continue;
 
             var isError = block.TryGetProperty("is_error", out var ep) && ep.ValueKind == JsonValueKind.True;
-            if (isError)
-                CompleteToolItem(turn, OutputItemStatus.Error);
+
             // A plan's result is the user's answer: approved, or (as an error)
-            // sent back. Closed here, so only an answered plan reads as approved.
-            else if (turn.ToolItem.ToolName == PlanToolName)
-                CompleteToolItem(turn, OutputItemStatus.Success);
+            // sent back. A Stop while the plan waits also comes back as an
+            // error; the plan was not answered then. Closed here, so only an
+            // answered plan reads as approved.
+            if (turn.ToolItem.ToolName == PlanToolName)
+            {
+                var text = block.TryGetProperty("content", out var cp) ? ExtractToolResultText(cp) : "";
+                CompleteToolItem(turn, !isError ? OutputItemStatus.Success
+                    : PlanAnswers.IsKeepPlanning(text) ? OutputItemStatus.Error
+                    : OutputItemStatus.Info);
+            }
+            else if (isError)
+                CompleteToolItem(turn, OutputItemStatus.Error);
         }
     }
 

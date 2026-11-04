@@ -843,7 +843,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 return;
 
             _logger.LogInformation("[VM] Permission prompt cancelled (id={Id})", requestId);
-            DismissActiveBanner($"_Stopped. The request to use **{banner.ToolName}** was denied._");
+            DismissActiveBanner(banner is PlanBannerViewModel
+                ? "_Stopped. The plan was neither approved nor sent back._"
+                : $"_Stopped. The request to use **{banner.ToolName}** was denied._");
         });
     }
 

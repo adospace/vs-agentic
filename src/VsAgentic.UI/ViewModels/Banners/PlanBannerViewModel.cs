@@ -71,10 +71,7 @@ public partial class PlanBannerViewModel : PermissionBannerViewModel
     [RelayCommand(CanExecute = nameof(CanAnswer))]
     private void SendFeedback()
     {
-        var feedback = (FeedbackText ?? "").Trim();
-        Answer(PermissionDecision.Deny(feedback.Length > 0
-            ? "The user did not approve the plan and wants you to keep planning. Their feedback: " + feedback
-            : "The user did not approve the plan and wants you to keep planning. Ask them what to change."));
+        Answer(PermissionDecision.Deny(PlanAnswers.KeepPlanning(FeedbackText)));
     }
 
     private void Answer(PermissionDecision decision)

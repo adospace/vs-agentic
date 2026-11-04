@@ -260,6 +260,7 @@ internal sealed class PermissionPipeServer : IDisposable
             sb.Append(JsonSerializer.Serialize(id));
             sb.Append(",\"behavior\":\"allow\",\"updatedInput\":");
             sb.Append(decision.UpdatedInputJson ?? "{}");
+            AppendRules(sb, decision);
             sb.Append("}");
             return sb.ToString();
         }
@@ -273,6 +274,44 @@ internal sealed class PermissionPipeServer : IDisposable
             sb.Append("}");
             return sb.ToString();
         }
+    }
+
+    /// <summary>
+    /// Appends the <c>updatedPermissions</c> array the CLI reads off an allow
+    /// response. The CLI adds the rules to its permission context in both
+    /// cases. With destination <c>session</c> it writes nothing to disk, so the
+    /// rules end with the CLI process. With <c>userSettings</c> it also writes
+    /// them to <c>~/.claude/settings.json</c>, where the user can see and
+    /// remove them.
+    ///
+    /// The helper process forwards every field of this object except <c>id</c>,
+    /// so nothing extra is needed there.
+    /// </summary>
+    private static void AppendRules(StringBuilder sb, PermissionDecision decision)
+    {
+        if (decision.Rules.Count == 0) return;
+
+        var destination = decision.Scope == PermissionRuleScope.User ? "userSettings" : "session";
+
+        sb.Append(",\"updatedPermissions\":[{\"type\":\"addRules\",\"behavior\":\"allow\",\"destination\":");
+        sb.Append(JsonSerializer.Serialize(destination));
+        sb.Append(",\"rules\":[");
+
+        for (var i = 0; i < decision.Rules.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            var rule = decision.Rules[i];
+            sb.Append("{\"toolName\":");
+            sb.Append(JsonSerializer.Serialize(rule.ToolName));
+            if (rule.RuleContent is not null)
+            {
+                sb.Append(",\"ruleContent\":");
+                sb.Append(JsonSerializer.Serialize(rule.RuleContent));
+            }
+            sb.Append('}');
+        }
+
+        sb.Append("]}]");
     }
 
     public void Dispose()

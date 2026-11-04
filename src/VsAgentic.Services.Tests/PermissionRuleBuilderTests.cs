@@ -117,7 +117,7 @@ public class PermissionRuleBuilderTests
         { "Bash", "winpty python app.py", "Bash(winpty python app.py)" },
         { "Bash", "git config core.pager less", "Bash(git config core.pager less)" },
         { "Bash", "git status", "Bash(git status:*)" },
-        { "Bash", "kubectl get pods", "Bash(kubectl get:*)" },
+        { "Bash", "kubectl get pods", "Bash(kubectl get pods)" },
         { "Bash", "cargo test", "Bash(cargo test)" },
         { "Bash", "gh issue list", "Bash(gh issue list)" },
 
@@ -223,8 +223,6 @@ public class PermissionRuleBuilderTests
         { "Bash", "git ls-files src", "Bash(git ls-files:*)" },
         { "Bash", "npm ls --depth 0", "Bash(npm ls:*)" },
         { "Bash", "docker images", "Bash(docker images:*)" },
-        { "Bash", "kubectl describe pod x", "Bash(kubectl describe:*)" },
-        { "Bash", "kubectl logs pod-x", "Bash(kubectl logs:*)" },
         { "PowerShell", "git status", "PowerShell(git status:*)" },
 
         // Known leftover, accepted in review (4. 11.): --output=<file> writes
@@ -261,6 +259,12 @@ public class PermissionRuleBuilderTests
         { "Bash", "dotnet build -p:CscToolPath=C:/t -p:CscToolExe=x.exe", "Bash(dotnet build -p:CscToolPath=C:/t -p:CscToolExe=x.exe)" },
         { "Bash", "git branch -D old", "Bash(git branch -D old)" },
         { "Bash", "git branch -f main HEAD~1", "Bash(git branch -f main HEAD~1)" },
+
+        // kubectl --kubeconfig=<file> runs the exec credential plugin that
+        // the file names, so kubectl get, describe and logs lose their prefix.
+        { "Bash", "kubectl describe pod x", "Bash(kubectl describe pod x)" },
+        { "Bash", "kubectl logs pod-x", "Bash(kubectl logs pod-x)" },
+        { "Bash", "kubectl get pods --kubeconfig=k.yaml", "Bash(kubectl get pods --kubeconfig=k.yaml)" },
 
         // In a compound line too.
         { "Bash", "dotnet build && git log | head -5", "Bash(dotnet build) | Bash(git log:*) | Bash(head:*)" },

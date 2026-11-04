@@ -723,7 +723,9 @@ public static class PermissionRuleBuilder
     /// <c>go vet -vettool</c>, <c>cargo build --config
     /// build.rustc-wrapper=…</c>, <c>npm install --script-shell</c>,
     /// <c>dotnet build -p:CscToolExe=…</c>), and <c>git branch</c>
-    /// (<c>-D</c>, <c>-f</c>). One known leftover: git log, show and diff
+    /// (<c>-D</c>, <c>-f</c>), and kubectl: <c>--kubeconfig=&lt;file&gt;</c>
+    /// names a file whose <c>exec</c> credential plugin kubectl runs. One
+    /// known leftover: git log, show and diff
     /// <c>--output=&lt;file&gt;</c> write a file. Any other subcommand, and
     /// the second word of any other program, gets the command as written: it
     /// can be a path to delete (<c>rm old</c>), a file to write
@@ -736,7 +738,6 @@ public static class PermissionRuleBuilder
         "git status", "git log", "git diff", "git show", "git ls-files",
         "npm ls",
         "docker ps", "docker images",
-        "kubectl get", "kubectl describe", "kubectl logs",
     };
 
     /// <summary>

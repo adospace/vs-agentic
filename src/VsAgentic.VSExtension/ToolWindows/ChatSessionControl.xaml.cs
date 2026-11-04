@@ -620,6 +620,21 @@ public partial class ChatSessionControl : UserControl
 
     private void OnZoomChangeRequested(int step) => ChatZoom.Step(step);
 
+    // The Debugger switch: a click opens the three levels.
+    private void OnDebuggerAccessClick(object sender, RoutedEventArgs e) =>
+        DebuggerAccessPopup.IsOpen = !DebuggerAccessPopup.IsOpen;
+
+    private void OnDebuggerAccessPick(object sender, RoutedEventArgs e)
+    {
+        DebuggerAccessPopup.IsOpen = false;
+        if (DataContext is ChatSessionViewModel vm
+            && sender is FrameworkElement { Tag: string tag }
+            && Enum.TryParse<VsAgentic.Services.IdeContext.DebuggerAccessLevel>(tag, out var level))
+        {
+            vm.DebuggerAccess = level;
+        }
+    }
+
     private void OnMoveToBackgroundRequested(string stepId)
     {
         if (DataContext is ChatSessionViewModel vm)

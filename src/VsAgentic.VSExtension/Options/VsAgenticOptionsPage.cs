@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Runtime.InteropServices;
 using Microsoft.VisualStudio.Shell;
 using VsAgentic.Services.Configuration;
+using VsAgentic.Services.IdeContext;
 
 namespace VsAgentic.VSExtension.Options;
 
@@ -138,6 +139,14 @@ public class VsAgenticOptionsPage : DialogPage
     [Description("Offer the file open in the editor, and the lines selected in it, as a faded chip above the chat input. Nothing is sent until you click the chip; it then goes out with the next message like an attached file. Selected text is sent as well, so unsaved changes reach Claude too.")]
     [DefaultValue(true)]
     public bool SuggestEditorContext { get; set; } = true;
+
+    [Category("Debugger")]
+    [DisplayName("Let Claude read the debugger")]
+    // Short enough for the three lines the Options pane shows. The Debugger
+    // button's menu explains the levels with examples.
+    [Description("Off (default): nothing. WhereItStopped: line, call stack, exception type, never your data; for real data. WhereItStoppedAndValues: also variables, after you click Allow; for test data.")]
+    [DefaultValue(DebuggerAccessLevel.Off)]
+    public DebuggerAccessLevel DebuggerAccess { get; set; } = DebuggerAccessLevel.Off;
 
     [Category("Sessions")]
     [DisplayName("Keep days of activity")]

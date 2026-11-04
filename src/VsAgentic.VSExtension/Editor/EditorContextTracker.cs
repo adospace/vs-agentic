@@ -2,6 +2,7 @@ using System.IO;
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
+using Microsoft.VisualStudio.TextManager.Interop;
 using VsAgentic.Services.Abstractions;
 
 namespace VsAgentic.VSExtension.Editor;
@@ -46,25 +47,7 @@ internal sealed class EditorContextTracker : IEditorContextProvider, IVsSelectio
     {
         ThreadHelper.ThrowIfNotOnUIThread();
 
-        if (ErrorHandler.Failed(_monitorSelection.GetCurrentElementValue(
-                (uint)VSConstants.VSSELELEMID.SEID_DocumentFrame, out var value)) ||
-            value is not IVsWindowFrame frame)
-        {
-            return null;
-        }
-
-        // A new file that was never saved has a moniker but no path the CLI
-        // could open.
-        if (ErrorHandler.Failed(frame.GetProperty((int)__VSFPROPID.VSFPROPID_pszMkDocument, out var moniker)) ||
-            moniker is not string path ||
-            !Path.IsPathRooted(path))
-        {
-            return null;
-        }
-
-        // Designers and other non-text documents have no text view; a file
-        // shown only as a form says nothing useful as a path on its own.
-        if (VsShellUtilities.GetTextView(frame) is not { } view)
+        if (!TryGetActiveView(out var path, out var view))
             return null;
 
         if (ErrorHandler.Failed(view.GetSelection(out var anchorLine, out var anchorColumn, out var endLine, out var endColumn)) ||
@@ -88,6 +71,56 @@ internal sealed class EditorContextTracker : IEditorContextProvider, IVsSelectio
             return new EditorContext(path);
 
         return new EditorContext(path, firstLine + 1, lastLine + 1, text);
+    }
+
+    /// <summary>
+    /// The active text document and the caret in it, 0-based; regardless of
+    /// the option, like <see cref="ReadActive"/>.
+    /// </summary>
+    public (string Path, int Line, int Column)? ReadCaret()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        if (!TryGetActiveView(out var path, out var view) ||
+            ErrorHandler.Failed(view.GetCaretPos(out var line, out var column)))
+        {
+            return null;
+        }
+
+        return (path, line, column);
+    }
+
+    private bool TryGetActiveView(out string path, out IVsTextView view)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        path = null!;
+        view = null!;
+
+        if (ErrorHandler.Failed(_monitorSelection.GetCurrentElementValue(
+                (uint)VSConstants.VSSELELEMID.SEID_DocumentFrame, out var value)) ||
+            value is not IVsWindowFrame frame)
+        {
+            return false;
+        }
+
+        // A new file that was never saved has a moniker but no path the CLI
+        // could open.
+        if (ErrorHandler.Failed(frame.GetProperty((int)__VSFPROPID.VSFPROPID_pszMkDocument, out var moniker)) ||
+            moniker is not string documentPath ||
+            !Path.IsPathRooted(documentPath))
+        {
+            return false;
+        }
+
+        // Designers and other non-text documents have no text view; a file
+        // shown only as a form says nothing useful as a path on its own.
+        if (VsShellUtilities.GetTextView(frame) is not { } textView)
+            return false;
+
+        path = documentPath;
+        view = textView;
+        return true;
     }
 
     public int OnElementValueChanged(uint elementid, object varValueOld, object varValueNew)

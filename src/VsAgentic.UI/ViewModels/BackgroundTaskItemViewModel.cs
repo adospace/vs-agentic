@@ -34,6 +34,25 @@ public partial class BackgroundTaskItemViewModel : ObservableObject
     public bool IsShell { get; }
 
     /// <summary>
+    /// What a subagent is doing now, from the CLI's progress summary. Null
+    /// until the first one, and always for a shell command.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(DisplayText))]
+    private string? _summary;
+
+    /// <summary>The row's text: the description, then the latest summary.</summary>
+    public string DisplayText => Summary is null
+        ? "Running in background: " + Description
+        : "Running in background: " + Description + " · " + Summary;
+
+    // The row is cut to its width; the tooltip has room for the whole line.
+    partial void OnSummaryChanged(string? value)
+    {
+        if (!IsShell) ToolTipText = value is null ? Description : Description + "\n\n" + value;
+    }
+
+    /// <summary>
     /// The description, and for a shell command the last lines it wrote, as
     /// of the last time the tooltip opened.
     /// </summary>

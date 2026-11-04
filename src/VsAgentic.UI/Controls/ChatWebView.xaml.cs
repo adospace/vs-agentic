@@ -598,6 +598,16 @@ public partial class ChatWebView : UserControl
             $"setCanMoveToBackground({JsonSerializer.Serialize(id)})");
     }
 
+    /// <summary>
+    /// Shows what the subagent of an Agent step is doing now. The page drops
+    /// the line when the subagent ends.
+    /// </summary>
+    public Task SetStepProgressAsync(string id, string summary)
+    {
+        return ExecuteOrQueueAsync(
+            $"setStepProgress({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(summary)})");
+    }
+
     public Task SetBodyAsync(string id, string body, OutputBodyMode bodyMode)
     {
         return ExecuteOrQueueAsync(

@@ -138,6 +138,9 @@ public partial class ChatSessionControl : UserControl
         viewModel.MessageCanMoveToBackground += (id) =>
             _ = ChatWebView.SetCanMoveToBackgroundAsync(id);
 
+        viewModel.MessageProgressSummarySet += (id, summary) =>
+            _ = ChatWebView.SetStepProgressAsync(id, summary);
+
         viewModel.MessageCompleted += (id) =>
             _ = ChatWebView.CompleteMessageAsync(id);
 

@@ -1399,7 +1399,7 @@
                                     </EventTrigger>
                                 </Ellipse.Triggers>
                             </Ellipse>
-                            <TextBlock Text="{Binding Description, StringFormat='Running in background: {0}'}"
+                            <TextBlock Text="{Binding DisplayText}"
                                        VerticalAlignment="Center"
                                        TextTrimming="CharacterEllipsis"
                                        FontSize="12"

@@ -333,6 +333,18 @@ html, body {
 .toolstep-bg-Stopped { color: var(--text-muted); }
 @keyframes bg-pulse { 50% { opacity: 0.45; } }
 
+/* What a running subagent is doing now (the CLI's progress summary). Takes the
+   rest of the header and is cut there, so a long one never wraps. */
+.toolstep-progress {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
 /* "Run in background" on a step whose command or subagent still holds the
    turn. Shaped like the mark it turns into. */
 .toolstep-bgbtn {
@@ -1665,7 +1677,11 @@ function updateStatus(id, status, expanderTitle) {
         var et = el.querySelector('.msg-expander-title');
         if (et) et.textContent = expanderTitle;
     }
-    if (status !== 'Pending') removeMoveToBackground(id);
+    if (status !== 'Pending') {
+        removeMoveToBackground(id);
+        // A subagent sent to the background goes on after its step is done.
+        if (!el.querySelector('.toolstep-header .toolstep-bg-Running')) removeStepProgress(el);
+    }
 
     if (el._subagentGroup) refreshSubagentGroup(el._subagentGroup);
 
@@ -1701,11 +1717,49 @@ function setBackgroundState(id, state, summary) {
     var badge = header.querySelector('.toolstep-bg');
     if (!badge) {
         badge = document.createElement('span');
-        header.appendChild(badge);
+        header.insertBefore(badge, header.querySelector('.toolstep-progress'));
     }
     badge.className = 'toolstep-bg toolstep-bg-' + state;
     badge.textContent = BG_LABELS[state] || state;
     badge.title = summary || '';
+    if (state !== 'Running') removeStepProgress(el);
+}
+
+// What a running subagent is doing now, from the CLI's summary (about every
+// 30 seconds): on its Agent step, and on the folded row while that step is the
+// latest in it, since the row is all the user sees then. Only while the
+// subagent runs: a done step drops the line, and a late one is ignored.
+function setStepProgress(id, text) {
+    var el = document.getElementById('msg-' + id);
+    if (!el || !text) return;
+    var header = el.querySelector('.toolstep-header');
+    if (!header) return;
+    if (el.dataset.status !== 'Pending' && !header.querySelector('.toolstep-bg-Running')) return;
+
+    var line = header.querySelector('.toolstep-progress');
+    if (!line) {
+        line = document.createElement('span');
+        line.className = 'toolstep-progress';
+        header.appendChild(line);
+    }
+    line.textContent = text;
+    line.title = text;
+
+    var group = el.closest('.activity');
+    if (group && group.classList.contains('running')
+        && group.querySelector('.activity-items').lastElementChild === el)
+        setActivityDetail(group, text);
+}
+
+function removeStepProgress(el) {
+    var line = el.querySelector('.toolstep-header .toolstep-progress');
+    if (!line) return;
+    line.remove();
+
+    // The row may still show it, if nothing came after the step.
+    var group = el.closest('.activity');
+    var detail = group && group.querySelector('.activity-detail');
+    if (detail && detail.textContent === ' · ' + line.textContent) setActivityDetail(group, '');
 }
 
 // Offers "Run in background" on a step whose command or subagent holds the

@@ -329,6 +329,17 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     {
         if (!_host.IsRunning || turn.Ended.Task.IsCompleted) return;
 
+        // The CLI reads nothing while a start-up hook runs: the interrupt
+        // would wait behind the hook, and the message after it would then
+        // run anyway. Nothing has run yet, so ending the process loses
+        // nothing; the next message starts a new one.
+        if (_control.HooksRunning)
+        {
+            _logger.LogInformation("[ClaudeCli] Stop during a start-up hook; stopping the CLI");
+            StopProcess();
+            return;
+        }
+
         Task<bool> request;
         lock (_activeTurnLock)
         {
@@ -360,6 +371,14 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (!reply.Succeeded)
             _logger.LogWarning("[ClaudeCli] interrupt failed: {Error}", reply.Error);
         return reply.Succeeded;
+    }
+
+    // Quietly: the dispatcher ends the open turn without an error of its own.
+    // The next message starts a new process.
+    private void StopProcess()
+    {
+        _host.Stop();
+        lock (_dispatcherLock) { _dispatcherTask = null; }
     }
 
     // The CLI writes the interrupted turn's result right after its answer to
@@ -543,6 +562,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 RaiseStepBackgroundStateChanged(stepId, BackgroundStepState.Stopped, "Ended with the Claude CLI process.", null);
 
             EndSubagents(includeBackground: true);
+            EndRunningHooks(control, exit != null ? "ended with the Claude CLI process" : "stopped");
 
             // So is any answer it still owed us. Only this process's channel:
             // a new process may already be running with requests of its own.
@@ -569,9 +589,31 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             _ = SendFastModeAsync(true);
     }
 
+    // Longer than other requests: nothing waits for this answer, and the
+    // models, the commands and the account come only from it. A cold start
+    // under load has taken 11 s with no hook at all (2. 11. 2026), and the
+    // answer that came a second after the old 10 s limit was dropped.
+    private static readonly TimeSpan InitializeTimeout = TimeSpan.FromSeconds(60);
+
     private async Task InitializeProcessAsync()
     {
-        var reply = await _control.SendAsync(StreamJsonProtocol.BuildInitialize).ConfigureAwait(false);
+        var control = _control;
+        var reply = await control.SendAsync(StreamJsonProtocol.BuildInitialize, InitializeTimeout).ConfigureAwait(false);
+        if (reply.Error == CliControlChannel.HookWaitExceeded)
+        {
+            // The CLI reads the message only after its start-up hooks, so
+            // the turn would never start. End the process rather than leave
+            // the chat busy for good.
+            _logger.LogWarning("[ClaudeCli] Start-up hooks still running after {Minutes} min; stopping the CLI",
+                CliControlChannel.MaxHookWait.TotalMinutes);
+            if (_control != control) return;
+            EmitError("Claude Code did not start",
+                $"Its start-up hooks were still running after {CliControlChannel.MaxHookWait.TotalMinutes:0} minutes, so the CLI was stopped. "
+                + "Check the SessionStart and Setup hooks in your Claude Code settings.");
+            StopProcess();
+            return;
+        }
+
         if (!reply.Succeeded || reply.Response is not { } body)
         {
             // Not fatal: the turn runs the same without the answer, and
@@ -868,6 +910,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         switch (CliProcessInfo.ReadString(evt, "subtype"))
         {
             case "init":
+                // A start-up hook with no end yet runs on without the CLI
+                // waiting for it (an async hook): it holds up nothing now.
+                EndRunningHooks(_control, "still runs in the background");
+                _control.EndStartup();
                 HandleInit(CliInitEvent.Read(evt));
                 return;
 
@@ -918,6 +964,18 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
             case "task_notification":
                 HandleTaskNotification(evt);
+                return;
+
+            case "hook_started":
+                HandleHookStarted(evt);
+                return;
+
+            case "hook_progress":
+                HandleHookProgress(evt);
+                return;
+
+            case "hook_response":
+                HandleHookResponse(evt);
                 return;
         }
     }
@@ -1448,6 +1506,207 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         };
         _outputListener.OnStepStarted(item);
         _outputListener.OnStepCompleted(item);
+    }
+
+    // ── Start-up hooks ────────────────────────────────────────────────────
+    // The user's SessionStart and Setup hooks run before the CLI reads the
+    // first message, and the CLI answers no control request until they end.
+    // It reports them with hook_started, hook_progress and hook_response, also
+    // without --include-hook-events. Without a line for them, a slow hook
+    // looks like a hang. Only hooks before the process's first system/init
+    // count: SessionStart also runs after a compaction.
+
+    // A hook that ends within this time gets no line: a quick hook on every
+    // start would only add noise. A failed one always gets a line.
+    private static readonly TimeSpan HookLineDelay = TimeSpan.FromSeconds(1);
+
+    private sealed class RunningHook
+    {
+        public RunningHook(string id, string name, CliControlChannel control)
+        {
+            Id = id;
+            Name = name;
+            Control = control;
+        }
+
+        public string Id { get; }
+        public string Name { get; }
+        public CliControlChannel Control { get; }
+        public DateTime StartedAt { get; } = DateTime.UtcNow;
+        public string? LastLine { get; set; }
+        public OutputItem? Item { get; set; }
+    }
+
+    // By hook id. Guarded by itself.
+    private readonly Dictionary<string, RunningHook> _hooks = new Dictionary<string, RunningHook>(StringComparer.Ordinal);
+
+    private static bool IsStartupHook(JsonElement evt) =>
+        CliProcessInfo.ReadString(evt, "hook_event") is "SessionStart" or "Setup";
+
+    private void HandleHookStarted(JsonElement evt)
+    {
+        var id = CliProcessInfo.ReadString(evt, "hook_id");
+        var control = _control;
+        if (id is null || !IsStartupHook(evt) || control.StartupEnded) return;
+
+        var name = CliProcessInfo.ReadString(evt, "hook_name") ?? CliProcessInfo.ReadString(evt, "hook_event")!;
+        var hook = new RunningHook(id, name, control);
+        lock (_hooks) { _hooks[id] = hook; }
+        control.HookStarted(id);
+        _logger.LogInformation("[ClaudeCli] Start-up hook {Name} started", name);
+
+        _ = Task.Delay(HookLineDelay).ContinueWith(_ => ShowHookLine(hook), TaskScheduler.Default);
+    }
+
+    // The line is opened, retitled and closed under _hooks: the timer that
+    // opens it and the dispatcher that closes it run on different threads,
+    // and the listener must see the start before the end. The listener only
+    // queues the change for the UI thread, so holding the lock costs nothing.
+    private void ShowHookLine(RunningHook hook)
+    {
+        try
+        {
+            lock (_hooks)
+            {
+                if (hook.Item != null || !_hooks.TryGetValue(hook.Id, out var current) || current != hook) return;
+                OpenHookLine(hook, RunningHookTitle(hook));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[ClaudeCli] Start-up hook line failed");
+        }
+    }
+
+    // Called under _hooks.
+    private void OpenHookLine(RunningHook hook, string title)
+    {
+        var turn = ActiveTurn();
+        if (turn != null) CloseStreamedBlocks(turn);
+
+        hook.Item = new OutputItem
+        {
+            Id = Guid.NewGuid().ToString("N"),
+            ToolName = SessionLineSteps.Hook,
+            Title = title,
+            Status = OutputItemStatus.Pending
+        };
+        _outputListener.OnStepStarted(hook.Item);
+    }
+
+    /// <summary>
+    /// Each progress event carries the hook's whole output so far, not the
+    /// new part. Only its last line is shown; the history is not kept.
+    /// </summary>
+    private void HandleHookProgress(JsonElement evt)
+    {
+        var id = CliProcessInfo.ReadString(evt, "hook_id");
+        if (id is null) return;
+
+        lock (_hooks)
+        {
+            if (!_hooks.TryGetValue(id, out var hook)) return;
+            hook.LastLine = LastLine(CliProcessInfo.ReadString(evt, "output") ?? CliProcessInfo.ReadString(evt, "stdout"));
+            if (hook.Item is not { } item) return;
+            item.Title = RunningHookTitle(hook);
+            _outputListener.OnStepUpdated(item);
+        }
+    }
+
+    private void HandleHookResponse(JsonElement evt)
+    {
+        var id = CliProcessInfo.ReadString(evt, "hook_id");
+        if (id is null) return;
+
+        var outcome = CliProcessInfo.ReadString(evt, "outcome");
+        var exitCode = ReadInt(evt, "exit_code");
+        var failed = outcome is not null and not "success";
+
+        RunningHook? hook;
+        lock (_hooks)
+        {
+            if (!_hooks.TryGetValue(id, out hook)) return;
+            _hooks.Remove(id);
+
+            var seconds = (int)Math.Max(1, Math.Round((DateTime.UtcNow - hook.StartedAt).TotalSeconds));
+            _logger.LogInformation("[ClaudeCli] Start-up hook {Name} ended after {Seconds} s: {Outcome}, exit code {Code}",
+                hook.Name, seconds, outcome, exitCode);
+
+            // A quick hook that went well leaves no line.
+            if (hook.Item != null || failed)
+            {
+                var title = failed
+                    ? $"Start-up hook {hook.Name} failed ({outcome}{(exitCode is { } c ? $", exit code {c}" : "")})"
+                    : $"Start-up hook {hook.Name} ran for {seconds} s";
+                if (hook.Item == null) OpenHookLine(hook, title);
+
+                var item = hook.Item!;
+                item.Title = title;
+                item.Status = failed ? OutputItemStatus.Error : OutputItemStatus.Success;
+                if (failed)
+                {
+                    // As code: the body is markdown, and a script's *, _, #
+                    // and <…> would otherwise be read as formatting.
+                    var stderr = CliProcessInfo.ReadString(evt, "stderr");
+                    var tail = Tail(string.IsNullOrWhiteSpace(stderr) ? CliProcessInfo.ReadString(evt, "output") : stderr);
+                    item.Body = tail is null ? null : MarkdownText.CodeBlock(tail);
+                }
+                _outputListener.OnStepCompleted(item);
+            }
+        }
+
+        // Last: a request that waits for the answer goes on from here.
+        hook.Control.HookEnded(id);
+    }
+
+    /// <summary>
+    /// Closes the lines of hooks that never reported an end: the process
+    /// ended or was stopped while they ran, or it sent <c>system/init</c>
+    /// without waiting for them. A late <c>hook_response</c> then finds no
+    /// hook and changes nothing.
+    /// </summary>
+    private void EndRunningHooks(CliControlChannel control, string why)
+    {
+        lock (_hooks)
+        {
+            foreach (var hook in _hooks.Values.Where(h => h.Control == control).ToList())
+            {
+                _hooks.Remove(hook.Id);
+                control.HookEnded(hook.Id);
+                _logger.LogInformation("[ClaudeCli] Start-up hook {Name} {Why}", hook.Name, why);
+                if (hook.Item is not { } item) continue;
+                item.Title = $"Start-up hook {hook.Name} {why}";
+                item.Status = OutputItemStatus.Info;
+                _outputListener.OnStepCompleted(item);
+            }
+        }
+    }
+
+    private static string RunningHookTitle(RunningHook hook) =>
+        string.IsNullOrEmpty(hook.LastLine)
+            ? $"Running start-up hook {hook.Name}…"
+            : $"Running start-up hook {hook.Name}… {hook.LastLine}";
+
+    private static string? LastLine(string? output)
+    {
+        if (string.IsNullOrWhiteSpace(output)) return null;
+        var lines = output!.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+        for (var i = lines.Length - 1; i >= 0; i--)
+        {
+            var line = lines[i].Trim();
+            if (line.Length == 0) continue;
+            return line.Length > 120 ? line.Substring(0, 120) + "…" : line;
+        }
+        return null;
+    }
+
+    // The end of a failed hook's output: what it said last is what explains it.
+    private static string? Tail(string? output)
+    {
+        if (string.IsNullOrWhiteSpace(output)) return null;
+        var text = output!.Trim();
+        const int max = 2000;
+        return text.Length > max ? "…" + text.Substring(text.Length - max) : text;
     }
 
     private static int? ReadInt(JsonElement obj, string name) =>

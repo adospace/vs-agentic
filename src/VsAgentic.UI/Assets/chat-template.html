@@ -965,10 +965,18 @@ function isTurnFailure(type, data) {
 }
 
 // What the CLI reports about the session rather than a step toward the answer:
-// an API retry, a compaction, a hook's message. The service reports these as
-// steps with a tool name of their own (SessionLineSteps). Each is a line in the
-// transcript, where it is read in order, not one more step in the folded row.
-var SESSION_LINE_TOOLS = ['Retry', 'Compact', 'CliMessage'];
+// an API retry, a compaction, a hook's message, a start-up hook that runs. The
+// service reports these as steps with a tool name of their own
+// (SessionLineSteps). Each is a line in the transcript, where it is read in
+// order, not one more step in the folded row.
+var SESSION_LINE_TOOLS = ['Retry', 'Compact', 'CliMessage', 'Hook'];
+
+// A start-up hook that was stopped has ended. The open circle of Info would
+// show it as still running, beside a hook that runs.
+function statusSymbol(toolName, status) {
+    if (toolName === 'Hook' && status === 'Info') return '●';
+    return STATUS_SYMBOLS[status] || STATUS_SYMBOLS.Pending;
+}
 
 function isSessionLine(type, data) {
     return type === 'ToolStep' && SESSION_LINE_TOOLS.indexOf(data.ToolName) >= 0;
@@ -1414,13 +1422,14 @@ function addMessage(id, type, dataJson) {
     }
     else if (isSessionLine(type, data)) {
         div.classList.add('msg-session-line');
+        div.dataset.tool = data.ToolName || '';
         if (data.ToolName === 'Compact') div.classList.add('session-line-divider');
         var header = document.createElement('div');
         header.className = 'session-line-header';
         var statusSpan = document.createElement('span');
         statusSpan.className = 'msg-status';
         statusSpan.style.color = STATUS_COLORS[data.Status] || STATUS_COLORS.Pending;
-        statusSpan.textContent = STATUS_SYMBOLS[data.Status] || STATUS_SYMBOLS.Pending;
+        statusSpan.textContent = statusSymbol(data.ToolName, data.Status);
         // The title is the message. Text, not markup: it is the CLI's or a
         // hook's own words.
         var title = document.createElement('span');
@@ -1673,7 +1682,7 @@ function updateStatus(id, status, expanderTitle) {
     el.dataset.status = status;
     var st = el.querySelector('.msg-status');
     if (st) {
-        st.textContent = STATUS_SYMBOLS[status] || STATUS_SYMBOLS.Pending;
+        st.textContent = statusSymbol(el.dataset.tool, status);
         st.style.color = STATUS_COLORS[status] || STATUS_COLORS.Pending;
     }
     if (expanderTitle) {

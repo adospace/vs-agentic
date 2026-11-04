@@ -1,3 +1,4 @@
+using System;
 using System.Text;
 
 namespace VsAgentic.Services.Services;
@@ -35,5 +36,24 @@ public static class MarkdownText
             }
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Puts text in a fenced code block, so that it shows exactly as written,
+    /// line breaks included. The fence is longer than the longest run of
+    /// backticks in the text, so no line in it can close the block.
+    /// </summary>
+    public static string CodeBlock(string text)
+    {
+        var longest = 0;
+        var run = 0;
+        foreach (var c in text)
+        {
+            run = c == '`' ? run + 1 : 0;
+            if (run > longest) longest = run;
+        }
+
+        var fence = new string('`', Math.Max(3, longest + 1));
+        return fence + "\n" + text.Replace("\r\n", "\n") + "\n" + fence;
     }
 }

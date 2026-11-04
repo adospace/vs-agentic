@@ -397,11 +397,14 @@ public static class PermissionRuleBuilder
             return head + ":*";
 
         // git log --oneline -5 keys on "git log", but only for a subcommand on
-        // a short list of ones that read or build and have no flag that runs
-        // a program. Every other subcommand gets the command as written: the
-        // subcommands that run code (git grep -O, go env -w, dotnet run, cargo
-        // run, docker container …) are no list that is ever complete, so the
-        // list goes the other way.
+        // a short list of ones that only read and have no flag that runs a
+        // program or changes state. The rule matches every later call with
+        // that prefix, flags the user never saw included, so a build or
+        // install is not on it (go build -toolexec, dotnet build
+        // -p:CscToolExe, npm install --script-shell). Every other subcommand
+        // gets the command as written: the subcommands that run code (git grep
+        // -O, go env -w, dotnet run, cargo run, docker container …) are no
+        // list that is ever complete, so the list goes the other way.
         //
         // One subcommand, not two: two looks right on gh issue list but
         // misreads git ls-tree main, where the second word is a branch name and
@@ -700,7 +703,7 @@ public static class PermissionRuleBuilder
     /// <summary>
     /// Subcommands that make an ordinary tool a runner: <c>npm exec x</c> runs
     /// whatever x is, just as <c>npx x</c> does. Keyed on the program name and
-    /// the subcommand, so <c>npm install</c> still gets <c>npm install:*</c>.
+    /// the subcommand, so <c>npm ls</c> still gets <c>npm ls:*</c>.
     /// </summary>
     private static readonly HashSet<string> RunnerSubcommands = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -713,8 +716,15 @@ public static class PermissionRuleBuilder
 
     /// <summary>
     /// The only subcommands that get a prefix rule (<c>git log:*</c>): ones
-    /// that read or build, and have no flag that runs a program other than the
-    /// ones <see cref="HasCodeRunningFlag"/> refuses. Any other subcommand, and
+    /// where no flag runs a program or changes state. The rule matches every
+    /// later call with the prefix, whatever flags it has, so checking the
+    /// approved command for <see cref="CodeRunningFlags"/> is not enough. That
+    /// keeps builds and installs off the list (<c>go build -toolexec</c>,
+    /// <c>go vet -vettool</c>, <c>cargo build --config
+    /// build.rustc-wrapper=…</c>, <c>npm install --script-shell</c>,
+    /// <c>dotnet build -p:CscToolExe=…</c>), and <c>git branch</c>
+    /// (<c>-D</c>, <c>-f</c>). One known leftover: git log, show and diff
+    /// <c>--output=&lt;file&gt;</c> write a file. Any other subcommand, and
     /// the second word of any other program, gets the command as written: it
     /// can be a path to delete (<c>rm old</c>), a file to write
     /// (<c>tee log</c>), a program to run (<c>poetry run</c>,
@@ -723,11 +733,8 @@ public static class PermissionRuleBuilder
     /// </summary>
     private static readonly HashSet<string> PrefixSubcommands = new(StringComparer.OrdinalIgnoreCase)
     {
-        "git status", "git log", "git diff", "git show", "git branch", "git ls-files",
-        "dotnet build", "dotnet restore", "dotnet test",
-        "npm install", "npm ls",
-        "cargo build", "cargo check", "cargo test",
-        "go build", "go vet",
+        "git status", "git log", "git diff", "git show", "git ls-files",
+        "npm ls",
         "docker ps", "docker images",
         "kubectl get", "kubectl describe", "kubectl logs",
     };

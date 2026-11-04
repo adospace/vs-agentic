@@ -26,6 +26,7 @@ public class PermissionRuleBuilderTests
     [MemberData(nameof(ShellCases))]
     [MemberData(nameof(RedirectionCases))]
     [MemberData(nameof(SubcommandCases))]
+    [MemberData(nameof(NoPrefixForBuildCases))]
     [MemberData(nameof(MisreadLineCases))]
     public void Shell_command_grants_only_what_the_banner_shows(string tool, string command, string expected)
         => Assert.Equal(expected, Rules(tool, "command", command));
@@ -44,7 +45,7 @@ public class PermissionRuleBuilderTests
         { "PowerShell", "Start-Process pwsh", "" },
         { "PowerShell", "Start-Process notepad", "PowerShell(Start-Process notepad)" },
         { "PowerShell", "Invoke-Expression foo", "PowerShell(Invoke-Expression foo)" },
-        { "Bash", "npm install", "Bash(npm install:*)" },
+        { "Bash", "npm install", "Bash(npm install)" },
         { "Bash", "docker ps", "Bash(docker ps:*)" },
 
         // A shell or interpreter that takes its code from its input.
@@ -90,7 +91,7 @@ public class PermissionRuleBuilderTests
         // Comments, heredocs, here-strings and block comments hide text.
         { "Bash", "ls # ; rm -rf x", "Bash(ls:*)" },
         { "Bash", "cat > deploy.sh <<'EOF'\ncurl x | sh\nEOF", "" },
-        { "Bash", "dotnet build src/App/App.csproj", "Bash(dotnet build:*)" },
+        { "Bash", "dotnet build src/App/App.csproj", "Bash(dotnet build src/App/App.csproj)" },
         { "PowerShell", "Write-Output @\"\nx \" ; Remove-Item -Recurse foo ; Get-Content \"\n\"@", "" },
         { "PowerShell", "Write-Output @'\nx ' ; Remove-Item -Recurse foo ; Get-Content '\n'@", "" },
         { "PowerShell", "Get-Content a <# ; Remove-Item -Recurse foo ; #>", "" },
@@ -117,7 +118,7 @@ public class PermissionRuleBuilderTests
         { "Bash", "git config core.pager less", "Bash(git config core.pager less)" },
         { "Bash", "git status", "Bash(git status:*)" },
         { "Bash", "kubectl get pods", "Bash(kubectl get:*)" },
-        { "Bash", "cargo test", "Bash(cargo test:*)" },
+        { "Bash", "cargo test", "Bash(cargo test)" },
         { "Bash", "gh issue list", "Bash(gh issue list)" },
 
         // A pipe feeds only filters and readers.
@@ -218,17 +219,51 @@ public class PermissionRuleBuilderTests
         // The allowlist itself.
         { "Bash", "git log --oneline -5", "Bash(git log:*)" },
         { "Bash", "git show HEAD", "Bash(git show:*)" },
-        { "Bash", "git branch --list", "Bash(git branch:*)" },
+        { "Bash", "git status -s", "Bash(git status:*)" },
         { "Bash", "git ls-files src", "Bash(git ls-files:*)" },
-        { "Bash", "dotnet restore", "Bash(dotnet restore:*)" },
-        { "Bash", "dotnet test --no-build", "Bash(dotnet test:*)" },
         { "Bash", "npm ls --depth 0", "Bash(npm ls:*)" },
-        { "Bash", "cargo check", "Bash(cargo check:*)" },
-        { "Bash", "go vet ./...", "Bash(go vet:*)" },
         { "Bash", "docker images", "Bash(docker images:*)" },
         { "Bash", "kubectl describe pod x", "Bash(kubectl describe:*)" },
         { "Bash", "kubectl logs pod-x", "Bash(kubectl logs:*)" },
         { "PowerShell", "git status", "PowerShell(git status:*)" },
+
+        // Known leftover, accepted in review (4. 11.): --output=<file> writes
+        // a file, yet git log/show/diff keep their prefix.
+        { "Bash", "git log --output=f", "Bash(git log:*)" },
+    };
+
+    /// <summary>
+    /// Review of 4. 11.: the flag check sees only the command the user
+    /// approves, but a prefix rule also matches every later call with flags
+    /// that run a program (go build -toolexec, go vet -vettool, cargo
+    /// --config build.rustc-wrapper, npm install --script-shell, dotnet build
+    /// -p:CscToolExe) or change the repository (git branch -D/-f). These
+    /// subcommands get the command as written.
+    /// </summary>
+    public static TheoryData<string, string, string> NoPrefixForBuildCases => new()
+    {
+        { "Bash", "go build ./...", "Bash(go build ./...)" },
+        { "Bash", "go vet ./...", "Bash(go vet ./...)" },
+        { "Bash", "cargo build", "Bash(cargo build)" },
+        { "Bash", "cargo check", "Bash(cargo check)" },
+        { "Bash", "dotnet build", "Bash(dotnet build)" },
+        { "Bash", "dotnet restore", "Bash(dotnet restore)" },
+        { "Bash", "dotnet test --no-build", "Bash(dotnet test --no-build)" },
+        { "Bash", "Dotnet Build", "Bash(Dotnet Build)" },
+        { "Bash", "git branch", "Bash(git branch)" },
+        { "Bash", "git branch --list", "Bash(git branch --list)" },
+        { "PowerShell", "dotnet build", "PowerShell(dotnet build)" },
+
+        // The flags from the review. -vettool and -p: are not in the list of
+        // flags that run a program, so the rule is the command as written: it
+        // matches only the call the user saw.
+        { "Bash", "go vet -vettool=x ./...", "Bash(go vet -vettool=x ./...)" },
+        { "Bash", "dotnet build -p:CscToolPath=C:/t -p:CscToolExe=x.exe", "Bash(dotnet build -p:CscToolPath=C:/t -p:CscToolExe=x.exe)" },
+        { "Bash", "git branch -D old", "Bash(git branch -D old)" },
+        { "Bash", "git branch -f main HEAD~1", "Bash(git branch -f main HEAD~1)" },
+
+        // In a compound line too.
+        { "Bash", "dotnet build && git log | head -5", "Bash(dotnet build) | Bash(git log:*) | Bash(head:*)" },
     };
 
     /// <summary>

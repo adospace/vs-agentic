@@ -18,11 +18,17 @@ public enum DebuggerAccessLevel
     /// <summary>Nothing. The default: the user turns access on.</summary>
     Off,
 
-    /// <summary>Where the program stopped and the call stack, without a prompt. No values.</summary>
-    StackOnly,
+    /// <summary>
+    /// Where the program stopped: the line, the call stack and the exception
+    /// type, without a prompt. No values.
+    /// </summary>
+    WhereItStopped,
 
-    /// <summary>The stack, and on request values, each request through the permission banner.</summary>
-    StackAndValues,
+    /// <summary>
+    /// Where the program stopped, and on request variables and the exception
+    /// message, each request through the permission banner.
+    /// </summary>
+    WhereItStoppedAndValues,
 }
 
 /// <summary>

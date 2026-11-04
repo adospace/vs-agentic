@@ -142,7 +142,7 @@ public class VsAgenticOptionsPage : DialogPage
 
     [Category("Debugger")]
     [DisplayName("Let Claude read the debugger")]
-    [Description("What Claude may read while you debug a program in Visual Studio. Off (the default): nothing. StackOnly: where the program stopped, why, the exception type and the call stack, without asking. StackAndValues: also the arguments and locals of a frame and the exception message; Claude asks with a banner each time, as values can hold personal data or secrets. The Debugger switch below the chat input changes this for one chat. New chats start with this setting.")]
+    [Description("What Claude may see while you debug a program. Off (the default): Claude sees nothing from the debugger. WhereItStopped: Claude sees the line, the call stack and the exception type, never your data, e.g. \"NullReferenceException at Program.cs:64\". Choose this when you debug with real customer or production data. WhereItStoppedAndValues: Claude can also ask for variables and the exception message, e.g. \"customer = null, count = 42\"; you approve each request. Choose this when you work with test data and want direct answers like \"customer is null because...\". The Debugger button below the chat input changes this for one chat. New chats start with this setting.")]
     [DefaultValue(DebuggerAccessLevel.Off)]
     public DebuggerAccessLevel DebuggerAccess { get; set; } = DebuggerAccessLevel.Off;
 

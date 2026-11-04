@@ -64,16 +64,16 @@ public partial class ChatSessionViewModel
     [NotifyPropertyChangedFor(nameof(DebuggerAccessTooltip))]
     [NotifyPropertyChangedFor(nameof(ShowDebuggerAccess))]
     [NotifyPropertyChangedFor(nameof(IsDebuggerAccessOffSelected))]
-    [NotifyPropertyChangedFor(nameof(IsDebuggerStackOnlySelected))]
-    [NotifyPropertyChangedFor(nameof(IsDebuggerStackAndValuesSelected))]
+    [NotifyPropertyChangedFor(nameof(IsDebuggerWhereItStoppedSelected))]
+    [NotifyPropertyChangedFor(nameof(IsDebuggerValuesSelected))]
     private DebuggerAccessLevel _debuggerAccess = DebuggerAccessLevel.Off;
 
     public bool IsDebuggerAccessOn => DebuggerAccess != DebuggerAccessLevel.Off;
 
     // The check marks in the switch's menu.
     public bool IsDebuggerAccessOffSelected => DebuggerAccess == DebuggerAccessLevel.Off;
-    public bool IsDebuggerStackOnlySelected => DebuggerAccess == DebuggerAccessLevel.StackOnly;
-    public bool IsDebuggerStackAndValuesSelected => DebuggerAccess == DebuggerAccessLevel.StackAndValues;
+    public bool IsDebuggerWhereItStoppedSelected => DebuggerAccess == DebuggerAccessLevel.WhereItStopped;
+    public bool IsDebuggerValuesSelected => DebuggerAccess == DebuggerAccessLevel.WhereItStoppedAndValues;
 
     public bool IsDebugging => CurrentDebuggerMode != DebuggerMode.NotDebugging;
 
@@ -90,8 +90,10 @@ public partial class ChatSessionViewModel
 
     public string DebuggerAccessLabel => DebuggerAccess switch
     {
-        DebuggerAccessLevel.StackOnly => "Debugger: stack",
-        DebuggerAccessLevel.StackAndValues => "Debugger: values",
+        // Named by what Claude sees, not by the debugger's terms: a user picks
+        // by what leaves the machine.
+        DebuggerAccessLevel.WhereItStopped => "Debugger: location",
+        DebuggerAccessLevel.WhereItStoppedAndValues => "Debugger: location + values",
         _ => "Debugger: off",
     };
 
@@ -101,13 +103,13 @@ public partial class ChatSessionViewModel
         {
             var access = DebuggerAccess switch
             {
-                DebuggerAccessLevel.StackOnly =>
-                    "Claude can read where the program stopped, why, the exception type and the call stack.\n"
-                    + "It cannot read values.",
-                DebuggerAccessLevel.StackAndValues =>
-                    "Claude can read where the program stopped, why, the exception type and the call stack.\n"
-                    + "It can ask for arguments, locals and the exception message; you allow each request.",
-                _ => "Claude cannot read anything from the debugger in this chat.",
+                DebuggerAccessLevel.WhereItStopped =>
+                    "Claude sees where the program stopped: the line, the call stack and the exception type,\n"
+                    + "e.g. \"NullReferenceException at Program.cs:64\". It never sees your data.",
+                DebuggerAccessLevel.WhereItStoppedAndValues =>
+                    "Claude sees where the program stopped, and can ask for variables and the exception message,\n"
+                    + "e.g. \"customer = null, count = 42\". You approve each request.",
+                _ => "Claude sees nothing from the debugger in this chat.",
             };
             var state = !IsDebugging ? "No program is being debugged."
                 : IsDebuggerStopped ? "The program is stopped."

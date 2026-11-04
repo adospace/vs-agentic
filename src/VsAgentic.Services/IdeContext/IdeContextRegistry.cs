@@ -89,7 +89,7 @@ public sealed class IdeContextRegistry
     public void SetDebuggerAccess(DebuggerAccessLevel level)
     {
         SetGroupEnabled(IdeToolGroups.Debugger, level != DebuggerAccessLevel.Off);
-        SetGroupEnabled(IdeToolGroups.DebuggerValues, level == DebuggerAccessLevel.StackAndValues);
+        SetGroupEnabled(IdeToolGroups.DebuggerValues, level == DebuggerAccessLevel.WhereItStoppedAndValues);
     }
 
     /// <summary>The tool behind a name as the CLI reports it (with or without the MCP prefix).</summary>

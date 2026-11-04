@@ -969,58 +969,65 @@
                                                 BorderThickness="1"
                                                 CornerRadius="4"
                                                 Padding="0,4"
-                                                MinWidth="300"
+                                                Width="340"
                                                 SnapsToDevicePixels="True"
                                                 TextElement.FontSize="11"
                                                 TextElement.Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}">
                                             <StackPanel>
-                                                <TextBlock Text="CLAUDE MAY READ THE DEBUGGER (THIS CHAT)" Style="{StaticResource PickerSectionStyle}"/>
+                                                <TextBlock Text="WHAT CLAUDE MAY SEE WHILE YOU DEBUG (THIS CHAT)" Style="{StaticResource PickerSectionStyle}"/>
                                                 <Button Style="{StaticResource PickerRowStyle}" Tag="Off" Click="OnDebuggerAccessPick"
-                                                        AutomationProperties.Name="Off">
-                                                    <Grid>
+                                                        AutomationProperties.Name="Off"
+                                                        AutomationProperties.HelpText="Claude sees nothing from the debugger.">
+                                                    <Grid Margin="0,2">
                                                         <Grid.ColumnDefinitions>
                                                             <ColumnDefinition Width="26"/>
-                                                            <ColumnDefinition Width="Auto"/>
                                                             <ColumnDefinition Width="*"/>
                                                         </Grid.ColumnDefinitions>
                                                         <TextBlock Text="✓" HorizontalAlignment="Center" FontWeight="SemiBold"
                                                                    Visibility="{Binding IsDebuggerAccessOffSelected, Converter={StaticResource BoolToVis}}"/>
-                                                        <TextBlock Grid.Column="1" Text="Off" FontSize="12"/>
-                                                        <TextBlock Grid.Column="2" Text="Nothing" Margin="8,1,8,0"
-                                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                        <StackPanel Grid.Column="1" Margin="0,0,10,0">
+                                                            <TextBlock Text="Off" FontSize="12"/>
+                                                            <TextBlock Text="Claude sees nothing from the debugger." Margin="0,1,0,0" TextWrapping="Wrap"
+                                                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                        </StackPanel>
                                                     </Grid>
-                                                </Button>
-                                                <Button Style="{StaticResource PickerRowStyle}" Tag="StackOnly" Click="OnDebuggerAccessPick"
-                                                        AutomationProperties.Name="Stack only">
-                                                    <Grid>
+                                                </Button>                                                <Button Style="{StaticResource PickerRowStyle}" Tag="WhereItStopped" Click="OnDebuggerAccessPick"
+                                                        AutomationProperties.Name="Where it stopped"
+                                                        AutomationProperties.HelpText="The line, the call stack and the exception type. Never your data.">
+                                                    <Grid Margin="0,2">
                                                         <Grid.ColumnDefinitions>
                                                             <ColumnDefinition Width="26"/>
-                                                            <ColumnDefinition Width="Auto"/>
                                                             <ColumnDefinition Width="*"/>
                                                         </Grid.ColumnDefinitions>
                                                         <TextBlock Text="✓" HorizontalAlignment="Center" FontWeight="SemiBold"
-                                                                   Visibility="{Binding IsDebuggerStackOnlySelected, Converter={StaticResource BoolToVis}}"/>
-                                                        <TextBlock Grid.Column="1" Text="Stack only" FontSize="12"/>
-                                                        <TextBlock Grid.Column="2" Text="Where it stopped and the call stack" Margin="8,1,8,0"
-                                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                                   Visibility="{Binding IsDebuggerWhereItStoppedSelected, Converter={StaticResource BoolToVis}}"/>
+                                                        <StackPanel Grid.Column="1" Margin="0,0,10,0">
+                                                            <TextBlock Text="Where it stopped" FontSize="12"/>
+                                                            <TextBlock Text="The line, the call stack and the exception type. Never your data." Margin="0,1,0,0" TextWrapping="Wrap"
+                                                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                            <TextBlock Text="NullReferenceException at Program.cs:64" FontFamily="Consolas, Cascadia Mono" Margin="0,1,0,0"
+                                                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                        </StackPanel>
                                                     </Grid>
-                                                </Button>
-                                                <Button Style="{StaticResource PickerRowStyle}" Tag="StackAndValues" Click="OnDebuggerAccessPick"
-                                                        AutomationProperties.Name="Stack and values">
-                                                    <Grid>
+                                                </Button>                                                <Button Style="{StaticResource PickerRowStyle}" Tag="WhereItStoppedAndValues" Click="OnDebuggerAccessPick"
+                                                        AutomationProperties.Name="Where it stopped and values, asks first"
+                                                        AutomationProperties.HelpText="Also variables and the exception message, after you click Allow.">
+                                                    <Grid Margin="0,2">
                                                         <Grid.ColumnDefinitions>
                                                             <ColumnDefinition Width="26"/>
-                                                            <ColumnDefinition Width="Auto"/>
                                                             <ColumnDefinition Width="*"/>
                                                         </Grid.ColumnDefinitions>
                                                         <TextBlock Text="✓" HorizontalAlignment="Center" FontWeight="SemiBold"
-                                                                   Visibility="{Binding IsDebuggerStackAndValuesSelected, Converter={StaticResource BoolToVis}}"/>
-                                                        <TextBlock Grid.Column="1" Text="Stack and values" FontSize="12"/>
-                                                        <TextBlock Grid.Column="2" Text="Values only after you allow each request" Margin="8,1,8,0"
-                                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                                   Visibility="{Binding IsDebuggerValuesSelected, Converter={StaticResource BoolToVis}}"/>
+                                                        <StackPanel Grid.Column="1" Margin="0,0,10,0">
+                                                            <TextBlock Text="Where it stopped and values, asks first" FontSize="12"/>
+                                                            <TextBlock Text="Also variables and the exception message, after you click Allow." Margin="0,1,0,0" TextWrapping="Wrap"
+                                                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                            <TextBlock Text="customer = null, count = 42" FontFamily="Consolas, Cascadia Mono" Margin="0,1,0,0"
+                                                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                        </StackPanel>
                                                     </Grid>
-                                                </Button>
-                                            </StackPanel>
+                                                </Button>                                            </StackPanel>
                                         </Border>
                                     </Popup>
 

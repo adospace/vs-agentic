@@ -734,13 +734,16 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         sb.AppendLine(byFile.Count == 1
             ? "Claude Code ignores this settings file because it has errors:"
             : "Claude Code ignores these settings files because they have errors:");
-        sb.AppendLine();
+        // The chat's markdown does not nest lists, so each file is a line of
+        // its own with its errors listed below it.
         foreach (var file in byFile)
         {
-            sb.Append("- `").Append(file.Key).AppendLine("`");
+            sb.AppendLine();
+            sb.Append('`').Append(file.Key).AppendLine("`");
+            sb.AppendLine();
             foreach (var e in file)
             {
-                sb.Append("  - ");
+                sb.Append("- ");
                 if (e.Path.Length > 0)
                     sb.Append('`').Append(e.Path).Append("`: ");
                 sb.AppendLine(MarkdownText.Escape(e.Message));

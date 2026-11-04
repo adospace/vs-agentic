@@ -910,6 +910,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         switch (CliProcessInfo.ReadString(evt, "subtype"))
         {
             case "init":
+                // A start-up hook with no end yet runs on without the CLI
+                // waiting for it (an async hook): it holds up nothing now.
+                EndRunningHooks(_control, "still runs in the background");
                 _control.EndStartup();
                 HandleInit(CliInitEvent.Read(evt));
                 return;
@@ -1655,7 +1658,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     /// <summary>
     /// Closes the lines of hooks that never reported an end: the process
-    /// ended or was stopped while they ran.
+    /// ended or was stopped while they ran, or it sent <c>system/init</c>
+    /// without waiting for them. A late <c>hook_response</c> then finds no
+    /// hook and changes nothing.
     /// </summary>
     private void EndRunningHooks(CliControlChannel control, string why)
     {
@@ -1665,6 +1670,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             {
                 _hooks.Remove(hook.Id);
                 control.HookEnded(hook.Id);
+                _logger.LogInformation("[ClaudeCli] Start-up hook {Name} {Why}", hook.Name, why);
                 if (hook.Item is not { } item) continue;
                 item.Title = $"Start-up hook {hook.Name} {why}";
                 item.Status = OutputItemStatus.Info;

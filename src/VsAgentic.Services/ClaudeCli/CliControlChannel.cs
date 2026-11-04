@@ -118,7 +118,21 @@ internal sealed class CliControlChannel
     /// </summary>
     public bool StartupEnded { get; private set; }
 
-    public void EndStartup() => StartupEnded = true;
+    /// <summary>
+    /// The first <c>system/init</c> has arrived. A start-up hook that has not
+    /// reported its end by then (an async hook, say) no longer holds up the
+    /// CLI, so it stops counting: a request's timeout starts again in full.
+    /// </summary>
+    public void EndStartup()
+    {
+        StartupEnded = true;
+        ChangeHooks(() =>
+        {
+            if (_hooks.Count == 0) return false;
+            _hooks.Clear();
+            return true;
+        });
+    }
 
     /// <summary>A SessionStart or Setup hook has started.</summary>
     public void HookStarted(string hookId) => ChangeHooks(() => _hooks.Add(hookId));

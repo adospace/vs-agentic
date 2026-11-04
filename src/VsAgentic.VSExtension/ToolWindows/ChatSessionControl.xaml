@@ -730,7 +730,85 @@
                                     </ListBox>
                                 </Border>
                             </Popup>
-                            <TextBlock Text="Type your message, CTRL+Enter to send, @ to insert"
+                            <!-- "/" at the start of the input: the commands and
+                                 skills the CLI reported, filtered as the user
+                                 types. Same keys and look as the @ list. -->
+                            <Popup x:Name="SlashPopup"
+                                   PlacementTarget="{Binding ElementName=InputTextBox}"
+                                   Placement="Top"
+                                   StaysOpen="True"
+                                   AllowsTransparency="True"
+                                   PopupAnimation="Fade"
+                                   Focusable="False">
+                                <Border Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
+                                        BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        MinWidth="320"
+                                        MaxWidth="620"
+                                        SnapsToDevicePixels="True">
+                                    <StackPanel>
+                                        <!-- Before any CLI has answered there is no
+                                             list to show. -->
+                                        <TextBlock x:Name="SlashHint"
+                                                   Margin="10,6"
+                                                   FontSize="12"
+                                                   TextWrapping="Wrap"
+                                                   Text="Claude Code lists its commands once it has answered a first message."
+                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                        <ListBox x:Name="SlashList"
+                                                 MaxHeight="300"
+                                                 Background="Transparent"
+                                                 BorderThickness="0"
+                                                 Focusable="False"
+                                                 ItemContainerStyle="{StaticResource MentionItemStyle}"
+                                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                                 PreviewMouseLeftButtonDown="SlashList_PreviewMouseLeftButtonDown">
+                                            <ListBox.GroupStyle>
+                                                <GroupStyle>
+                                                    <GroupStyle.HeaderTemplate>
+                                                        <DataTemplate>
+                                                            <TextBlock Text="{Binding Name}"
+                                                                       Margin="6,6,6,2"
+                                                                       FontSize="10"
+                                                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                        </DataTemplate>
+                                                    </GroupStyle.HeaderTemplate>
+                                                </GroupStyle>
+                                            </ListBox.GroupStyle>
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Grid ToolTip="{StaticResource RowDescriptionTip}">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                            <ColumnDefinition Width="Auto"/>
+                                                            <ColumnDefinition Width="*"/>
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Grid.Column="0"
+                                                                   Text="{Binding Display}"
+                                                                   FontSize="12"
+                                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                                                        <TextBlock Grid.Column="1"
+                                                                   Text="{Binding ArgumentHint}"
+                                                                   Margin="6,1,0,0"
+                                                                   MaxWidth="200"
+                                                                   FontSize="11"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                        <TextBlock Grid.Column="2"
+                                                                   Text="{Binding Description}"
+                                                                   Margin="10,1,0,0"
+                                                                   FontSize="11"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+                                    </StackPanel>
+                                </Border>
+                            </Popup>
+                            <TextBlock Text="Type your message, CTRL+Enter to send, / for commands, @ to insert"
                                        Margin="11,6,0,0"
                                        VerticalAlignment="Top"
                                        IsHitTestVisible="False"
@@ -834,6 +912,19 @@
                                      paperclip attaches a file from anywhere, and an
                                      image attached this way travels inline. -->
                                 <StackPanel Grid.Column="0" Orientation="Horizontal">
+                                    <!-- Commands and skills: the same menu as typing
+                                         "/" at the start of the input, for whoever
+                                         does not know there are any. -->
+                                    <Button x:Name="SlashCommandButton"
+                                            Style="{StaticResource IconButtonStyle}"
+                                            Click="SlashCommandButton_Click"
+                                            ToolTip="Commands and skills (/)">
+                                        <TextBlock Text="/"
+                                                   FontSize="13"
+                                                   FontWeight="Bold"
+                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                                    </Button>
+
                                     <!-- @-mention attach button: opens the file/folder picker popup -->
                                     <Button x:Name="AtMentionButton"
                                             Style="{StaticResource IconButtonStyle}"

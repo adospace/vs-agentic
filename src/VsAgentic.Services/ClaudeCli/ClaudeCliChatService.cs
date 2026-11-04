@@ -701,6 +701,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     private void StartTurn(TurnState turn)
     {
         turn.Started = true;
+        turn.LastEventAt = DateTime.UtcNow;
 
         TurnState? cliTurn;
         lock (_activeTurnLock) { cliTurn = _cliTurn; }
@@ -1802,6 +1803,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                     break;
             }
         }
+        stream.LastEventAt = DateTime.UtcNow;
     }
 
     private void HandleThinkingBlock(StepStream turn, JsonElement block)
@@ -1814,7 +1816,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
         if (turn.ThinkingItem == null)
         {
-            turn.ThinkingStartTime = DateTime.UtcNow;
+            turn.ThinkingStartTime = turn.LastEventAt;
             turn.ThinkingItem = new OutputItem
             {
                 Id = Guid.NewGuid().ToString("N"),
@@ -1981,12 +1983,15 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (!known) return;
         if (subagent is not null)
         {
+            // A tool result is where the model picks up again.
+            subagent.LastEventAt = DateTime.UtcNow;
             HandleSubagentToolResults(subagent, evt);
             return;
         }
 
         var turn = RunningTurn();
         if (turn == null) return;
+        turn.LastEventAt = DateTime.UtcNow;
 
         if (!evt.TryGetProperty("message", out var msg)) return;
         if (!msg.TryGetProperty("content", out var contentArr)) return;
@@ -3450,6 +3455,12 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         public OutputItem? ThinkingItem;
         public StringBuilder ThinkingBuilder = new StringBuilder();
         public DateTime? ThinkingStartTime;
+
+        // When this conversation started or last heard from the CLI. The
+        // model works from then until its next message. A thinking block
+        // arrives whole once the thinking is done, with the reply a few
+        // milliseconds behind it, so it is timed from here.
+        public DateTime LastEventAt = DateTime.UtcNow;
 
         public OutputItem? ResponseItem;
         public StringBuilder ResponseBuilder = new StringBuilder();

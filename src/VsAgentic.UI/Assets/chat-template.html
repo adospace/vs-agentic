@@ -960,10 +960,11 @@ function isTurnFailure(type, data) {
 }
 
 // What the CLI reports about the session rather than a step toward the answer:
-// an API retry, a compaction, a hook's message. The service reports these as
-// steps with a tool name of their own (SessionLineSteps). Each is a line in the
-// transcript, where it is read in order, not one more step in the folded row.
-var SESSION_LINE_TOOLS = ['Retry', 'Compact', 'CliMessage'];
+// an API retry, a compaction, a hook's message, a start-up hook that runs. The
+// service reports these as steps with a tool name of their own
+// (SessionLineSteps). Each is a line in the transcript, where it is read in
+// order, not one more step in the folded row.
+var SESSION_LINE_TOOLS = ['Retry', 'Compact', 'CliMessage', 'Hook'];
 
 function isSessionLine(type, data) {
     return type === 'ToolStep' && SESSION_LINE_TOOLS.indexOf(data.ToolName) >= 0;

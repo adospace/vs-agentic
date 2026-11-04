@@ -15,6 +15,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.VisualStudio.ComponentModelHost;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
+using Microsoft.VisualStudio.Shell.TableManager;
 using Serilog;
 using VsAgentic.Services.Configuration;
 using VsAgentic.Services.IdeContext;
@@ -54,6 +55,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
     // Shared by every chat: each one's MCP server offers these providers' tools.
     private readonly List<IIdeContextProvider> _ideContextProviders = new();
+    private ErrorListReader? _errorList;
 
     // For "Add to VsAgentic Chat": the open chat windows, the one the user was
     // in last, and an editor context waiting for a window still being opened.
@@ -114,6 +116,24 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             _editorContext = new EditorContextTracker(
                 monitorSelection, () => editorOptions?.SuggestEditorContext ?? true);
             _ideContextProviders.Add(new EditorIdeContextProvider(_editorContext));
+        }
+
+        // Subscribed now rather than on Claude's first question: a source
+        // hands over its entries when it is subscribed, and the first call
+        // should not find the list still filling.
+        try
+        {
+            if (await GetServiceAsync(typeof(SComponentModel)) is IComponentModel componentModel &&
+                componentModel.GetService<ITableManagerProvider>() is { } tableManagerProvider)
+            {
+                _errorList = new ErrorListReader(tableManagerProvider.GetTableManager(StandardTables.ErrorsTable));
+                _ideContextProviders.Add(new DiagnosticsIdeContextProvider(_errorList, _editorContext));
+            }
+        }
+        catch (Exception ex)
+        {
+            // Claude then has no get_diagnostics; everything else works.
+            System.Diagnostics.Debug.WriteLine($"VsAgentic: Could not read the Error List: {ex}");
         }
 
         try
@@ -934,6 +954,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
             _editorContext?.Dispose();
             _editorContext = null;
+
+            _errorList?.Dispose();
+            _errorList = null;
 
             if (_persistZoom is not null)
             {

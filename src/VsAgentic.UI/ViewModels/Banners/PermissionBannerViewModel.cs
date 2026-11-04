@@ -1,12 +1,13 @@
 using System;
 using System.Text.Json;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using VsAgentic.Services.ClaudeCli.Permissions;
 
 namespace VsAgentic.UI.ViewModels.Banners;
 
-public partial class PermissionBannerViewModel : ObservableObject, IBannerViewModel
+public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
 {
     private readonly PermissionRequest _request;
     private readonly Action<PermissionDecision> _onResolved;
@@ -16,7 +17,20 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     public string RequestId => _request.Id;
 
     public string ToolName => _request.ToolName;
-    public string Header => $"Claude wants to use {_request.ToolName}";
+
+    /// <summary>The tool call this prompt is about; its step in the
+    /// transcript has the same id.</summary>
+    public string? ToolUseId => _request.ToolUseId;
+
+    /// <summary>Title of the subagent that asks, or null for the main
+    /// conversation. Can be filled in after the banner is shown.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(Header))]
+    private string? _askedBy;
+
+    public string Header => AskedBy is { Length: > 0 } agent
+        ? $"Subagent “{agent}” wants to use {_request.ToolName}"
+        : $"Claude wants to use {_request.ToolName}";
     public string BodyText { get; }
     public bool HasBodyText => !string.IsNullOrEmpty(BodyText);
 
@@ -37,6 +51,53 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
         BodyText = FormatBody(request);
     }
 
+    // Set by the first decision. A second click or a held Enter must not
+    // answer again: the next banner in the queue would be taken down unread.
+    private bool _resolved;
+
+    /// <summary>True for a moment after the banner comes up from the queue,
+    /// while the buttons stay disabled. See <see cref="HoldInput"/>.</summary>
+    [ObservableProperty]
+    private bool _isInputHeld;
+
+    partial void OnIsInputHeldChanged(bool value) => NotifyDecisionCommands();
+
+    /// <summary>
+    /// Keeps the buttons disabled for a moment. A banner that replaces an
+    /// answered one appears under the pointer and the keyboard focus, so the
+    /// second click of a double-click, or Enter held a little too long, would
+    /// otherwise answer it before the user has read it.
+    /// </summary>
+    public void HoldInput(TimeSpan time)
+    {
+        IsInputHeld = true;
+        var timer = new DispatcherTimer { Interval = time };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            IsInputHeld = false;
+        };
+        timer.Start();
+    }
+
+    private bool CanDecide() => !_resolved && !IsInputHeld;
+
+    private void Resolve(PermissionDecision decision)
+    {
+        if (!CanDecide()) return;
+        _resolved = true;
+        NotifyDecisionCommands();
+        _onResolved(decision);
+    }
+
+    private void NotifyDecisionCommands()
+    {
+        AllowCommand.NotifyCanExecuteChanged();
+        DenyCommand.NotifyCanExecuteChanged();
+        OtherCommand.NotifyCanExecuteChanged();
+        SubmitCommand.NotifyCanExecuteChanged();
+    }
+
     partial void OnIsOtherModeChanged(bool value)
     {
         OnPropertyChanged(nameof(IsInitialMode));
@@ -45,23 +106,23 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
 
     partial void OnAlternativeTextChanged(string value) => SubmitCommand.NotifyCanExecuteChanged();
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDecide))]
     private void Allow()
     {
         var inputJson = _request.Input.ValueKind == JsonValueKind.Undefined
             ? "{}"
             : _request.Input.GetRawText();
-        _onResolved(PermissionDecision.Allow(inputJson));
+        Resolve(PermissionDecision.Allow(inputJson));
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDecide))]
     private void Deny()
     {
-        _onResolved(PermissionDecision.Deny("User denied this action"));
+        Resolve(PermissionDecision.Deny("User denied this action"));
     }
 
     /// <summary>Switches the banner into alt-input mode.</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDecide))]
     private void Other() => IsOtherMode = true;
 
     /// <summary>Returns to the initial Allow/Deny/Other row, preserving any
@@ -70,7 +131,7 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     private void Back() => IsOtherMode = false;
 
     private bool CanSubmit() =>
-        IsOtherMode && !string.IsNullOrWhiteSpace(AlternativeText);
+        CanDecide() && IsOtherMode && !string.IsNullOrWhiteSpace(AlternativeText);
 
     /// <summary>Wire-level we send a Deny — that's how the CLI's MCP permission
     /// protocol surfaces "don't run this" — but the message wraps the user's
@@ -80,7 +141,7 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     private void Submit()
     {
         var alt = (AlternativeText ?? "").Trim();
-        _onResolved(PermissionDecision.Deny(
+        Resolve(PermissionDecision.Deny(
             "The user declined to run this tool and asked you to do the following instead: " + alt));
     }
 

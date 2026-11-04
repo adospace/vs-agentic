@@ -55,6 +55,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
     // Shared by every chat: each one's MCP server offers these providers' tools.
     private readonly List<IIdeContextProvider> _ideContextProviders = new();
+    private DebuggerStateTracker? _debuggerState;
     private ErrorListReader? _errorList;
 
     // For "Add to VsAgentic Chat": the open chat windows, the one the user was
@@ -148,6 +149,22 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             System.Diagnostics.Debug.WriteLine($"VsAgentic: Could not add the Roslyn tools: {ex}");
         }
 
+        // Advised now rather than on Claude's first question: the exception
+        // that stopped the program is reported once, when it happens.
+        try
+        {
+            if (await GetServiceAsync(typeof(SVsShellDebugger)) is IVsDebugger debugger)
+            {
+                _debuggerState = new DebuggerStateTracker(debugger);
+                _ideContextProviders.Add(new DebuggerIdeContextProvider(_debuggerState));
+            }
+        }
+        catch (Exception ex)
+        {
+            // Claude then has no get_debug_context; everything else works.
+            System.Diagnostics.Debug.WriteLine($"VsAgentic: Could not follow the debugger: {ex}");
+        }
+
         // Listen for solution open/close/switch events
         if (await GetServiceAsync(typeof(SVsSolution)) is IVsSolution solutionService)
         {
@@ -191,6 +208,10 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     /// later change straight back. Zoom is set from the chat window rather than
     /// from Tools → Options, so nothing else would ever save it.
     /// </summary>
+    // The debugger setting as last applied, so OnOptionsApplied can tell
+    // whether the user changed it or only another option.
+    private DebuggerAccessLevel _appliedDebuggerAccess = DebuggerAccessLevel.Off;
+
     private void InitializeZoom()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -199,6 +220,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         if (optionsPage is null) return;
 
         optionsPage.Applied += OnOptionsApplied;
+        _appliedDebuggerAccess = optionsPage.DebuggerAccess;
 
         ChatZoom.Initialize(optionsPage.ZoomPercent / 100.0);
 
@@ -248,6 +270,12 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
         if (sender is not VsAgenticOptionsPage optionsPage) return;
 
+        // A changed debugger setting applies to open chats too, replacing what
+        // their switch was set to: turning it off in Options must not leave a
+        // chat that still reads. Applying other options leaves the switch alone.
+        var debuggerAccessChanged = optionsPage.DebuggerAccess != _appliedDebuggerAccess;
+        _appliedDebuggerAccess = optionsPage.DebuggerAccess;
+
         foreach (var kvp in _sessionWindowMap)
         {
             var window = FindToolWindow(typeof(ChatSessionToolWindow), kvp.Value, false);
@@ -261,6 +289,8 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                     optionsPage.ShowCompletedIndicator,
                     optionsPage.AnimateTitleWhenComplete,
                     optionsPage.FlashStatusBarWhenComplete);
+                if (debuggerAccessChanged)
+                    vm.DebuggerAccess = optionsPage.DebuggerAccess;
             }
         }
     }
@@ -390,6 +420,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
         var vm = new ChatSessionViewModel(chatService, outputListener, optionsAccessor, permissionBroker, questionBroker, vmLogger);
         vm.EditorContextProvider = _editorContext;
+        vm.IdeContext = provider.GetService<IdeContextRegistry>();
+        vm.DebuggerAccess = optionsPage?.DebuggerAccess ?? DebuggerAccessLevel.Off;
+        vm.DebuggerModeSource = _debuggerState;
 
         // The status bar pickers only change this session; persisting the choice so
         // the next one starts the same way is the host's side of the deal.
@@ -954,6 +987,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
             _editorContext?.Dispose();
             _editorContext = null;
+
+            _debuggerState?.Dispose();
+            _debuggerState = null;
 
             _errorList?.Dispose();
             _errorList = null;

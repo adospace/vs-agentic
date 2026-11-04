@@ -1746,6 +1746,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         try { _activityTimer?.Stop(); } catch { }
         try { EditorContextProvider = null; } catch { }
+        try { DebuggerModeSource = null; } catch { }
 
         // Closing the window kills the CLI, so the row must not go on claiming
         // the session works or waits.

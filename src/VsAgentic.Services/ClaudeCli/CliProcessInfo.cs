@@ -249,6 +249,35 @@ public sealed record CliMcpServer(string Name, string Status, string? Source)
 public sealed record CliMcpServerError(string Name, string? Type, string? Message);
 
 /// <summary>
+/// A settings file the CLI could not use, from the <c>errors</c> of the
+/// <c>get_settings</c> answer. The CLI then leaves out the whole file and, in
+/// <c>-p</c>, says nothing about it. <see cref="Path"/> is the setting at
+/// fault, such as "permissions.allow"; empty when the file is not valid JSON.
+/// </summary>
+public sealed record CliSettingsError(string File, string Path, string Message)
+{
+    /// <summary>Empty when the answer has no <c>errors</c>: the CLI leaves it out when there are none.</summary>
+    internal static IReadOnlyList<CliSettingsError> ReadAll(JsonElement settings)
+    {
+        if (!settings.TryGetProperty("errors", out var errors) || errors.ValueKind != JsonValueKind.Array)
+            return Array.Empty<CliSettingsError>();
+
+        var list = new List<CliSettingsError>();
+        foreach (var e in errors.EnumerateArray())
+        {
+            if (e.ValueKind != JsonValueKind.Object) continue;
+            var file = CliProcessInfo.ReadString(e, "file");
+            if (string.IsNullOrWhiteSpace(file)) continue;
+            list.Add(new CliSettingsError(
+                file!,
+                CliProcessInfo.ReadString(e, "path") ?? "",
+                CliProcessInfo.ReadString(e, "message") ?? "invalid setting"));
+        }
+        return list;
+    }
+}
+
+/// <summary>
 /// The <c>system/init</c> event. The CLI sends it at the start of every turn,
 /// not once per process, with the session id, the model actually serving the
 /// turn, its capabilities and the state of its MCP servers.

@@ -239,6 +239,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 _control = NewControlChannel();
                 _capabilities = CliCapabilities.None;
                 lock (_reportedMcpProblems) { _reportedMcpProblems.Clear(); }
+                lock (_reportedSettingsErrors) { _reportedSettingsErrors.Clear(); }
 
                 // A process that stopped mid-turn never sent the result for
                 // what was counted; the new one's first result must not be
@@ -248,6 +249,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             EnsureDispatcherStarted();
             if (!wasRunning)
                 InitializeProcess();
+            else
+                _ = CheckSettingsFilesAsync();
         }
         catch (Exception ex)
         {
@@ -657,7 +660,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     /// <summary>
     /// Asks the CLI which effort its next request will use. The answer
     /// accounts for what VsAgentic cannot see: the user's own CLI settings,
-    /// environment overrides, and levels the model does not support.
+    /// environment overrides, and levels the model does not support. The same
+    /// answer lists the settings files the CLI could not use.
     /// </summary>
     private async Task RefreshAppliedEffortAsync()
     {
@@ -675,6 +679,77 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             ? ClaudeEffortExtensions.FromCliValue(CliProcessInfo.ReadString(applied, "effort"))
             : null;
         SetAppliedEffort(effort);
+
+        ReportSettingsErrors(CliSettingsError.ReadAll(body));
+    }
+
+    // ── Settings files ────────────────────────────────────────────────────
+    // The CLI reads its settings files again a few seconds after one changes,
+    // so a file can break or be fixed while the process runs. The answer is
+    // read again before every message. A problem is shown once while it lasts:
+    // the set holds the problems of the last answer, and a new process starts
+    // with it empty.
+    private readonly HashSet<string> _reportedSettingsErrors = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>The settings check alone, for a message to a process already running.</summary>
+    private async Task CheckSettingsFilesAsync()
+    {
+        var reply = await _control.SendAsync(StreamJsonProtocol.BuildGetSettings).ConfigureAwait(false);
+        if (!reply.Succeeded || reply.Response is not { } body)
+        {
+            _logger.LogDebug("[ClaudeCli] get_settings failed: {Error}", reply.Error ?? "empty answer");
+            return;
+        }
+        ReportSettingsErrors(CliSettingsError.ReadAll(body));
+    }
+
+    /// <summary>
+    /// Shows the settings files the CLI left out. In <c>-p</c> the CLI does not
+    /// say so itself, and the user's permission rules, hooks and other settings
+    /// in such a file stop applying without a word.
+    /// </summary>
+    private void ReportSettingsErrors(IReadOnlyList<CliSettingsError> errors)
+    {
+        List<CliSettingsError> fresh;
+        lock (_reportedSettingsErrors)
+        {
+            var keys = errors.Select(e => e.File + "\n" + e.Path + "\n" + e.Message).ToList();
+            fresh = errors.Where((e, i) => !_reportedSettingsErrors.Contains(keys[i])).ToList();
+            _reportedSettingsErrors.Clear();
+            _reportedSettingsErrors.UnionWith(keys);
+        }
+        if (fresh.Count == 0) return;
+
+        _logger.LogWarning("[ClaudeCli] Settings files ignored by the CLI: {Errors}",
+            string.Join("; ", fresh.Select(e => $"{e.File} {e.Path}: {e.Message}")));
+
+        var files = fresh.Select(e => e.File).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        EmitError(files == 1 ? "Settings file ignored" : "Settings files ignored", DescribeSettingsErrors(fresh));
+    }
+
+    private static string DescribeSettingsErrors(IReadOnlyList<CliSettingsError> errors)
+    {
+        var sb = new StringBuilder();
+        var byFile = errors.GroupBy(e => e.File, StringComparer.OrdinalIgnoreCase).ToList();
+        sb.AppendLine(byFile.Count == 1
+            ? "Claude Code ignores this settings file because it has errors:"
+            : "Claude Code ignores these settings files because they have errors:");
+        sb.AppendLine();
+        foreach (var file in byFile)
+        {
+            sb.Append("- `").Append(file.Key).AppendLine("`");
+            foreach (var e in file)
+            {
+                sb.Append("  - ");
+                if (e.Path.Length > 0)
+                    sb.Append('`').Append(e.Path).Append("`: ");
+                sb.AppendLine(MarkdownText.Escape(e.Message));
+            }
+        }
+        sb.AppendLine();
+        sb.Append("None of the settings in ").Append(byFile.Count == 1 ? "it" : "them")
+          .Append(" apply, including permission rules and hooks. Claude Code reads the file again a few seconds after you save it.");
+        return sb.ToString();
     }
 
     private ClaudeEffort? _appliedEffort;

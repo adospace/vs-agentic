@@ -1645,8 +1645,11 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 item.Status = failed ? OutputItemStatus.Error : OutputItemStatus.Success;
                 if (failed)
                 {
+                    // As code: the body is markdown, and a script's *, _, #
+                    // and <…> would otherwise be read as formatting.
                     var stderr = CliProcessInfo.ReadString(evt, "stderr");
-                    item.Body = Tail(string.IsNullOrWhiteSpace(stderr) ? CliProcessInfo.ReadString(evt, "output") : stderr);
+                    var tail = Tail(string.IsNullOrWhiteSpace(stderr) ? CliProcessInfo.ReadString(evt, "output") : stderr);
+                    item.Body = tail is null ? null : MarkdownText.CodeBlock(tail);
                 }
                 _outputListener.OnStepCompleted(item);
             }

@@ -36,4 +36,28 @@ public static class MarkdownText
         }
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Wraps the text in inline code that shows it as written, also when it
+    /// contains backticks: the fence is one backtick longer than the longest
+    /// run in the text, and a space pads text that starts or ends with a
+    /// backtick or a space. Line breaks become spaces. Empty text stays empty.
+    /// </summary>
+    public static string InlineCode(string text)
+    {
+        if (text.Length == 0) return "";
+        text = text.Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ');
+
+        int longest = 0, run = 0;
+        foreach (var c in text)
+        {
+            run = c == '`' ? run + 1 : 0;
+            if (run > longest) longest = run;
+        }
+        var fence = new string('`', longest + 1);
+        var pad = NeedsPad(text[0]) || NeedsPad(text[text.Length - 1]) ? " " : "";
+        return fence + pad + text + pad + fence;
+
+        static bool NeedsPad(char c) => c == '`' || c == ' ';
+    }
 }

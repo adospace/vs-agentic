@@ -739,13 +739,14 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         foreach (var file in byFile)
         {
             sb.AppendLine();
-            sb.Append('`').Append(file.Key).AppendLine("`");
+            sb.AppendLine(MarkdownText.InlineCode(file.Key));
             sb.AppendLine();
             foreach (var e in file)
             {
                 sb.Append("- ");
+                // A project's settings file can have any key, backticks included.
                 if (e.Path.Length > 0)
-                    sb.Append('`').Append(e.Path).Append("`: ");
+                    sb.Append(MarkdownText.InlineCode(e.Path)).Append(": ");
                 sb.AppendLine(MarkdownText.Escape(e.Message));
             }
         }

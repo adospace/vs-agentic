@@ -117,6 +117,7 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
     private void NotifyDecisionCommands()
     {
         AllowCommand.NotifyCanExecuteChanged();
+        AllowForSessionCommand.NotifyCanExecuteChanged();
         DenyCommand.NotifyCanExecuteChanged();
         OtherCommand.NotifyCanExecuteChanged();
         SubmitCommand.NotifyCanExecuteChanged();
@@ -135,9 +136,9 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
 
     /// <summary>Allow, and stop asking for calls of this shape until the CLI
     /// process exits.</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDecide))]
     private void AllowForSession() =>
-        _onResolved(PermissionDecision.AllowForSession(InputJson(), _sessionRules));
+        Resolve(PermissionDecision.AllowForSession(InputJson(), _sessionRules));
 
     private string InputJson() =>
         _request.Input.ValueKind == JsonValueKind.Undefined

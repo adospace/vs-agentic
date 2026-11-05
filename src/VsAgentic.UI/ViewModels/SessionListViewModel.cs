@@ -443,9 +443,9 @@ public partial class SessionListViewModel : ObservableObject
     /// closed first, so only one rename box is ever open.
     /// </summary>
     [RelayCommand]
-    private void BeginRename(SessionInfo? session)
+    private void BeginRename(object? parameter)
     {
-        if (session is null) return;
+        if (parameter is not SessionInfo session) return;
 
         foreach (var other in Sessions)
         {
@@ -510,9 +510,9 @@ public partial class SessionListViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task RemoveSessionAsync(SessionInfo? session)
+    private async Task RemoveSessionAsync(object? parameter)
     {
-        if (session is null) return;
+        if (parameter is not SessionInfo session) return;
         if (ConfirmDelete is not null && !ConfirmDelete(session)) return;
 
         session.IsActive = false;
@@ -537,14 +537,20 @@ public partial class SessionListViewModel : ObservableObject
     /// does now, so the plain gesture is the reversible one. No confirmation:
     /// the point of the archive is that the step can be taken back.
     /// </summary>
+    /// <remarks>
+    /// The parameter is typed <c>object?</c> on purpose. The menu reads it from
+    /// the row's DataContext, and once the row leaves the list WPF swaps that
+    /// for its DisconnectedItem placeholder. A typed command would throw from
+    /// CanExecute and take Visual Studio down with it.
+    /// </remarks>
     [RelayCommand]
-    private Task ArchiveSessionAsync(SessionInfo? session) => SetArchivedAsync(session, archived: true);
+    private Task ArchiveSessionAsync(object? parameter) => SetArchivedAsync(parameter as SessionInfo, archived: true);
 
     /// <summary>
     /// Takes a session back out of the archive, into the normal list.
     /// </summary>
     [RelayCommand]
-    private Task RestoreSessionAsync(SessionInfo? session) => SetArchivedAsync(session, archived: false);
+    private Task RestoreSessionAsync(object? parameter) => SetArchivedAsync(parameter as SessionInfo, archived: false);
 
     private async Task SetArchivedAsync(SessionInfo? session, bool archived)
     {

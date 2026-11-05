@@ -948,6 +948,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     public event Action<string>? StepCanMoveToBackground;
 
+    public event Action<string, FileChange>? StepFileChanged;
+
     private void HandleTaskStarted(JsonElement evt)
     {
         var taskId = CliProcessInfo.ReadString(evt, "task_id");
@@ -2057,6 +2059,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     {
         var subagent = SubagentOf(evt, out var known);
         if (!known) return;
+        ReportFileChange(evt);
         if (subagent is not null)
         {
             HandleSubagentToolResults(subagent, evt);
@@ -2113,6 +2116,37 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             var isError = block.TryGetProperty("is_error", out var ep) && ep.ValueKind == JsonValueKind.True;
             CompleteToolItem(subagent, isError ? OutputItemStatus.Error : OutputItemStatus.Success);
         }
+    }
+
+    /// <summary>
+    /// Passes on what an Edit, MultiEdit or Write call did to its file, read
+    /// from <c>tool_use_result</c>. The step id comes from the result block
+    /// itself, so a subagent's step gets its change as well.
+    /// </summary>
+    private void ReportFileChange(JsonElement evt)
+    {
+        if (!evt.TryGetProperty("tool_use_result", out var toolUseResult)) return;
+        var change = FileChanges.FromToolUseResult(toolUseResult);
+        if (change is null) return;
+
+        if (!evt.TryGetProperty("message", out var msg)
+            || !msg.TryGetProperty("content", out var contentArr)
+            || contentArr.ValueKind != JsonValueKind.Array) return;
+
+        // One tool_use_result per event, so it belongs to the only result.
+        string? toolUseId = null;
+        foreach (var block in contentArr.EnumerateArray())
+        {
+            if (!block.TryGetProperty("type", out var bt) || bt.GetString() != "tool_result") continue;
+            if (toolUseId is not null) return;
+            toolUseId = block.TryGetProperty("tool_use_id", out var tp) ? tp.GetString() : null;
+            if (toolUseId is null) return;
+        }
+        if (toolUseId is null) return;
+
+        _logger.LogInformation("[ClaudeCli] {Id} changed {Path} ({Hunks} hunk(s))", toolUseId, change.FilePath, change.Hunks.Count);
+        try { StepFileChanged?.Invoke(toolUseId, change); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] StepFileChanged handler threw"); }
     }
 
     /// <summary>

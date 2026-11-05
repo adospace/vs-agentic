@@ -275,6 +275,28 @@ public class JsonSessionStore : ISessionStore
         }
     }
 
+    public async Task SetStepFileChangeAsync(string folderPath, int sessionId, string stepId, FileChange change)
+    {
+        var semaphore = GetLock(folderPath);
+        await semaphore.WaitAsync();
+        try
+        {
+            var messagesPath = Path.Combine(GetSessionDir(folderPath, sessionId), "messages.json");
+            if (!File.Exists(messagesPath)) return;
+
+            var messages = await ReadJsonAsync<List<PersistedMessage>>(messagesPath);
+            var step = messages?.FindLast(m => m.StepId == stepId);
+            if (step is null) return;
+
+            step.FileChange = change;
+            await WriteJsonAsync(messagesPath, messages!);
+        }
+        finally
+        {
+            semaphore.Release();
+        }
+    }
+
     // --- Search ---
 
     // Characters of context kept on each side of a match in a search hit.

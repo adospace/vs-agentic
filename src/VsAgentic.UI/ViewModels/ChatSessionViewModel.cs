@@ -4,6 +4,7 @@ using System.Windows;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.ClaudeCli;
 using VsAgentic.Services.ClaudeCli.Permissions;
 using VsAgentic.Services.ClaudeCli.Questions;
 using VsAgentic.Services.Configuration;
@@ -564,6 +565,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         chatService.MessageStarted += OnChatServiceMessageStarted;
         chatService.StepBackgroundStateChanged += OnChatServiceStepBackgroundStateChanged;
         chatService.StepCanMoveToBackground += OnChatServiceStepCanMoveToBackground;
+        chatService.StepFileChanged += OnChatServiceStepFileChanged;
 
         InitializeUsage(chatService, options.Value);
         InitializeSlashCommands();
@@ -702,6 +704,81 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         catch (Exception ex) { _logger.LogWarning(ex, "[VM] Could not move step {Id} to the background", stepId); }
     }
 
+    // ── File changes ──────────────────────────────────────────────────────
+    // What Claude's Edit, MultiEdit and Write calls did to files, by step id,
+    // for the step's Diff button. Restored steps are keyed by their restore id.
+    // Touched on the UI thread only.
+    private readonly Dictionary<string, FileChange> _fileChanges = new(StringComparer.Ordinal);
+
+    // Steps whose change still holds the whole file before and after, oldest
+    // first, and the characters they hold together. Past the limit the oldest
+    // drop the whole file and show the changed parts only, so a long session
+    // does not keep every version of every file it edited.
+    private readonly Queue<string> _fullTextSteps = new();
+    private long _fullTextChars;
+    private const long MaxFullTextChars = 16L * 1024 * 1024;
+
+    /// <summary>
+    /// Raised when a step gets a file change. The arguments are the step id
+    /// and, when there is no diff to show, a short summary to show instead.
+    /// </summary>
+    public event Action<string, string?>? MessageFileChangeSet;
+
+    /// <summary>
+    /// Raised when the user asks to see a diff, from a step or from the
+    /// permission banner. The host opens it in its diff viewer.
+    /// </summary>
+    public event Action<FileDiffContent>? FileDiffRequested;
+
+    private void OnChatServiceStepFileChanged(string stepId, FileChange change)
+    {
+        Dispatch(() =>
+        {
+            _fileChanges[stepId] = change;
+            KeepFullText(stepId, change);
+            MessageFileChangeSet?.Invoke(stepId, FileChanges.Summary(change));
+
+            // A step still open saves the change when it completes. One that
+            // is closed was saved without it: when Claude makes several calls
+            // in one message and the first waits for permission, the CLI
+            // starts them all, and each closes the step before it.
+            if (!_activeItems.ContainsKey(stepId))
+                PersistStepFileChangeFireAndForget(stepId, change);
+        });
+    }
+
+    /// <summary>
+    /// Opens the diff of a step's file change. Called from the step's button
+    /// in the transcript.
+    /// </summary>
+    public void OpenStepDiff(string stepId)
+    {
+        if (!_fileChanges.TryGetValue(stepId, out var change)) return;
+        if (FileChanges.ForStep(change) is { } diff)
+            FileDiffRequested?.Invoke(diff);
+    }
+
+    private void KeepFullText(string stepId, FileChange change)
+    {
+        if (change.FullTextLength == 0) return;
+        _fullTextSteps.Enqueue(stepId);
+        _fullTextChars += change.FullTextLength;
+
+        // The newest change keeps its text even when it alone is over the
+        // limit: it is the one the user is most likely to open.
+        while (_fullTextChars > MaxFullTextChars && _fullTextSteps.Count > 1)
+        {
+            var oldestId = _fullTextSteps.Dequeue();
+            if (!_fileChanges.TryGetValue(oldestId, out var oldest)) continue;
+            _fullTextChars -= oldest.FullTextLength;
+            oldest.Before = null;
+            oldest.After = null;
+            // Its hunks may have been too large to keep as well.
+            if (FileChanges.Summary(oldest) is { } summary)
+                MessageFileChangeSet?.Invoke(oldestId, summary);
+        }
+    }
+
     private void AddNotice(BackgroundStepState state, string text, string? outputFile = null)
     {
         // The status picks the icon and color in the web view.
@@ -787,6 +864,11 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     private void OnPermissionBrokerRequested(PermissionRequest request)
     {
+        // Only the tool input is looked at here. The file is read when the
+        // user asks for the diff, so the diff matches the file at that moment
+        // and nothing slows down the banner.
+        var canViewDiff = FileChanges.EditedFilePath(request.ToolName, request.Input) is not null;
+
         Dispatch(() =>
         {
             PermissionBannerViewModel? banner = null;
@@ -799,7 +881,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 {
                     Dispatch(() => ShowNextPromptAfter(banner));
                     _permissionBroker?.Resolve(request.Id, decision);
-                });
+                }, canViewDiff ? () => OpenProposedDiffAsync(request, () => banner?.IsAnswered != true) : null);
                 banner.AskedBy = FindAskingSubagent(request.ToolUseId);
                 ShowPrompt(banner);
             }
@@ -814,6 +896,81 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             }
         });
     }
+
+    /// <summary>
+    /// Largest file, and largest proposed content, shown as a diff before
+    /// Allow. Reading and comparing more would keep the user waiting.
+    /// </summary>
+    private const int MaxProposedDiffBytes = 2 * 1024 * 1024;
+
+    private static readonly string TooLargeForDiff =
+        $"The file is larger than {MaxProposedDiffBytes / (1024 * 1024)} MB, so no diff is shown.";
+
+    /// <summary>
+    /// Opens the change a file edit waiting for permission would make, read
+    /// against the file as it is now. Returns what to tell the user when there
+    /// is no diff to open, or null when the viewer opened or the request was
+    /// answered while the file was read.
+    /// </summary>
+    /// <param name="stillWaiting">False once the request is answered. The
+    /// viewer then stays closed: the edit has run or been refused.</param>
+    private async Task<string?> OpenProposedDiffAsync(PermissionRequest request, Func<bool> stillWaiting)
+    {
+        var path = FileChanges.EditedFilePath(request.ToolName, request.Input);
+        if (path is null) return null;
+
+        if (request.ToolName == "Write"
+            && request.Input.TryGetProperty("content", out var content)
+            && content.ValueKind == System.Text.Json.JsonValueKind.String
+            && content.GetString()!.Length > MaxProposedDiffBytes)
+        {
+            return TooLargeForDiff;
+        }
+
+        FileDiffContent? diff;
+        try
+        {
+            // Off the UI thread: reading and applying the edit takes a while
+            // for a large file.
+            diff = await Task.Run(() =>
+            {
+                var current = ReadForDiff(path);
+                return FileChanges.ForPermission(request.ToolName, request.Input, _ => current);
+            });
+        }
+        catch (FileTooLargeForDiffException)
+        {
+            return TooLargeForDiff;
+        }
+        catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException
+                                       or ArgumentException or NotSupportedException
+                                       or System.Security.SecurityException)
+        {
+            _logger.LogWarning(ex, "[VM] Could not read {Path} for the diff", path);
+            return $"Could not read the file: {ex.Message}";
+        }
+
+        if (!stillWaiting()) return null;
+
+        // The edit was applied to the file as it is now. When an earlier edit
+        // changed the text this one replaces, the CLI refuses it as well.
+        if (diff is null)
+            return "This edit no longer matches the file: the text it replaces is missing, or occurs more than once.";
+
+        FileDiffRequested?.Invoke(diff);
+        return null;
+    }
+
+    /// <summary>The file's text, or null when it does not exist.</summary>
+    private static string? ReadForDiff(string path)
+    {
+        var info = new System.IO.FileInfo(path);
+        if (!info.Exists) return null;
+        if (info.Length > MaxProposedDiffBytes) throw new FileTooLargeForDiffException();
+        return System.IO.File.ReadAllText(path);
+    }
+
+    private sealed class FileTooLargeForDiffException : Exception { }
 
     private void OnQuestionBrokerRequested(UserQuestionRequest request)
     {
@@ -1096,9 +1253,15 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                     }
                 }
 
+                var restoreId = $"restore-{msgIndex++}";
+                if (msg.FileChange is { } fileChange)
+                    _fileChanges[restoreId] = fileChange;
+
                 restoreData.Add(new ChatMessageData
                 {
-                    Id = $"restore-{msgIndex++}",
+                    Id = restoreId,
+                    HasFileChange = msg.FileChange is not null,
+                    FileChangeSummary = msg.FileChange is { } saved ? FileChanges.Summary(saved) : null,
                     Type = type.ToString(),
                     Content = msg.Content,
                     ToolName = msg.ToolName,
@@ -1578,6 +1741,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         _activeItems.Clear();
         _stepParents.Clear();
         _agentTitles.Clear();
+        _fileChanges.Clear();
+        _fullTextSteps.Clear();
+        _fullTextChars = 0;
         AllCleared?.Invoke();
     }
 
@@ -1758,6 +1924,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                     StatusText = vm.Status.ToString(),
                     StepId = item.Id,
                     ParentId = item.ParentId,
+                    FileChange = _fileChanges.TryGetValue(item.Id, out var fileChange) ? fileChange : null,
                     CreatedUtc = DateTime.UtcNow
                 });
             }
@@ -1804,11 +1971,34 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         var sessionId = ActiveSessionId;
         if (store is null || folder is null || !sessionId.HasValue) return;
 
-        _ = Task.Run(async () =>
+        EnqueueMessageWrite(() => store.AppendMessageAsync(folder, sessionId.Value, message));
+    }
+
+    private void PersistStepFileChangeFireAndForget(string stepId, FileChange change)
+    {
+        var store = ActiveStore;
+        var folder = ActiveFolder;
+        var sessionId = ActiveSessionId;
+        if (store is null || folder is null || !sessionId.HasValue) return;
+
+        EnqueueMessageWrite(() => store.SetStepFileChangeAsync(folder, sessionId.Value, stepId, change));
+    }
+
+    // Writes to messages.json run one after another, in the order they were
+    // asked for: a file change for a closed step has to find the step saved.
+    private readonly object _messageWriteLock = new();
+    private Task _messageWriteTail = Task.CompletedTask;
+
+    private void EnqueueMessageWrite(Func<Task> write)
+    {
+        lock (_messageWriteLock)
         {
-            try { await store.AppendMessageAsync(folder, sessionId.Value, message); }
-            catch { /* best effort */ }
-        });
+            _messageWriteTail = _messageWriteTail.ContinueWith(async _ =>
+            {
+                try { await write(); }
+                catch { /* best effort */ }
+            }, TaskScheduler.Default).Unwrap();
+        }
     }
 
     private void PersistConversationHistoryFireAndForget()
@@ -1918,6 +2108,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 _chatService.PermissionModeRejected -= OnChatServicePermissionModeRejected;
                 _chatService.StepBackgroundStateChanged -= OnChatServiceStepBackgroundStateChanged;
                 _chatService.StepCanMoveToBackground -= OnChatServiceStepCanMoveToBackground;
+                _chatService.StepFileChanged -= OnChatServiceStepFileChanged;
             }
             // Static: without this, a closed session stays reachable from the catalog.
             ClaudeModelCatalog.ReportedChanged -= OnReportedModelsChanged;

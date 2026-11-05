@@ -1,5 +1,6 @@
 using System;
 using System.Text.Json;
+using System.Threading.Tasks;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -44,12 +45,53 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
     [ObservableProperty]
     private string _alternativeText = "";
 
-    public PermissionBannerViewModel(PermissionRequest request, Action<PermissionDecision> onResolved)
+    private readonly Func<Task<string?>>? _viewDiff;
+
+    /// <summary>True for a file edit whose change can be shown before Allow.</summary>
+    public bool CanViewDiff => _viewDiff is not null;
+
+    /// <summary>Why the last View diff opened nothing, e.g. the edit no
+    /// longer matches the file. Empty when it opened.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasDiffNotice))]
+    private string _diffNotice = "";
+
+    public bool HasDiffNotice => !string.IsNullOrEmpty(DiffNotice);
+
+    /// <param name="viewDiff">Opens the diff of a file edit, read against the
+    /// file at the moment of the click. Returns what to tell the user when it
+    /// opened nothing. Null for a call that edits no file.</param>
+    public PermissionBannerViewModel(
+        PermissionRequest request,
+        Action<PermissionDecision> onResolved,
+        Func<Task<string?>>? viewDiff = null)
     {
         _request = request;
         _onResolved = onResolved;
+        _viewDiff = viewDiff;
         BodyText = FormatBody(request);
     }
+
+    /// <summary>Opens the file as it is now against the file with the edit
+    /// applied. The banner stays: the user decides after looking.</summary>
+    /// <remarks>Not a decision: it answers nothing, so it works while the
+    /// answer buttons are held. It stops once the banner is answered, because
+    /// the edit then runs or is refused and the diff would show a change that
+    /// is no longer waiting.</remarks>
+    [RelayCommand(CanExecute = nameof(CanOpenDiff))]
+    private async Task ViewDiffAsync()
+    {
+        if (_viewDiff is null) return;
+        DiffNotice = "";
+        DiffNotice = await _viewDiff() ?? "";
+    }
+
+    private bool CanOpenDiff() => !_resolved;
+
+    /// <summary>True once the user has answered. Checked again before the
+    /// viewer opens: the file is read off the UI thread, and the answer may
+    /// come while it is read.</summary>
+    public bool IsAnswered => _resolved;
 
     // Set by the first decision. A second click or a held Enter must not
     // answer again: the next banner in the queue would be taken down unread.
@@ -87,6 +129,7 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
         if (!CanDecide()) return;
         _resolved = true;
         NotifyDecisionCommands();
+        ViewDiffCommand.NotifyCanExecuteChanged();
         _onResolved(decision);
     }
 

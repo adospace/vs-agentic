@@ -896,7 +896,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 return;
 
             _logger.LogInformation("[VM] Permission prompt withdrawn by the CLI (id={Id})", requestId);
-            DismissActiveBanner($"_Claude no longer needs to use **{banner.ToolName}**. The request was withdrawn._");
+            DismissActiveBanner(banner is PlanBannerViewModel
+                ? "_Claude no longer needs an answer to the plan. The plan was withdrawn._"
+                : $"_Claude no longer needs to use **{banner.ToolName}**. The request was withdrawn._");
         });
     }
 

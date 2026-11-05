@@ -20,13 +20,14 @@ namespace VsAgentic.Services.ClaudeCli.Permissions;
 /// Wire format: newline-delimited JSON. Every request carries an id, and its
 /// response carries the same id, so requests can overlap: a slow IDE tool
 /// does not hold up a permission prompt behind it.
-///   permission   client → server  {"id":"<guid>","tool":"Bash","input":{...}}
+///   permission   client → server  {"id":"<guid>","tool":"Bash","input":{...},"toolUseId":"toolu_…"}
 ///                server → client  {"id":"<guid>","behavior":"allow","updatedInput":{...}}
 ///                                 {"id":"<guid>","behavior":"deny","message":"..."}
 ///   tools/list   client → server  {"id":"<guid>","type":"tools/list"}
 ///                server → client  {"id":"<guid>","tools":[...]}
 ///   tools/call   client → server  {"id":"<guid>","type":"tools/call","name":"get_diagnostics","arguments":{...}}
 ///                server → client  {"id":"<guid>","text":"...","isError":false}
+///   withdraw     client → server  {"id":"<guid>","cancel":true}   (the CLI cancelled the call; no reply is read)
 ///
 /// One pipe instance per CLI process. Started by <c>ClaudeCliProcessHost</c>
 /// before launching the CLI; the pipe name + shared secret are passed to the
@@ -125,6 +126,28 @@ internal sealed class PermissionPipeServer : IDisposable
                     if (line == null) return;
                     if (string.IsNullOrWhiteSpace(line)) continue;
 
+                    var (id, kind) = PeekRequest(line);
+                    if (kind == "cancel")
+                    {
+                        // The CLI cancelled the call. Its answer is no longer
+                        // read, so this only takes the prompt off the screen.
+                        // Ids are unique, and each broker ignores ones it
+                        // does not hold.
+                        _logger.LogInformation("[PermissionPipeServer] request {Id} withdrawn by the CLI", id);
+                        _broker.Withdraw(id);
+                        _questionBroker.Withdraw(id);
+                        continue;
+                    }
+
+                    // A permission request is handed to the broker here rather
+                    // than on the task below: the broker registers it before
+                    // this returns, so a withdrawal on the next line always
+                    // finds it. IDE tools may do real work, so they start on
+                    // a task of their own.
+                    var responseTask = kind == "permission"
+                        ? HandleRequestAsync(line, ct)
+                        : Task.Run(() => HandleRequestAsync(line, ct));
+
                     _ = Task.Run(async () =>
                     {
                         // Every request whose id can be read gets an answer:
@@ -133,7 +156,7 @@ internal sealed class PermissionPipeServer : IDisposable
                         string? response;
                         try
                         {
-                            response = await HandleRequestAsync(line, ct).ConfigureAwait(false);
+                            response = await responseTask.ConfigureAwait(false);
                         }
                         catch (Exception ex)
                         {
@@ -174,6 +197,25 @@ internal sealed class PermissionPipeServer : IDisposable
         }
     }
 
+    /// <summary>The request's id and kind: "cancel", "permission", or its type.</summary>
+    private static (string Id, string Kind) PeekRequest(string line)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            var id = root.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
+            if (root.TryGetProperty("cancel", out var cancel) && cancel.ValueKind == JsonValueKind.True)
+                return (id, "cancel");
+            return (id, root.TryGetProperty("type", out var tp) ? tp.GetString() ?? "" : "permission");
+        }
+        catch (JsonException)
+        {
+            // HandleRequestAsync logs the malformed line.
+            return ("", "");
+        }
+    }
+
     /// <summary>The response line for one request, or null when not even its id can be read.</summary>
     private async Task<string?> HandleRequestAsync(string line, CancellationToken ct)
     {
@@ -184,6 +226,7 @@ internal sealed class PermissionPipeServer : IDisposable
         }
 
         string toolName = "";
+        string? toolUseId = null;
         JsonElement input = default;
         try
         {
@@ -202,6 +245,8 @@ internal sealed class PermissionPipeServer : IDisposable
                 toolName = root.GetProperty("tool").GetString() ?? "";
                 if (root.TryGetProperty("input", out var inp))
                     input = inp.Clone();
+                if (root.TryGetProperty("toolUseId", out var tu) && tu.ValueKind == JsonValueKind.String)
+                    toolUseId = tu.GetString();
             }
         }
         catch (Exception ex)
@@ -219,7 +264,7 @@ internal sealed class PermissionPipeServer : IDisposable
                 return await HandleIdeToolCallAsync(id, toolName, input, ct).ConfigureAwait(false);
 
             case "permission":
-                var decision = await DecidePermissionAsync(id, toolName, input, ct).ConfigureAwait(false);
+                var decision = await DecidePermissionAsync(id, toolName, input, toolUseId, ct).ConfigureAwait(false);
                 return SerializeDecision(id, decision);
 
             default:
@@ -263,7 +308,7 @@ internal sealed class PermissionPipeServer : IDisposable
         _ => SerializeDecision(id, PermissionDecision.Deny(message)),
     };
 
-    private async Task<PermissionDecision> DecidePermissionAsync(string id, string toolName, JsonElement input, CancellationToken ct)
+    private async Task<PermissionDecision> DecidePermissionAsync(string id, string toolName, JsonElement input, string? toolUseId, CancellationToken ct)
     {
         // AskUserQuestion is the documented Anthropic flow for clarifying
         // questions: the host gathers answers and returns them via the
@@ -294,7 +339,7 @@ internal sealed class PermissionPipeServer : IDisposable
             return PermissionDecision.Allow(input.ValueKind == JsonValueKind.Undefined ? "{}" : input.GetRawText());
         }
 
-        var request = new PermissionRequest(id, toolName, input);
+        var request = new PermissionRequest(id, toolName, input, toolUseId);
         try
         {
             return await _broker.SubmitAsync(request, ct).ConfigureAwait(false);

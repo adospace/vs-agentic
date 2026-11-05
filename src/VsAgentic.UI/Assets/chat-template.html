@@ -730,6 +730,9 @@ html, body {
 </style>
 <script>{{SHOWDOWN_JS}}</script>
 <script>
+// requireSpaceBeforeHeadingText: a heading needs "# " as in CommonMark.
+// Showdown's default reads "#176" at the start of a line as an <h1> and
+// drops the "#", so an issue number turns into a heading.
 var converter = new showdown.Converter({
     tables: true,
     tasklists: true,
@@ -737,7 +740,8 @@ var converter = new showdown.Converter({
     ghCodeBlocks: true,
     simplifiedAutoLink: true,
     literalMidWordUnderscores: true,
-    openLinksInNewWindow: true
+    openLinksInNewWindow: true,
+    requireSpaceBeforeHeadingText: true
 });
 
 // User-typed messages: preserve single newlines as <br> so multi-line
@@ -750,7 +754,8 @@ var userConverter = new showdown.Converter({
     simplifiedAutoLink: true,
     literalMidWordUnderscores: true,
     openLinksInNewWindow: true,
-    simpleLineBreaks: true
+    simpleLineBreaks: true,
+    requireSpaceBeforeHeadingText: true
 });
 
 var _userScrolledUp = false;

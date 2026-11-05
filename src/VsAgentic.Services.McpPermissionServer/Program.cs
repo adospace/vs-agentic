@@ -47,9 +47,11 @@ internal static class Program
         new ConcurrentDictionary<string, TaskCompletionSource<string>>();
     private static readonly SemaphoreSlim _pipeWriteLock = new SemaphoreSlim(1, 1);
 
-    // Permission prompts still go one at a time, as they always have: the
-    // banner shows one request, and an IDE tool call no longer queues behind it.
-    private static readonly SemaphoreSlim _permissionLock = new SemaphoreSlim(1, 1);
+    // JSON-RPC id of an open tools/call (raw JSON text) -> its pipe request id.
+    // A call whose entry is gone when the reply arrives was cancelled by the CLI.
+    // Permission prompts overlap too: subagents running in parallel each ask.
+    private static readonly ConcurrentDictionary<string, string> _openCalls =
+        new ConcurrentDictionary<string, string>();
 
     private static readonly SemaphoreSlim _stdoutLock = new SemaphoreSlim(1, 1);
     private static readonly object _logLock = new object();
@@ -238,7 +240,7 @@ internal static class Program
     }
 
     /// <summary>Sends one request to the parent and returns its response line.</summary>
-    private static async Task<string> SendToParentAsync(string id, string requestJson, TimeSpan? timeout = null)
+    private static async Task<string> SendToParentAsync(string id, string requestJson, TimeSpan? timeout = null, string? rpcId = null)
     {
         if (_pipeBroken)
             throw new IOException("pipe closed");
@@ -261,6 +263,11 @@ internal static class Program
         {
             _pipeWriteLock.Release();
         }
+
+        // A cancel that came in before the request reached the parent found
+        // nothing to take down there. Send it again now that it can.
+        if (rpcId != null && !_openCalls.ContainsKey(rpcId))
+            await SendWithdrawAsync(id).ConfigureAwait(false);
 
         if (timeout is { } limit &&
             await Task.WhenAny(waiter.Task, Task.Delay(limit)).ConfigureAwait(false) != waiter.Task)
@@ -290,8 +297,17 @@ internal static class Program
                 break;
 
             case "notifications/initialized":
-            case "notifications/cancelled":
                 // notifications: no response
+                break;
+
+            case "notifications/cancelled":
+                // The CLI no longer wants the answer: the turn was interrupted,
+                // the subagent stopped, or the request timed out on its side.
+                if (root.TryGetProperty("params", out var cancelParams) &&
+                    cancelParams.TryGetProperty("requestId", out var cancelledId))
+                {
+                    await CancelCallAsync(cancelledId.GetRawText()).ConfigureAwait(false);
+                }
                 break;
 
             case "tools/list":
@@ -303,14 +319,20 @@ internal static class Program
                 if (hasId)
                 {
                     // Not awaited: the next request on stdin may be a permission
-                    // prompt that must not wait for a slow IDE tool.
+                    // prompt that must not wait for a slow IDE tool, another
+                    // subagent's prompt, or the CLI cancelling this call.
+                    // Registered here, before the next line is read, so a
+                    // cancel that follows right away finds the call.
                     var request = root.Clone();
+                    var rpcId = id!.Value.GetRawText();
+                    var requestId = Guid.NewGuid().ToString("N");
+                    _openCalls[rpcId] = requestId;
                     _ = Task.Run(async () =>
                     {
                         string result;
                         try
                         {
-                            result = await HandleToolCallAsync(request).ConfigureAwait(false);
+                            result = await HandleToolCallAsync(request, rpcId, requestId).ConfigureAwait(false);
                         }
                         catch (IOException ex)
                         {
@@ -324,6 +346,14 @@ internal static class Program
                         {
                             Log($"tools/call error: {ex}");
                             result = BuildToolErrorContent("Internal error");
+                        }
+
+                        // A call the CLI cancelled gets no response (MCP: the
+                        // receiver should not answer a cancelled request).
+                        if (!_openCalls.TryRemove(rpcId, out _))
+                        {
+                            Log($"tools/call {rpcId} was cancelled, response dropped");
+                            return;
                         }
                         await WriteResponseAsync(stdout, id!.Value, result).ConfigureAwait(false);
                     });
@@ -383,7 +413,7 @@ internal static class Program
         return "{\"tools\":[" + approvalTool + ideTools + "]}";
     }
 
-    private static async Task<string> HandleToolCallAsync(JsonElement requestRoot)
+    private static async Task<string> HandleToolCallAsync(JsonElement requestRoot, string rpcId, string requestId)
     {
         // params.name is "approval_prompt" or an IDE tool; params.arguments has the fields.
         if (!requestRoot.TryGetProperty("params", out var paramsEl))
@@ -394,32 +424,24 @@ internal static class Program
             return BuildToolErrorContent("missing tool name");
 
         if (name != ToolName)
-            return await HandleIdeToolCallAsync(name!, paramsEl).ConfigureAwait(false);
+            return await HandleIdeToolCallAsync(name!, paramsEl, requestId).ConfigureAwait(false);
 
         if (!paramsEl.TryGetProperty("arguments", out var argsEl))
             return BuildToolErrorContent("missing arguments");
 
         var toolName = argsEl.TryGetProperty("tool_name", out var tn) ? tn.GetString() ?? "" : "";
         JsonElement input = argsEl.TryGetProperty("input", out var inp) ? inp : default;
+        var toolUseId = argsEl.TryGetProperty("tool_use_id", out var tu) && tu.ValueKind == JsonValueKind.String
+            ? tu.GetString()
+            : null;
 
         // If a prior call already discovered the pipe is broken, fail fast.
         if (_pipeBroken)
             return BuildToolErrorContent("Permission pipe disconnected");
 
         // Forward to the parent over the pipe and wait for the reply.
-        var requestId = Guid.NewGuid().ToString("N");
-        var pipeRequest = BuildPipeRequest(requestId, toolName, input);
-
-        string pipeResponse;
-        await _permissionLock.WaitAsync().ConfigureAwait(false);
-        try
-        {
-            pipeResponse = await SendToParentAsync(requestId, pipeRequest).ConfigureAwait(false);
-        }
-        finally
-        {
-            _permissionLock.Release();
-        }
+        var pipeRequest = BuildPipeRequest(requestId, toolName, input, toolUseId);
+        var pipeResponse = await SendToParentAsync(requestId, pipeRequest, rpcId: rpcId).ConfigureAwait(false);
 
         if (string.IsNullOrEmpty(pipeResponse))
             return BuildToolErrorContent("pipe closed");
@@ -431,7 +453,7 @@ internal static class Program
         return BuildToolSuccessContent(innerJson);
     }
 
-    private static string BuildPipeRequest(string id, string toolName, JsonElement input)
+    private static string BuildPipeRequest(string id, string toolName, JsonElement input, string? toolUseId)
     {
         var sb = new StringBuilder();
         sb.Append("{\"id\":");
@@ -440,20 +462,60 @@ internal static class Program
         sb.Append(JsonEscape(toolName));
         sb.Append(",\"input\":");
         sb.Append(input.ValueKind == JsonValueKind.Undefined ? "{}" : input.GetRawText());
+        if (toolUseId != null)
+        {
+            sb.Append(",\"toolUseId\":");
+            sb.Append(JsonEscape(toolUseId));
+        }
         sb.Append("}");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Tells the parent to take the prompt down. The parent still answers it,
+    /// which settles the waiting call; the call then drops that answer because
+    /// it is no longer open.
+    /// </summary>
+    private static async Task CancelCallAsync(string rpcId)
+    {
+        if (!_openCalls.TryRemove(rpcId, out var requestId))
+        {
+            Log($"cancel for unknown or finished call {rpcId}");
+            return;
+        }
+
+        Log($"tools/call {rpcId} cancelled by the CLI, withdrawing {requestId}");
+        await SendWithdrawAsync(requestId).ConfigureAwait(false);
+    }
+
+    private static async Task SendWithdrawAsync(string requestId)
+    {
+        if (_pipeBroken) return;
+        await _pipeWriteLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await _pipeWriter!.WriteLineAsync("{\"id\":" + JsonEscape(requestId) + ",\"cancel\":true}").ConfigureAwait(false);
+        }
+        catch (IOException ex)
+        {
+            _pipeBroken = true;
+            Log($"withdraw {requestId} failed: {ex.Message}");
+        }
+        finally
+        {
+            _pipeWriteLock.Release();
+        }
     }
 
     /// <summary>
     /// Runs an IDE tool in the extension and wraps its text as MCP content.
     /// The extension never throws back; a failure arrives as an error result.
     /// </summary>
-    private static async Task<string> HandleIdeToolCallAsync(string name, JsonElement paramsEl)
+    private static async Task<string> HandleIdeToolCallAsync(string name, JsonElement paramsEl, string requestId)
     {
         if (_pipeBroken)
             return BuildIdeToolResult("Visual Studio is not reachable.", isError: true);
 
-        var requestId = Guid.NewGuid().ToString("N");
         var sb = new StringBuilder();
         sb.Append("{\"id\":").Append(JsonEscape(requestId));
         sb.Append(",\"type\":\"tools/call\",\"name\":").Append(JsonEscape(name));

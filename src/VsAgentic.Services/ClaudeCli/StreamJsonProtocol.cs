@@ -170,12 +170,18 @@ internal static class StreamJsonProtocol
     /// background task on its own (the Stop button on the background tasks
     /// strip). Without it, an interrupt also kills the background subagents,
     /// because the CLI assumes nothing else could stop them.
+    ///
+    /// <c>agentProgressSummaries</c> asks for a one-line summary of what each
+    /// running subagent is doing, about every 30 seconds, in the
+    /// <c>summary</c> field of <c>system/task_progress</c>. Without it the CLI
+    /// sends none (measured on 2.1.316).
     /// </summary>
     public static string BuildInitialize(string requestId) =>
         BuildControlRequest(requestId, "initialize", w =>
         {
             w.WriteBoolean("forwardSubagentText", true);
             w.WriteBoolean("perTaskStopAffordance", true);
+            w.WriteBoolean("agentProgressSummaries", true);
         });
 
     /// <summary>

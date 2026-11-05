@@ -916,6 +916,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 HandleTaskUpdated(evt);
                 return;
 
+            case "task_progress":
+                HandleTaskProgress(evt);
+                return;
+
             case "task_notification":
                 HandleTaskNotification(evt);
                 return;
@@ -1010,6 +1014,24 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             subagent.InBackground = true;
 
         MarkStepInBackground(stepId!);
+    }
+
+    public event Action<string, string, string>? TaskProgressSummary;
+
+    // A running subagent reports progress after each tool call it makes, and
+    // about every 30 seconds with a summary as well (asked for in
+    // initialize). Only the summary is passed on: the tool calls are in the
+    // transcript already, under the Agent step.
+    private void HandleTaskProgress(JsonElement evt)
+    {
+        var summary = CliProcessInfo.ReadString(evt, "summary");
+        var taskId = CliProcessInfo.ReadString(evt, "task_id");
+        var toolUseId = CliProcessInfo.ReadString(evt, "tool_use_id");
+        if (string.IsNullOrWhiteSpace(summary) || taskId is null || toolUseId is null) return;
+
+        _logger.LogInformation("[ClaudeCli] Task {Id} progress: {Summary}", taskId, summary);
+        try { TaskProgressSummary?.Invoke(taskId, toolUseId, summary!.Trim()); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] TaskProgressSummary handler threw"); }
     }
 
     private void MarkStepInBackground(string stepId)

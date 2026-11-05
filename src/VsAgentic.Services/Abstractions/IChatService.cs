@@ -263,6 +263,17 @@ public interface IChatService
     event Action<string>? StepCanMoveToBackground;
 
     /// <summary>
+    /// Raised with the CLI's one-line summary of what a running subagent is
+    /// doing, e.g. "Reading StreamJsonProtocol.cs". Arrives about every 30
+    /// seconds while the subagent runs, in the foreground or the background.
+    /// Arguments: the task id (as in <see cref="BackgroundTasks"/>), the id of
+    /// the Agent step that started it, and the summary. Can fire between
+    /// turns. Raised on a background thread; hosts must marshal to the UI
+    /// thread.
+    /// </summary>
+    event Action<string, string, string>? TaskProgressSummary;
+
+    /// <summary>
     /// Moves the command or subagent of a running step to the background. The
     /// tool call returns at once and the turn goes on. Returns false when the
     /// step no longer runs in the foreground, or when no CLI process runs.

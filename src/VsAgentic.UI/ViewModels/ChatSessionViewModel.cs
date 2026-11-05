@@ -564,6 +564,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         chatService.MessageStarted += OnChatServiceMessageStarted;
         chatService.StepBackgroundStateChanged += OnChatServiceStepBackgroundStateChanged;
         chatService.StepCanMoveToBackground += OnChatServiceStepCanMoveToBackground;
+        chatService.TaskProgressSummary += OnChatServiceTaskProgressSummary;
 
         InitializeUsage(chatService, options.Value);
         InitializeSlashCommands();
@@ -690,6 +691,25 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     private void OnChatServiceStepCanMoveToBackground(string stepId) =>
         Dispatch(() => MessageCanMoveToBackground?.Invoke(stepId));
+
+    /// <summary>
+    /// Raised with what a running subagent is doing now, for its Agent step.
+    /// Arguments: the step id and the summary. Not saved: the line is only
+    /// true while the subagent runs.
+    /// </summary>
+    public event Action<string, string>? MessageProgressSummarySet;
+
+    // The same line goes on the Agent step and, for a subagent in the
+    // background, on its row of the background tasks strip.
+    private void OnChatServiceTaskProgressSummary(string taskId, string stepId, string summary)
+    {
+        Dispatch(() =>
+        {
+            MessageProgressSummarySet?.Invoke(stepId, summary);
+            foreach (var row in BackgroundTaskItems)
+                if (row.Id == taskId) row.Summary = summary;
+        });
+    }
 
     /// <summary>
     /// Moves a running step's command or subagent to the background. Called
@@ -1918,6 +1938,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 _chatService.PermissionModeRejected -= OnChatServicePermissionModeRejected;
                 _chatService.StepBackgroundStateChanged -= OnChatServiceStepBackgroundStateChanged;
                 _chatService.StepCanMoveToBackground -= OnChatServiceStepCanMoveToBackground;
+                _chatService.TaskProgressSummary -= OnChatServiceTaskProgressSummary;
             }
             // Static: without this, a closed session stays reachable from the catalog.
             ClaudeModelCatalog.ReportedChanged -= OnReportedModelsChanged;

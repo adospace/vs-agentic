@@ -22,16 +22,11 @@ public partial class PlanBannerViewModel : PermissionBannerViewModel
     private const string AskBeforeEditsMode = "default";
 
     private readonly PermissionRequest _request;
-    private readonly Action<PermissionDecision> _onResolved;
-
-    // Set by the first answer. A second click must not answer again.
-    private bool _resolved;
 
     public PlanBannerViewModel(PermissionRequest request, Action<PermissionDecision> onResolved)
         : base(request, onResolved)
     {
         _request = request;
-        _onResolved = onResolved;
     }
 
     /// <summary>Shows the feedback box in place of the answer buttons.</summary>
@@ -44,20 +39,23 @@ public partial class PlanBannerViewModel : PermissionBannerViewModel
     [ObservableProperty]
     private string _feedbackText = "";
 
-    private bool CanAnswer() => !_resolved;
+    // The answer commands use the base's CanDecide: answered once, and held
+    // for a moment when the plan comes up after another prompt (#176).
 
     /// <summary>Start, and let Claude edit files without asking.</summary>
-    [RelayCommand(CanExecute = nameof(CanAnswer))]
-    private void StartAcceptingEdits() => Answer(PermissionDecision.AllowAndSetMode(InputJson(), AcceptEditsMode));
+    [RelayCommand(CanExecute = nameof(CanDecide))]
+    private void StartAcceptingEdits() => Resolve(PermissionDecision.AllowAndSetMode(InputJson(), AcceptEditsMode));
 
     /// <summary>
     /// Start, and ask before each edit. The mode is set explicitly, so the
     /// session asks whatever mode it was in before plan mode.
     /// </summary>
-    [RelayCommand(CanExecute = nameof(CanAnswer))]
-    private void StartAskingBeforeEdits() => Answer(PermissionDecision.AllowAndSetMode(InputJson(), AskBeforeEditsMode));
+    [RelayCommand(CanExecute = nameof(CanDecide))]
+    private void StartAskingBeforeEdits() => Resolve(PermissionDecision.AllowAndSetMode(InputJson(), AskBeforeEditsMode));
 
-    [RelayCommand(CanExecute = nameof(CanAnswer))]
+    /// <summary>Only opens the feedback box, but held like the answers, so
+    /// the second click of a double-click does not open it unread.</summary>
+    [RelayCommand(CanExecute = nameof(CanDecide))]
     private void KeepPlanning() => IsGivingFeedback = true;
 
     [RelayCommand]
@@ -68,22 +66,17 @@ public partial class PlanBannerViewModel : PermissionBannerViewModel
     /// hands the message to Claude as the result of its call, which is what
     /// makes it revise the plan. Measured on CLI 2.1.316.
     /// </summary>
-    [RelayCommand(CanExecute = nameof(CanAnswer))]
+    [RelayCommand(CanExecute = nameof(CanDecide))]
     private void SendFeedback()
     {
-        Answer(PermissionDecision.Deny(PlanAnswers.KeepPlanning(FeedbackText)));
+        Resolve(PermissionDecision.Deny(PlanAnswers.KeepPlanning(FeedbackText)));
     }
 
-    private void Answer(PermissionDecision decision)
+    // Called by the base when the banner is answered and when the input hold
+    // starts or ends.
+    protected override void NotifyDecisionCommands()
     {
-        if (!CanAnswer()) return;
-        _resolved = true;
-        NotifyAnswerCommands();
-        _onResolved(decision);
-    }
-
-    private void NotifyAnswerCommands()
-    {
+        base.NotifyDecisionCommands();
         StartAcceptingEditsCommand.NotifyCanExecuteChanged();
         StartAskingBeforeEditsCommand.NotifyCanExecuteChanged();
         KeepPlanningCommand.NotifyCanExecuteChanged();

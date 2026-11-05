@@ -211,6 +211,14 @@ internal static class StreamJsonProtocol
         BuildControlRequest(requestId, "interrupt", w => w.WriteBoolean("cancel_queued", true));
 
     /// <summary>
+    /// Build the <c>cancel_async_message</c> request, which takes a message out
+    /// of the CLI's queue before a turn has read it. The answer's
+    /// <c>cancelled</c> is false when the message was no longer queued.
+    /// </summary>
+    public static string BuildCancelAsyncMessage(string requestId, string messageUuid) =>
+        BuildControlRequest(requestId, "cancel_async_message", w => w.WriteString("message_uuid", messageUuid));
+
+    /// <summary>
     /// Build the <c>set_model</c> request. A null model returns the session to
     /// the account's default model, not to the <c>--model</c> the process was
     /// started with (measured on CLI 2.1.296).
@@ -224,6 +232,13 @@ internal static class StreamJsonProtocol
     /// </summary>
     public static string BuildGetSettings(string requestId) =>
         BuildControlRequest(requestId, "get_settings");
+
+    /// <summary>
+    /// Build the <c>mcp_status</c> request. Its answer lists every MCP server
+    /// with the <c>error</c> text that <c>system/init</c> leaves out.
+    /// </summary>
+    public static string BuildMcpStatus(string requestId) =>
+        BuildControlRequest(requestId, "mcp_status");
 
     /// <summary>
     /// Build the <c>get_context_usage</c> request. Its answer carries
@@ -252,6 +267,14 @@ internal static class StreamJsonProtocol
             if (includeEffort) WriteStringOrNull(w, "effortLevel", effort);
             w.WriteEndObject();
         });
+
+    /// <summary>
+    /// Build the control request that switches the permission mode of the
+    /// running process. The CLI answers with the mode now in effect and also
+    /// emits <c>system/status</c> with it.
+    /// </summary>
+    public static string BuildSetPermissionMode(string requestId, string mode) =>
+        BuildControlRequest(requestId, "set_permission_mode", w => w.WriteString("mode", mode));
 
     /// <summary>
     /// Build the request that turns fast mode on or off:

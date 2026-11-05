@@ -42,6 +42,10 @@ html, body {
     overflow-x: hidden;
     height: 100%;
     padding: 8px 0;
+    /* Chromium draws the scrolled content on a layer of its own and keeps
+       ClearType only where that layer is opaque; without a background of its
+       own, all chat text falls back to grayscale antialiasing. */
+    background: var(--bg-primary);
 }
 
 /* Custom scrollbar styling */
@@ -258,6 +262,35 @@ html, body {
     margin-bottom: 6px;
     color: var(--prompt-accent);
 }
+/* A long prompt, usually something pasted, is capped like a step's output so
+   it does not push the conversation off the screen. */
+.msg-user .msg-content.capped {
+    max-height: 220px;
+    overflow: hidden;
+    position: relative;
+}
+.msg-user .msg-content.capped::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 30px;
+    background: linear-gradient(transparent, var(--prompt-bg));
+}
+.msg-user .show-more-link { margin-left: 0; }
+/* Headings and paragraph gaps in a prompt mostly come along with pasted text,
+   such as a card copied from a tracker. At the reply's sizes they make the
+   prompt look like a document and take twice the room. */
+.msg-user .md-content h1,
+.msg-user .md-content h2,
+.msg-user .md-content h3 {
+    font-size: 1.1em;
+    margin: 0.3em 0;
+    border-bottom: none;
+    padding-bottom: 0;
+}
+.msg-user .md-content p { margin: 0.2em 0; }
 
 .msg-assistant {
     padding: 0 8px;
@@ -554,6 +587,35 @@ html, body {
 /* A subagent's row, inside its Agent step and lined up with the step's body. */
 .activity.subagent { margin: 4px 0 0 18px; }
 
+/* Scheduled checks: a run of checks the model scheduled for itself, folded
+   into one block. Most of them find nothing, and one block per check buries
+   the replies that matter. The header says when the last check ran and how
+   many there were; the last check is shown below it, the earlier ones are
+   behind the header. */
+.check-header {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin: 6px 12px 2px;
+    font-size: 12px;
+    color: var(--text-muted);
+    user-select: none;
+}
+.check-block.has-history > .check-header { cursor: pointer; }
+.check-header .activity-arrow { visibility: hidden; }
+.check-block.has-history > .check-header .activity-arrow { visibility: visible; }
+.check-history {
+    display: none;
+    margin: 0 12px 4px 14px;
+    border-left: 2px solid var(--border);
+}
+.check-history.visible { display: block; }
+.check-tick-time {
+    margin: 6px 12px 0;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
 /* Streaming indicator */
 .streaming-cursor::after {
     content: '\25ae';
@@ -668,6 +730,9 @@ html, body {
 </style>
 <script>{{SHOWDOWN_JS}}</script>
 <script>
+// requireSpaceBeforeHeadingText: a heading needs "# " as in CommonMark.
+// Showdown's default reads "#176" at the start of a line as an <h1> and
+// drops the "#", so an issue number turns into a heading.
 var converter = new showdown.Converter({
     tables: true,
     tasklists: true,
@@ -675,7 +740,8 @@ var converter = new showdown.Converter({
     ghCodeBlocks: true,
     simplifiedAutoLink: true,
     literalMidWordUnderscores: true,
-    openLinksInNewWindow: true
+    openLinksInNewWindow: true,
+    requireSpaceBeforeHeadingText: true
 });
 
 // User-typed messages: preserve single newlines as <br> so multi-line
@@ -688,7 +754,8 @@ var userConverter = new showdown.Converter({
     simplifiedAutoLink: true,
     literalMidWordUnderscores: true,
     openLinksInNewWindow: true,
-    simpleLineBreaks: true
+    simpleLineBreaks: true,
+    requireSpaceBeforeHeadingText: true
 });
 
 var _userScrolledUp = false;
@@ -702,6 +769,39 @@ var STATUS_COLORS = { Pending: 'var(--info)', Success: 'var(--success)', Error: 
 // File path regex: require extension starts lowercase to avoid false positives like RTR.MobileApp
 var filePathRe = /(?:[A-Za-z]:[\\\/]|\.{0,2}\/|(?=[\w@]))(?:[\w\-\.@]+[\\\/])+[\w\-\.]+\.[a-z][a-zA-Z0-9]{0,9}(?::(\d+)(?:-\d+)?)?/g;
 
+// The same shape, anchored so that the whole string has to be the path, with
+// a space allowed between the words of a segment that has a separator on both
+// sides. The first segment of a relative path and the file name stay without
+// spaces, so a command followed by arguments (`dotnet build src/App/App.csproj`,
+// `git add src/a.cs src/b.cs`) is not read as one path. In a segment with a
+// space no word starts with "-" or has a ".": an option (`python -m pkg/x.py`)
+// or a file name (`./build.sh --out bin/x.dll`, `src/a.cs src/b.cs`) then
+// cannot pass as a folder name.
+// A space may only be part of a path where something other than the pattern
+// says where the path ends: a code span, or double quotes. In running text
+// nothing does, and a greedy segment would eat the words between two paths.
+var wholePathRe = /^(?:(?:[A-Za-z]:[\\\/]|\.{0,2}\/)(?:(?:[\w\-\.@]+|[\w@][\w\-@]*(?: [\w@][\w\-@]*)+)[\\\/])+|(?=[\w@])[\w\-\.@]+[\\\/](?:(?:[\w\-\.@]+|[\w@][\w\-@]*(?: [\w@][\w\-@]*)+)[\\\/])*)[\w\-\.]+\.[a-z][a-zA-Z0-9]{0,9}(?::(\d+)(?:-\d+)?)?$/;
+
+// Scans plain text for a bare path, or for a double-quoted run to try
+// wholePathRe on. Single quotes are left out on purpose: an apostrophe in
+// ordinary prose opens a run that swallows half a sentence.
+var textScanRe = new RegExp('"[^"\\r\\n]+"|' + filePathRe.source, 'g');
+
+// Appends txt[from, start) as text and txt[start, end) as a file link, and
+// returns where the next piece starts.
+function appendFileLink(frag, txt, from, start, end) {
+    if (start > from)
+        frag.appendChild(document.createTextNode(txt.slice(from, start)));
+    var a = document.createElement('a');
+    a.href = '#';
+    a.className = 'file-link';
+    a.dataset.path = txt.slice(start, end).trim();
+    a.textContent = txt.slice(start, end);
+    a.title = 'Open in editor';
+    frag.appendChild(a);
+    return end;
+}
+
 function linkifyFilePaths(container) {
     var codes = container.querySelectorAll('code');
     for (var i = 0; i < codes.length; i++) {
@@ -709,13 +809,14 @@ function linkifyFilePaths(container) {
         if (code.closest('pre')) continue;
         if (code.querySelector('a')) continue;
         var text = code.textContent;
-        filePathRe.lastIndex = 0;
-        if (filePathRe.test(text) && text.match(filePathRe).length === 1 && text.trim() === text.match(filePathRe)[0]) {
-            var match = text.match(filePathRe)[0];
+        var whole = text.trim();
+        // The backticks are the boundary, so the whole span either is a path
+        // or is not one.
+        if (wholePathRe.test(whole)) {
             var a = document.createElement('a');
             a.href = '#';
             a.className = 'file-link';
-            a.dataset.path = match;
+            a.dataset.path = whole;
             a.textContent = text;
             a.title = 'Open in editor';
             code.textContent = '';
@@ -743,24 +844,34 @@ function linkifyFilePaths(container) {
         var node = textNodes[k];
         if (node.parentNode.closest('pre, code, a')) continue;
         var txt = node.nodeValue;
-        filePathRe.lastIndex = 0;
-        if (!filePathRe.test(txt)) continue;
-        filePathRe.lastIndex = 0;
+        textScanRe.lastIndex = 0;
+        if (!textScanRe.test(txt)) continue;
+        textScanRe.lastIndex = 0;
         var frag = document.createDocumentFragment();
         var lastIdx = 0;
         var m;
-        while ((m = filePathRe.exec(txt)) !== null) {
-            if (m.index > lastIdx)
-                frag.appendChild(document.createTextNode(txt.slice(lastIdx, m.index)));
-            var a = document.createElement('a');
-            a.href = '#';
-            a.className = 'file-link';
-            a.dataset.path = m[0];
-            a.textContent = m[0];
-            a.title = 'Open in editor';
-            frag.appendChild(a);
-            lastIdx = filePathRe.lastIndex;
+        while ((m = textScanRe.exec(txt)) !== null) {
+            if (m[0].charAt(0) !== '"') {
+                lastIdx = appendFileLink(frag, txt, lastIdx, m.index, m.index + m[0].length);
+                continue;
+            }
+            var start = m.index + 1;
+            var end = m.index + m[0].length - 1;
+            if (wholePathRe.test(txt.slice(start, end).trim())) {
+                // The quotes stay as text; only what is between them is the link.
+                lastIdx = appendFileLink(frag, txt, lastIdx, start, end);
+                continue;
+            }
+            // Quoted, but not a path. A plain path inside the quoted sentence
+            // is still a link. Scanning goes on after the closing quote, so
+            // that quote cannot pair with the next opening one.
+            var inner = txt.slice(start, end);
+            var p;
+            filePathRe.lastIndex = 0;
+            while ((p = filePathRe.exec(inner)) !== null)
+                lastIdx = appendFileLink(frag, txt, lastIdx, start + p.index, start + p.index + p[0].length);
         }
+        if (lastIdx === 0) continue; // only quoted runs that are not paths
         if (lastIdx < txt.length)
             frag.appendChild(document.createTextNode(txt.slice(lastIdx)));
         node.parentNode.replaceChild(frag, node);
@@ -882,6 +993,15 @@ function isSessionLine(type, data) {
     return type === 'ToolStep' && SESSION_LINE_TOOLS.indexOf(data.ToolName) >= 0;
 }
 
+// An IDE tool's step goes by its title ("Reading the Error List"), not by
+// mcp__vsagentic__…; null for other steps. Steps saved before IDE tools kept
+// their title still read "Used …", and keep the name.
+function ideToolTitle(data) {
+    if (typeof data.ToolName !== 'string' || data.ToolName.indexOf('mcp__vsagentic__') !== 0) return null;
+    if (!data.Title || /^Us(ed|ing) /.test(data.Title)) return null;
+    return data.Title;
+}
+
 function setActivityLabel(group, text) {
     var label = group.querySelector('.activity-label');
     if (label) label.textContent = text || '';
@@ -974,8 +1094,8 @@ function createActivityGroup(before, host) {
 
     group.appendChild(header);
     group.appendChild(items);
-    if (before) _container.insertBefore(group, before);
-    else (host || _container).appendChild(group);
+    if (before) before.parentNode.insertBefore(group, before);
+    else (host || outputHost()).appendChild(group);
     return group;
 }
 
@@ -1004,10 +1124,11 @@ function addToActivityGroup(div, type, data, group) {
     // restored session, which is why the dot never turned red on one.
     if (data.Status === 'Error') group.classList.add('has-error');
 
-    // A subagent goes by its description, so the row names which one ran.
+    // A subagent goes by its description, so the row names which one ran; an
+    // IDE tool by its title.
     var tool = type === 'Thinking' ? 'Thinking'
              : (data.ToolName === 'Agent' && data.Title) ? data.Title
-             : (data.ToolName || 'tool');
+             : (ideToolTitle(data) || data.ToolName || 'tool');
     var seen = group._tools.indexOf(tool);
     if (seen >= 0) group._tools.splice(seen, 1);
     group._tools.push(tool);
@@ -1128,6 +1249,110 @@ function closeActivityGroup() {
     setActivityDetail(group, '');
 }
 
+// --- Scheduled checks ---
+// A check the model scheduled for itself (CronCreate, /loop) is a turn the CLI
+// starts on its own, opened by a notice with the ScheduledCheck tool name.
+// Consecutive checks go into one block: the last check stays in the open and
+// the ones before it fold behind the block's header, which counts them.
+//
+// A check that edited files or failed is not folded away: the next check opens
+// a block of its own. So does anything that comes between two checks. Shell
+// commands do not count as edits; most checks read the folder with one.
+
+var CHECK_KEEPS = '.msg[data-tool="Edit"], .msg[data-tool="Write"], .msg[data-tool="MultiEdit"], .msg[data-tool="NotebookEdit"], .msg[data-tool="ClaudeCli"][data-status="Error"]';
+
+// The block whose check is running; its output goes there.
+var _checkBlock = null;
+
+function isScheduledCheck(type, data) {
+    return type === 'Notice' && data.ToolName === 'ScheduledCheck';
+}
+
+// Where output that is not part of a row goes: the running check, or the chat.
+function outputHost() {
+    return _checkBlock ? _checkBlock._current : _container;
+}
+
+function createCheckBlock() {
+    var block = document.createElement('div');
+    block.className = 'check-block';
+    block._count = 0;
+
+    var header = document.createElement('div');
+    header.className = 'check-header';
+    var arrow = document.createElement('span');
+    arrow.className = 'activity-arrow';
+    arrow.textContent = '▶';
+    var icon = document.createElement('span');
+    icon.className = 'notice-icon';
+    icon.textContent = '↻';
+    var label = document.createElement('span');
+    label.className = 'check-label';
+    header.appendChild(arrow);
+    header.appendChild(icon);
+    header.appendChild(label);
+
+    var history = document.createElement('div');
+    history.className = 'check-history';
+    var current = document.createElement('div');
+    current.className = 'check-current';
+
+    header.addEventListener('click', function() {
+        if (!block.classList.contains('has-history')) return;
+        var show = !history.classList.contains('visible');
+        history.classList.toggle('visible', show);
+        arrow.classList.toggle('expanded', show);
+        header.title = show ? 'Hide the earlier checks' : 'Show the earlier checks';
+        if (show) applyPendingBodyCaps(history);
+    });
+
+    block.appendChild(header);
+    block.appendChild(history);
+    block.appendChild(current);
+    block._label = label;
+    block._header = header;
+    block._history = history;
+    block._current = current;
+    _container.appendChild(block);
+    return block;
+}
+
+// The block the next check can join: the last thing in the chat, with a last
+// check that changed nothing.
+function foldableCheckBlock() {
+    var last = _container.lastElementChild;
+    if (!last || !last.classList.contains('check-block')) return null;
+    return last._current.querySelector(CHECK_KEEPS) ? null : last;
+}
+
+function startScheduledCheck(data) {
+    endScheduledCheck();
+    var block = foldableCheckBlock();
+    if (block) {
+        var tick = document.createElement('div');
+        tick.className = 'check-tick';
+        var time = document.createElement('div');
+        time.className = 'check-tick-time';
+        time.textContent = block._time;
+        tick.appendChild(time);
+        while (block._current.firstChild) tick.appendChild(block._current.firstChild);
+        block._history.appendChild(tick);
+        block.classList.add('has-history');
+        if (!block._header.title) block._header.title = 'Show the earlier checks';
+    } else {
+        block = createCheckBlock();
+    }
+    block._count++;
+    block._time = data.Title || '';
+    block._label.textContent = 'Scheduled check' + (block._time ? ' · ' + block._time : '')
+        + (block._count > 1 ? ' · ' + block._count + ' checks' : '');
+    _checkBlock = block;
+}
+
+function endScheduledCheck() {
+    _checkBlock = null;
+}
+
 // --- Public API ---
 
 // Called by the host when the turn is over. Without it a group whose last step
@@ -1135,6 +1360,7 @@ function closeActivityGroup() {
 // message happened to close it.
 function endActivity() {
     closeActivityGroup();
+    endScheduledCheck();
 }
 
 function addMessage(id, type, dataJson) {
@@ -1182,6 +1408,10 @@ function addMessage(id, type, dataJson) {
         linkifyFilePaths(content);
         addBlockCopyButtons(content);
         div.appendChild(content);
+        // Capped before it is placed, so a long prompt never shows at full
+        // height first; measured once it is laid out.
+        content.classList.add('capped');
+        requestAnimationFrame(function() { applyPromptCap(content, data.Content || ''); });
     }
     else if (type === 'Assistant') {
         div.classList.add('msg-assistant');
@@ -1226,6 +1456,8 @@ function addMessage(id, type, dataJson) {
     }
     else if (type === 'ToolStep') {
         div.classList.add('msg-toolstep');
+        // Read by a scheduled check, to tell whether it edited files.
+        div.dataset.tool = data.ToolName || '';
         // Header row
         var header = document.createElement('div');
         header.className = 'toolstep-header';
@@ -1235,7 +1467,7 @@ function addMessage(id, type, dataJson) {
         statusSpan.textContent = STATUS_SYMBOLS[data.Status] || STATUS_SYMBOLS.Pending;
         var nameSpan = document.createElement('span');
         nameSpan.className = 'toolstep-name';
-        nameSpan.textContent = '[' + (data.ToolName || '') + ']';
+        nameSpan.textContent = '[' + (ideToolTitle(data) || data.ToolName || '') + ']';
         // An Agent step's title is the description the model gave its
         // subagent. The expander that shows it is hidden once the step is
         // done, and without it two subagents cannot be told apart.
@@ -1374,9 +1606,15 @@ function placeMessage(div, type, data) {
     if (data.ParentId) {
         addSubagentStep(div, type, data);
         maybeScrollToBottom();
+    } else if (isScheduledCheck(type, data)) {
+        // The notice is not shown; the check's block says it all.
+        closeActivityGroup();
+        startScheduledCheck(data);
+        maybeScrollToBottom();
     } else if (type === 'User') {
         // A new prompt ends the previous turn's row for good.
         closeActivityGroup();
+        endScheduledCheck();
         _container.appendChild(div);
         // A prompt the user just sent themselves: take them to it no matter
         // where they were reading. Only output that arrives on its own is
@@ -1390,6 +1628,7 @@ function placeMessage(div, type, data) {
         // steps do not fold into the last one, nor take its reply with them,
         // and leave the notice standing.
         closeActivityGroup();
+        endScheduledCheck();
         _container.appendChild(div);
         maybeScrollToBottom();
     } else if (isSessionLine(type, data)) {
@@ -1398,13 +1637,13 @@ function placeMessage(div, type, data) {
         // it stays where it is: it may be the reply, which a Stop hook's
         // message follows.
         closeActivityGroup();
-        _container.appendChild(div);
+        outputHost().appendChild(div);
         maybeScrollToBottom();
     } else if (isTurnFailure(type, data)) {
         // Left standing, and the text before it left alone: when a turn ends in
         // an error, that text is usually as far as the answer got, and folding
         // it away takes both the answer and the reason off the screen at once.
-        _container.appendChild(div);
+        outputHost().appendChild(div);
         maybeScrollToBottom();
     } else if (isActivityType(type)) {
         absorbPendingText();
@@ -1417,7 +1656,7 @@ function placeMessage(div, type, data) {
         // "Processing stopped." or "Error:" message the view model adds when a
         // turn is cancelled or throws — and the reply it interrupts has to stay
         // where it can be read.
-        _container.appendChild(div);
+        outputHost().appendChild(div);
         _pendingText = div;
         maybeScrollToBottom();
     }
@@ -1635,6 +1874,35 @@ function applyBodyCap(el, body) {
     body.parentNode.insertBefore(link, body.nextSibling);
 }
 
+// The cap stays only when it hides enough to be worth a click: a prompt a few
+// lines over the cap shows in full. Reads scrollHeight, so the prompt has to
+// be laid out.
+var PROMPT_CAP = 220;
+var PROMPT_CAP_SLACK = 80;
+function applyPromptCap(content, source) {
+    if (content.scrollHeight <= PROMPT_CAP + PROMPT_CAP_SLACK) {
+        content.classList.remove('capped');
+    } else {
+        var lines = source.split('\n').filter(function(l) { return l.trim(); }).length;
+        var showAll = 'Show all (' + lines + ' lines)';
+        var link = document.createElement('span');
+        link.className = 'show-more-link';
+        link.textContent = showAll;
+        link.addEventListener('click', function() {
+            var isCapped = content.classList.contains('capped');
+            var linkTop = link.getBoundingClientRect().top;
+            content.classList.toggle('capped', !isCapped);
+            link.textContent = isCapped ? 'Show less' : showAll;
+            // Folded back from its end, a long prompt would leave the reader
+            // far below it. Keep the link where it was on screen.
+            if (!isCapped) _container.scrollTop += link.getBoundingClientRect().top - linkTop;
+        });
+        content.parentNode.insertBefore(link, content.nextSibling);
+    }
+    // Either way the prompt's height changed after the scroll that placed it.
+    if (!_userScrolledUp) scrollToBottom();
+}
+
 function applyPendingBodyCaps(items) {
     var pending = items.querySelectorAll('.msg-body[data-cap-pending]');
     for (var i = 0; i < pending.length; i++) {
@@ -1669,6 +1937,7 @@ function clearAll() {
     if (_container) _container.innerHTML = '';
     _activityGroup = null;
     _pendingText = null;
+    _checkBlock = null;
     _orphanSteps = {};
     _userScrolledUp = false;
     updateScrollButton();
@@ -1692,6 +1961,7 @@ function loadMessages(jsonArray) {
     // Nothing in a restored transcript is still running, including a run of
     // steps that the session ended on.
     closeActivityGroup();
+    endScheduledCheck();
     _userScrolledUp = false;
     scrollToBottom();
     updateScrollButton();
@@ -1994,6 +2264,11 @@ function revealMatch(range) {
     var el = range.startContainer.parentElement;
     if (!el) return;
 
+    // Outermost first: a folded check holds the rows of its own turn.
+    var checks = el.closest('.check-history');
+    if (checks && !checks.classList.contains('visible')) {
+        checks.parentNode.querySelector('.check-header').click();
+    }
     var items = el.closest('.activity-items');
     if (items && !items.classList.contains('visible')) {
         items.parentNode.querySelector('.activity-header').click();

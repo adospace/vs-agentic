@@ -122,8 +122,12 @@ public sealed record CliModelInfo(
     }
 }
 
-/// <summary>A slash command or skill the CLI offers, from its answer to <c>initialize</c>.</summary>
-public sealed record CliCommandInfo(string Name, string? Description, string? ArgumentHint);
+/// <summary>
+/// A slash command or skill the CLI offers, from its answer to <c>initialize</c>
+/// or a <c>commands_changed</c> event. <see cref="Builtin"/> marks Claude
+/// Code's own commands; it is absent for a user, project, plugin or MCP one.
+/// </summary>
+public sealed record CliCommandInfo(string Name, string? Description, string? ArgumentHint, bool Builtin = false);
 
 /// <summary>
 /// What the running CLI said about itself in its answer to <c>initialize</c>:
@@ -180,21 +184,30 @@ public sealed class CliProcessInfo
                 .ToList();
         }
 
-        if (response.TryGetProperty("commands", out var commands) && commands.ValueKind == JsonValueKind.Array)
-        {
-            info.Commands = commands.EnumerateArray()
-                .Where(c => c.ValueKind == JsonValueKind.Object)
-                .Select(c => (name: ReadString(c, "name"), c))
-                .Where(x => !string.IsNullOrEmpty(x.name))
-                .Select(x => new CliCommandInfo(
-                    x.name!,
-                    ReadString(x.c, "description"),
-                    ReadString(x.c, "argumentHint")))
-                .ToList();
-        }
+        info.Commands = ReadCommands(response);
 
         return info;
     }
+
+    /// <summary>The <c>commands</c> array of an <c>initialize</c> answer or a <c>commands_changed</c> event.</summary>
+    internal static IReadOnlyList<CliCommandInfo> ReadCommands(JsonElement owner)
+    {
+        if (!owner.TryGetProperty("commands", out var commands) || commands.ValueKind != JsonValueKind.Array)
+            return Array.Empty<CliCommandInfo>();
+
+        return commands.EnumerateArray()
+            .Where(c => c.ValueKind == JsonValueKind.Object)
+            .Select(c => (name: ReadString(c, "name"), c))
+            .Where(x => !string.IsNullOrEmpty(x.name))
+            .Select(x => new CliCommandInfo(
+                x.name!,
+                ReadString(x.c, "description"),
+                ReadString(x.c, "argumentHint"),
+                x.c.TryGetProperty("builtin", out var b) && b.ValueKind == JsonValueKind.True))
+            .ToList();
+    }
+
+    internal static IReadOnlyList<string> ReadStringList(JsonElement owner, string name) => ReadStrings(owner, name);
 
     internal static string? ReadString(JsonElement owner, string name) =>
         owner.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
@@ -206,9 +219,39 @@ public sealed class CliProcessInfo
 }
 
 /// <summary>
+/// An MCP server as <c>system/init</c> lists it. <see cref="Status"/> is
+/// <c>connected</c>, <c>failed</c>, <c>needs-auth</c>, <c>pending</c> or
+/// <c>disabled</c>. <see cref="Source"/> says where its definition came from
+/// (<c>dynamic</c> for <c>--mcp-config</c>, <c>project</c>, <c>user</c>,
+/// <c>claudeai</c> …) and is absent on older CLIs.
+/// </summary>
+public sealed record CliMcpServer(string Name, string Status, string? Source)
+{
+    public const string Connected = "connected";
+    public const string Pending = "pending";
+    public const string Disabled = "disabled";
+    public const string NeedsAuth = "needs-auth";
+
+    /// <summary>
+    /// The model cannot use the server, and not because the user turned it
+    /// off or because it is still starting.
+    /// </summary>
+    public bool IsUnavailable => Status != Connected && Status != Pending && Status != Disabled;
+
+    /// <summary>The server uses OAuth and the user has not signed in to it.</summary>
+    public bool NeedsSignIn => Status == NeedsAuth;
+}
+
+/// <summary>
+/// An <c>--mcp-config</c> entry the CLI skipped because its config is not
+/// valid, from <c>system/init.mcp_server_errors</c>.
+/// </summary>
+public sealed record CliMcpServerError(string Name, string? Type, string? Message);
+
+/// <summary>
 /// The <c>system/init</c> event. The CLI sends it at the start of every turn,
 /// not once per process, with the session id, the model actually serving the
-/// turn, and its capabilities.
+/// turn, its capabilities and the state of its MCP servers.
 /// </summary>
 internal sealed class CliInitEvent
 {
@@ -220,6 +263,22 @@ internal sealed class CliInitEvent
     public IReadOnlyList<string> Tools { get; private set; } = Array.Empty<string>();
     public FastModeStatus? FastMode { get; private set; }
 
+    /// <summary>
+    /// The names of every command the session can run, as they are typed.
+    /// A plugin's skill carries its plugin here ("anthropic-skills:pdf"),
+    /// where the <c>initialize</c> answer may give the bare name. Null for a
+    /// CLI that does not send the list.
+    /// </summary>
+    public IReadOnlyList<string>? SlashCommands { get; private set; }
+
+    /// <summary>Commands that work only in the terminal, not in a session like ours.</summary>
+    public IReadOnlyList<string> TerminalSlashCommands { get; private set; } = Array.Empty<string>();
+
+    /// <summary>Null when the event has no <c>mcp_servers</c> list at all.</summary>
+    public IReadOnlyList<CliMcpServer>? McpServers { get; private set; }
+
+    public IReadOnlyList<CliMcpServerError> McpServerErrors { get; private set; } = Array.Empty<CliMcpServerError>();
+
     public static CliInitEvent Read(JsonElement evt)
     {
         var init = new CliInitEvent
@@ -230,7 +289,36 @@ internal sealed class CliInitEvent
             PermissionMode = CliProcessInfo.ReadString(evt, "permissionMode"),
             Capabilities = CliCapabilities.Read(evt),
             FastMode = FastModeStatus.Read(evt),
+            SlashCommands = evt.TryGetProperty("slash_commands", out var sc) && sc.ValueKind == JsonValueKind.Array
+                ? CliProcessInfo.ReadStringList(evt, "slash_commands")
+                : null,
+            TerminalSlashCommands = CliProcessInfo.ReadStringList(evt, "terminal_slash_commands"),
         };
+
+        if (evt.TryGetProperty("mcp_servers", out var servers) && servers.ValueKind == JsonValueKind.Array)
+        {
+            init.McpServers = servers.EnumerateArray()
+                .Where(s => s.ValueKind == JsonValueKind.Object)
+                .Select(s => (name: CliProcessInfo.ReadString(s, "name"), s))
+                .Where(x => !string.IsNullOrEmpty(x.name))
+                .Select(x => new CliMcpServer(
+                    x.name!,
+                    CliProcessInfo.ReadString(x.s, "status") ?? "",
+                    CliProcessInfo.ReadString(x.s, "source")))
+                .ToList();
+        }
+
+        // Present only when an entry was skipped.
+        if (evt.TryGetProperty("mcp_server_errors", out var errors) && errors.ValueKind == JsonValueKind.Array)
+        {
+            init.McpServerErrors = errors.EnumerateArray()
+                .Where(e => e.ValueKind == JsonValueKind.Object)
+                .Select(e => new CliMcpServerError(
+                    CliProcessInfo.ReadString(e, "name") ?? "",
+                    CliProcessInfo.ReadString(e, "type"),
+                    CliProcessInfo.ReadString(e, "message")))
+                .ToList();
+        }
 
         if (evt.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array)
         {

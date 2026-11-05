@@ -74,13 +74,24 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
 
     /// <summary>Opens the file as it is now against the file with the edit
     /// applied. The banner stays: the user decides after looking.</summary>
-    [RelayCommand]
+    /// <remarks>Not a decision: it answers nothing, so it works while the
+    /// answer buttons are held. It stops once the banner is answered, because
+    /// the edit then runs or is refused and the diff would show a change that
+    /// is no longer waiting.</remarks>
+    [RelayCommand(CanExecute = nameof(CanOpenDiff))]
     private async Task ViewDiffAsync()
     {
         if (_viewDiff is null) return;
         DiffNotice = "";
         DiffNotice = await _viewDiff() ?? "";
     }
+
+    private bool CanOpenDiff() => !_resolved;
+
+    /// <summary>True once the user has answered. Checked again before the
+    /// viewer opens: the file is read off the UI thread, and the answer may
+    /// come while it is read.</summary>
+    public bool IsAnswered => _resolved;
 
     // Set by the first decision. A second click or a held Enter must not
     // answer again: the next banner in the queue would be taken down unread.
@@ -118,6 +129,7 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
         if (!CanDecide()) return;
         _resolved = true;
         NotifyDecisionCommands();
+        ViewDiffCommand.NotifyCanExecuteChanged();
         _onResolved(decision);
     }
 

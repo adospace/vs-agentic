@@ -881,7 +881,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 {
                     Dispatch(() => ShowNextPromptAfter(banner));
                     _permissionBroker?.Resolve(request.Id, decision);
-                }, canViewDiff ? () => OpenProposedDiffAsync(request) : null);
+                }, canViewDiff ? () => OpenProposedDiffAsync(request, () => banner?.IsAnswered != true) : null);
                 banner.AskedBy = FindAskingSubagent(request.ToolUseId);
                 ShowPrompt(banner);
             }
@@ -909,9 +909,12 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// <summary>
     /// Opens the change a file edit waiting for permission would make, read
     /// against the file as it is now. Returns what to tell the user when there
-    /// is no diff to open, or null when the viewer opened.
+    /// is no diff to open, or null when the viewer opened or the request was
+    /// answered while the file was read.
     /// </summary>
-    private async Task<string?> OpenProposedDiffAsync(PermissionRequest request)
+    /// <param name="stillWaiting">False once the request is answered. The
+    /// viewer then stays closed: the edit has run or been refused.</param>
+    private async Task<string?> OpenProposedDiffAsync(PermissionRequest request, Func<bool> stillWaiting)
     {
         var path = FileChanges.EditedFilePath(request.ToolName, request.Input);
         if (path is null) return null;
@@ -946,6 +949,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             _logger.LogWarning(ex, "[VM] Could not read {Path} for the diff", path);
             return $"Could not read the file: {ex.Message}";
         }
+
+        if (!stillWaiting()) return null;
 
         // The edit was applied to the file as it is now. When an earlier edit
         // changed the text this one replaces, the CLI refuses it as well.

@@ -795,11 +795,17 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 _logger.LogInformation(
                     "[VM] Permission prompt requested (id={Id}, tool={Tool}, toolUseId={ToolUseId})",
                     request.Id, request.ToolName, request.ToolUseId);
-                banner = new PermissionBannerViewModel(request, decision =>
+                void OnResolved(PermissionDecision decision)
                 {
                     Dispatch(() => ShowNextPromptAfter(banner));
                     _permissionBroker?.Resolve(request.Id, decision);
-                });
+                }
+
+                // A plan gets its own answers; the plan itself is the card in
+                // the transcript.
+                banner = request.ToolName == Services.ClaudeCli.ClaudeCliChatService.PlanToolName
+                    ? new PlanBannerViewModel(request, OnResolved)
+                    : new PermissionBannerViewModel(request, OnResolved);
                 banner.AskedBy = FindAskingSubagent(request.ToolUseId);
                 ShowPrompt(banner);
             }
@@ -857,7 +863,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 return;
 
             _logger.LogInformation("[VM] Permission prompt cancelled (id={Id})", requestId);
-            DismissActiveBanner($"_Stopped. The request to use **{banner.ToolName}** was denied._");
+            DismissActiveBanner(banner is PlanBannerViewModel
+                ? "_Stopped. The plan was neither approved nor sent back._"
+                : $"_Stopped. The request to use **{banner.ToolName}** was denied._");
         });
     }
 
@@ -888,7 +896,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 return;
 
             _logger.LogInformation("[VM] Permission prompt withdrawn by the CLI (id={Id})", requestId);
-            DismissActiveBanner($"_Claude no longer needs to use **{banner.ToolName}**. The request was withdrawn._");
+            DismissActiveBanner(banner is PlanBannerViewModel
+                ? "_Claude no longer needs an answer to the plan. The plan was withdrawn._"
+                : $"_Claude no longer needs to use **{banner.ToolName}**. The request was withdrawn._");
         });
     }
 

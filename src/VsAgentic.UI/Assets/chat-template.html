@@ -425,6 +425,25 @@ html, body {
 .toolstep-body {
     margin: 4px 0 0 18px;
 }
+
+/* The plan Claude put forward in plan mode: a card, open, read in full. */
+.msg-plan {
+    margin: 8px 0;
+    padding: 8px 12px 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+}
+.plan-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.plan-header .msg-status { font-size: 10px; }
+.plan-body { margin-top: 6px; }
 .toolstep-body.capped {
     max-height: 120px;
     overflow: hidden;
@@ -970,6 +989,29 @@ function isTurnFailure(type, data) {
 // transcript, where it is read in order, not one more step in the folded row.
 var SESSION_LINE_TOOLS = ['Retry', 'Compact', 'CliMessage'];
 
+// The plan Claude puts forward in plan mode (ExitPlanMode). The step's body is
+// the plan's markdown; its status is the user's answer.
+function isPlanCard(type, data) {
+    return type === 'ToolStep' && data.ToolName === 'ExitPlanMode';
+}
+
+function planTitle(status) {
+    if (status === 'Success') return 'Plan approved';
+    if (status === 'Error') return 'Plan sent back for changes';
+    if (status === 'Info') return 'Plan';
+    return 'Plan · waiting for your answer';
+}
+
+function renderPlanBody(body, markdown) {
+    if (!markdown) { body.style.display = 'none'; return; }
+    body.innerHTML = renderMd(markdown);
+    keepMarkdownSource(body, markdown);
+    linkifyFilePaths(body);
+    addBlockCopyButtons(body);
+    body.style.display = '';
+    maybeScrollToBottom();
+}
+
 function isSessionLine(type, data) {
     return type === 'ToolStep' && SESSION_LINE_TOOLS.indexOf(data.ToolName) >= 0;
 }
@@ -1435,6 +1477,29 @@ function addMessage(id, type, dataJson) {
         body.style.display = 'none';
         div.appendChild(body);
     }
+    else if (isPlanCard(type, data)) {
+        // The plan Claude put forward in plan mode, as a card of its own and
+        // open: it is what the user is asked to approve, on the banner below.
+        div.classList.add('msg-plan');
+        div.dataset.tool = data.ToolName || '';
+        var header = document.createElement('div');
+        header.className = 'plan-header';
+        var statusSpan = document.createElement('span');
+        statusSpan.className = 'msg-status';
+        statusSpan.style.color = STATUS_COLORS[data.Status] || STATUS_COLORS.Pending;
+        statusSpan.textContent = STATUS_SYMBOLS[data.Status] || STATUS_SYMBOLS.Pending;
+        var title = document.createElement('span');
+        title.className = 'plan-title';
+        title.textContent = planTitle(data.Status);
+        header.appendChild(statusSpan);
+        header.appendChild(title);
+        div.appendChild(header);
+
+        var body = document.createElement('div');
+        body.className = 'md-content msg-body plan-body';
+        div.appendChild(body);
+        renderPlanBody(body, data.Body);
+    }
     else if (type === 'ToolStep') {
         div.classList.add('msg-toolstep');
         // Read by a scheduled check, to tell whether it edited files.
@@ -1619,6 +1684,13 @@ function placeMessage(div, type, data) {
         closeActivityGroup();
         outputHost().appendChild(div);
         maybeScrollToBottom();
+    } else if (isPlanCard(type, data)) {
+        // Standing in the transcript, not folded into the row: the plan is
+        // read before it is approved, and looked up again while Claude works
+        // on it. Steps after it open a row of their own below.
+        closeActivityGroup();
+        outputHost().appendChild(div);
+        maybeScrollToBottom();
     } else if (isTurnFailure(type, data)) {
         // Left standing, and the text before it left alone: when a turn ends in
         // an error, that text is usually as far as the answer got, and folding
@@ -1680,6 +1752,8 @@ function updateStatus(id, status, expanderTitle) {
         var et = el.querySelector('.msg-expander-title');
         if (et) et.textContent = expanderTitle;
     }
+    var pt = el.querySelector('.plan-title');
+    if (pt) pt.textContent = planTitle(status);
     if (status !== 'Pending') removeMoveToBackground(id);
 
     if (el._subagentGroup) refreshSubagentGroup(el._subagentGroup);
@@ -1767,6 +1841,11 @@ function setBody(id, bodyContent, bodyMode) {
     if (!el) return;
     var body = el.querySelector('.msg-body');
     if (!body) return;
+    // The plan is read in full, so its card has no cap.
+    if (el.classList.contains('msg-plan')) {
+        if (bodyContent) renderPlanBody(body, bodyContent);
+        return;
+    }
     if (!bodyContent) { body.style.display = 'none'; return; }
 
     if (bodyMode === 'Html') {

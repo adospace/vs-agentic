@@ -388,6 +388,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         return cancelled;
     }
 
+    /// <summary>The tool Claude calls in plan mode to put its plan to the user.</summary>
+    public const string PlanToolName = "ExitPlanMode";
+
     private void ClearActiveTurn(TurnState turn)
     {
         lock (_activeTurnLock)
@@ -1986,9 +1989,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         FinalizeResponseItem(turn);
         FinalizeToolItem(turn);
 
+        // A plan waits for the user, not for a tool; the bar under the chat says so.
         var toolTitle = IdeContext?.Find(toolName) is { } ideTool && toolName.StartsWith(IdeContextRegistry.McpToolPrefix, StringComparison.Ordinal)
             ? ideTool.Title
-            : $"Using {toolName}";
+            : toolName == PlanToolName ? "Waiting for plan approval" : $"Using {toolName}";
         string? toolBody = null;
         if (block.TryGetProperty("input", out var input))
         {
@@ -2077,8 +2081,6 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             if (!block.TryGetProperty("type", out var bt)) continue;
             if (bt.GetString() != "tool_result") continue;
             if (CloseAgentStep(turn, block)) continue;
-            if (!block.TryGetProperty("is_error", out var ep)) continue;
-            if (ep.ValueKind != JsonValueKind.True) continue;
 
             // Only the open step can be marked. A result for any other call
             // belongs to a step that is already closed, or to one the UI never
@@ -2086,7 +2088,21 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             var toolUseId = block.TryGetProperty("tool_use_id", out var tp) ? tp.GetString() : null;
             if (turn.ToolItem == null || toolUseId != turn.ToolItem.Id) continue;
 
-            CompleteToolItem(turn, OutputItemStatus.Error);
+            var isError = block.TryGetProperty("is_error", out var ep) && ep.ValueKind == JsonValueKind.True;
+
+            // A plan's result is the user's answer: approved, or (as an error)
+            // sent back. A Stop while the plan waits also comes back as an
+            // error; the plan was not answered then. Closed here, so only an
+            // answered plan reads as approved.
+            if (turn.ToolItem.ToolName == PlanToolName)
+            {
+                var text = block.TryGetProperty("content", out var cp) ? ExtractToolResultText(cp) : "";
+                CompleteToolItem(turn, !isError ? OutputItemStatus.Success
+                    : PlanAnswers.IsKeepPlanning(text) ? OutputItemStatus.Error
+                    : OutputItemStatus.Info);
+            }
+            else if (isError)
+                CompleteToolItem(turn, OutputItemStatus.Error);
         }
     }
 
@@ -2361,7 +2377,13 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     {
         if (turn.ToolItem == null) return;
         if (turn.ToolItem.Status == OutputItemStatus.Pending)
-            CompleteToolItem(turn, OutputItemStatus.Success);
+        {
+            // A plan still open here got no answer: the turn was stopped
+            // while it waited. It was neither approved nor sent back.
+            CompleteToolItem(turn, turn.ToolItem.ToolName == PlanToolName
+                ? OutputItemStatus.Info
+                : OutputItemStatus.Success);
+        }
         turn.ToolItem = null;
     }
 
@@ -2558,6 +2580,12 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
             if (toolName == "TodoWrite" && input.TryGetProperty("todos", out var todos) && todos.ValueKind == JsonValueKind.Array)
                 return FormatTodoList(todos);
+
+            // The plan is markdown written for the user; the transcript shows
+            // it whole, as the plan card.
+            if (toolName == PlanToolName && input.TryGetProperty("plan", out var plan)
+                && plan.ValueKind == JsonValueKind.String)
+                return plan.GetString() ?? "";
 
             if (toolName == "WebFetch")
                 return FormatWebFetch(input);

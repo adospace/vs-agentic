@@ -25,6 +25,12 @@ public interface IUserQuestionBroker
     /// </summary>
     event Action<string>? PendingCancelled;
 
+    /// <summary>
+    /// Raised with the tool_use id when the CLI takes back a question it no
+    /// longer needs answered, for example because its turn was interrupted.
+    /// </summary>
+    event Action<string>? PendingWithdrawn;
+
     Task<IReadOnlyDictionary<string, string>> SubmitAsync(
         UserQuestionRequest request,
         CancellationToken cancellationToken);
@@ -37,4 +43,10 @@ public interface IUserQuestionBroker
     /// a question banner is stuck (e.g. banner failed to display).
     /// </summary>
     void CancelAllPending();
+
+    /// <summary>
+    /// Settles one question the CLI has taken back. The answer goes nowhere;
+    /// this only frees the pipe and raises <see cref="PendingWithdrawn"/>.
+    /// </summary>
+    void Withdraw(string toolUseId);
 }

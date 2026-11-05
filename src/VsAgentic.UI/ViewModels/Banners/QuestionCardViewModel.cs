@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using VsAgentic.Services.ClaudeCli.Questions;
@@ -11,7 +12,7 @@ namespace VsAgentic.UI.ViewModels.Banners;
 /// View model for an AskUserQuestion card. Owns the per-question paging
 /// state and the submit-or-next-unanswered behavior of the bottom button.
 /// </summary>
-public partial class QuestionCardViewModel : ObservableObject, IBannerViewModel
+public partial class QuestionCardViewModel : ObservableObject, IQueuedPrompt
 {
     private readonly UserQuestionRequest _request;
     private readonly Action<IReadOnlyDictionary<string, string>> _onSubmitted;
@@ -107,9 +108,40 @@ public partial class QuestionCardViewModel : ObservableObject, IBannerViewModel
         if (CurrentIndex < Questions.Count - 1) CurrentIndex++;
     }
 
-    [RelayCommand]
+    // Set by the first submit. A second Ctrl+Enter or click must not answer
+    // again: the next prompt in the queue would be taken down unread.
+    private bool _submitted;
+
+    /// <summary>True for a moment after the card comes up from the queue,
+    /// while Submit stays disabled. See <see cref="HoldInput"/>.</summary>
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(SubmitCommand))]
+    private bool _isInputHeld;
+
+    /// <summary>
+    /// Keeps Submit disabled for a moment. A card that replaces an answered
+    /// prompt appears under the pointer and the keyboard focus, so a second
+    /// click or a held key would otherwise answer it before it is read.
+    /// </summary>
+    public void HoldInput(TimeSpan time)
+    {
+        IsInputHeld = true;
+        var timer = new DispatcherTimer { Interval = time };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            IsInputHeld = false;
+        };
+        timer.Start();
+    }
+
+    private bool CanSubmit() => !_submitted && !IsInputHeld;
+
+    [RelayCommand(CanExecute = nameof(CanSubmit))]
     private void Submit()
     {
+        if (!CanSubmit()) return;
+
         // If anything is still blank, jump to the next blank instead of
         // submitting — matches the prior builder's "Next unanswered" UX.
         var unanswered = FindFirstUnanswered(CurrentIndex);
@@ -122,6 +154,8 @@ public partial class QuestionCardViewModel : ObservableObject, IBannerViewModel
         var answers = new Dictionary<string, string>();
         for (int i = 0; i < Questions.Count; i++)
             answers[_request.Questions[i].Question] = Questions[i].GetAnswer();
+        _submitted = true;
+        SubmitCommand.NotifyCanExecuteChanged();
         _onSubmitted(answers);
     }
 

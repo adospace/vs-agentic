@@ -23,6 +23,17 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     private readonly ConcurrentDictionary<string, ChatItemViewModel> _activeItems = new();
     private int _userMsgCounter;
 
+    // Prompts that arrived while another one was on screen, oldest first.
+    // Subagents running in parallel ask at the same time. UI thread only.
+    private readonly List<IBannerViewModel> _waitingPrompts = new();
+
+    // Which Agent step each subagent step ran under, and the Agent steps'
+    // titles, so a permission prompt can say which subagent asks. Kept after
+    // the steps finish: a background subagent asks long after its Agent step
+    // has closed. UI thread only.
+    private readonly Dictionary<string, string> _stepParents = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _agentTitles = new(StringComparer.Ordinal);
+
     public ObservableCollection<ChatItemViewModel> Items { get; } = new();
 
     [ObservableProperty]
@@ -548,17 +559,20 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         {
             _permissionBroker.PermissionRequested += OnPermissionBrokerRequested;
             _permissionBroker.PendingCancelled += OnPermissionCancelled;
+            _permissionBroker.PendingWithdrawn += OnPermissionWithdrawn;
         }
         if (_questionBroker is not null)
         {
             _questionBroker.QuestionRequested += OnQuestionBrokerRequested;
             _questionBroker.PendingCancelled += OnQuestionCancelled;
+            _questionBroker.PendingWithdrawn += OnQuestionWithdrawn;
         }
 
         chatService.LoginRequired += OnChatServiceLoginRequired;
         chatService.UnsolicitedTurnStarted += OnUnsolicitedTurnStarted;
         chatService.UnsolicitedTurnCompleted += OnUnsolicitedTurnCompleted;
         chatService.BackgroundTasksChanged += OnChatServiceBackgroundTasksChanged;
+        chatService.MessageStarted += OnChatServiceMessageStarted;
         chatService.StepBackgroundStateChanged += OnChatServiceStepBackgroundStateChanged;
         chatService.StepCanMoveToBackground += OnChatServiceStepCanMoveToBackground;
         chatService.PromptSuggested += OnChatServicePromptSuggested;
@@ -807,23 +821,26 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         Dispatch(() =>
         {
+            PermissionBannerViewModel? banner = null;
             try
             {
                 _logger.LogInformation(
-                    "[VM] Permission prompt requested (id={Id}, tool={Tool})",
-                    request.Id, request.ToolName);
-                ActiveBanner = new PermissionBannerViewModel(request, decision =>
+                    "[VM] Permission prompt requested (id={Id}, tool={Tool}, toolUseId={ToolUseId})",
+                    request.Id, request.ToolName, request.ToolUseId);
+                banner = new PermissionBannerViewModel(request, decision =>
                 {
-                    Dispatch(() => ActiveBanner = null);
+                    Dispatch(() => ShowNextPromptAfter(banner));
                     _permissionBroker?.Resolve(request.Id, decision);
                 });
+                banner.AskedBy = FindAskingSubagent(request.ToolUseId);
+                ShowPrompt(banner);
             }
             catch (Exception ex)
             {
                 // Without this guard the throw escapes Dispatcher.BeginInvoke,
                 // tears down the dispatcher loop, and leaves the chat hung.
                 _logger.LogError(ex, "[VM] Permission prompt handler crashed (id={Id})", request.Id);
-                ActiveBanner = null;
+                RemoveFailedPrompt(banner);
                 try { _permissionBroker?.Resolve(request.Id, PermissionDecision.Deny("Banner failed to display")); }
                 catch (Exception ex2) { _logger.LogError(ex2, "[VM] PermissionBroker.Resolve also failed"); }
             }
@@ -834,21 +851,23 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         Dispatch(() =>
         {
+            QuestionCardViewModel? card = null;
             try
             {
                 _logger.LogInformation(
                     "[VM] User question requested (toolUseId={Id}, questions={Count})",
                     request.ToolUseId, request.Questions.Count);
-                ActiveBanner = new QuestionCardViewModel(request, answers =>
+                card = new QuestionCardViewModel(request, answers =>
                 {
-                    Dispatch(() => ActiveBanner = null);
+                    Dispatch(() => ShowNextPromptAfter(card));
                     _questionBroker?.Resolve(request.ToolUseId, answers);
                 });
+                ShowPrompt(card);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[VM] User question handler crashed (toolUseId={Id})", request.ToolUseId);
-                ActiveBanner = null;
+                RemoveFailedPrompt(card);
                 try { _questionBroker?.Resolve(request.ToolUseId, new Dictionary<string, string>()); }
                 catch (Exception ex2) { _logger.LogError(ex2, "[VM] QuestionBroker.Resolve also failed"); }
             }
@@ -865,7 +884,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         Dispatch(() =>
         {
-            if (ActiveBanner is not PermissionBannerViewModel banner || banner.RequestId != requestId)
+            if (DropWaitingPrompt(b => b is PermissionBannerViewModel p && p.RequestId == requestId)
+                || ActiveBanner is not PermissionBannerViewModel banner || banner.RequestId != requestId)
                 return;
 
             _logger.LogInformation("[VM] Permission prompt cancelled (id={Id})", requestId);
@@ -877,7 +897,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         Dispatch(() =>
         {
-            if (ActiveBanner is not QuestionCardViewModel card || card.ToolUseId != toolUseId)
+            if (DropWaitingPrompt(b => b is QuestionCardViewModel q && q.ToolUseId == toolUseId)
+                || ActiveBanner is not QuestionCardViewModel card || card.ToolUseId != toolUseId)
                 return;
 
             _logger.LogInformation("[VM] User question cancelled (toolUseId={Id})", toolUseId);
@@ -885,11 +906,111 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         });
     }
 
+    /// <summary>
+    /// The CLI took the request back on its own: the turn was interrupted from
+    /// elsewhere, the subagent that asked stopped, or the CLI stopped waiting.
+    /// An answer would go nowhere, so the banner goes, with a line saying why.
+    /// </summary>
+    private void OnPermissionWithdrawn(string requestId)
+    {
+        Dispatch(() =>
+        {
+            if (DropWaitingPrompt(b => b is PermissionBannerViewModel p && p.RequestId == requestId)
+                || ActiveBanner is not PermissionBannerViewModel banner || banner.RequestId != requestId)
+                return;
+
+            _logger.LogInformation("[VM] Permission prompt withdrawn by the CLI (id={Id})", requestId);
+            DismissActiveBanner($"_Claude no longer needs to use **{banner.ToolName}**. The request was withdrawn._");
+        });
+    }
+
+    private void OnQuestionWithdrawn(string toolUseId)
+    {
+        Dispatch(() =>
+        {
+            if (DropWaitingPrompt(b => b is QuestionCardViewModel q && q.ToolUseId == toolUseId)
+                || ActiveBanner is not QuestionCardViewModel card || card.ToolUseId != toolUseId)
+                return;
+
+            _logger.LogInformation("[VM] User question withdrawn by the CLI (toolUseId={Id})", toolUseId);
+            DismissActiveBanner("_Claude no longer needs an answer. The question was withdrawn._");
+        });
+    }
+
+    /// <summary>
+    /// Puts a prompt on screen, or behind the one already there. Replacing
+    /// it would leave the first request unanswerable. Must run on the UI thread.
+    /// </summary>
+    private void ShowPrompt(IBannerViewModel prompt)
+    {
+        if (ActiveBanner is PermissionBannerViewModel or QuestionCardViewModel)
+        {
+            _waitingPrompts.Add(prompt);
+            return;
+        }
+        ActiveBanner = prompt;
+    }
+
+    /// <summary>Takes the answered or dismissed prompt down and shows the next
+    /// waiting one, if any. Must run on the UI thread.</summary>
+    private void ShowNextPrompt()
+    {
+        ActiveBanner = null;
+        if (_waitingPrompts.Count == 0) return;
+
+        var next = _waitingPrompts[0];
+        _waitingPrompts.RemoveAt(0);
+        // It comes up where the user just clicked or pressed Enter.
+        if (next is IQueuedPrompt queued) queued.HoldInput(QueuedPromptHold);
+        ActiveBanner = next;
+    }
+
+    // Long enough for the second click of a double-click or a held Enter,
+    // short enough not to be noticed.
+    private static readonly TimeSpan QueuedPromptHold = TimeSpan.FromMilliseconds(400);
+
+    /// <summary>After a prompt is answered: the next one comes up only if the
+    /// answered one is still on screen. A Stop or a withdrawal may have taken
+    /// it down already. Must run on the UI thread.</summary>
+    private void ShowNextPromptAfter(IBannerViewModel? answered)
+    {
+        if (answered is not null && ReferenceEquals(ActiveBanner, answered))
+            ShowNextPrompt();
+    }
+
+    /// <summary>A prompt that failed to come up. Only it goes: another prompt
+    /// on screen stays there, still waiting for its answer. Must run on the UI
+    /// thread.</summary>
+    private void RemoveFailedPrompt(IBannerViewModel? failed)
+    {
+        if (failed is null) return;
+        if (ReferenceEquals(ActiveBanner, failed))
+            ShowNextPrompt();
+        else
+            _waitingPrompts.Remove(failed);
+    }
+
+    /// <summary>Removes a prompt that was never shown. It needs no line in the
+    /// chat: the user did not see it go.</summary>
+    private bool DropWaitingPrompt(Predicate<IBannerViewModel> match) =>
+        _waitingPrompts.RemoveAll(match) > 0;
+
+    /// <summary>
+    /// The title of the subagent whose tool call this is, or null when the
+    /// main conversation asks. Must run on the UI thread.
+    /// </summary>
+    private string? FindAskingSubagent(string? toolUseId)
+    {
+        if (toolUseId is null || !_stepParents.TryGetValue(toolUseId, out var agentId))
+            return null;
+        return _agentTitles.TryGetValue(agentId, out var title) ? title : null;
+    }
+
     /// <summary>Clears the banner and leaves a row in the chat saying so. Must
     /// run on the UI thread.</summary>
     private void DismissActiveBanner(string notice)
     {
-        ActiveBanner = null;
+        ShowNextPrompt();
         UpdateActivityIndicator();
         AddNotice(notice, "dismissed");
     }
@@ -1047,8 +1168,15 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     // An attachment on its own is a perfectly good prompt — "what is wrong
     // here?" is often implicit — so text is only required when nothing is
     // attached.
+    //
+    // While a turn runs, a message can go out only to a CLI that queues it
+    // and reports when a turn reads it. Not while Stop waits for the turn to
+    // end: the message would join the calls Stop has cancelled.
     private bool CanSend() =>
-        !IsBusy && (!string.IsNullOrWhiteSpace(InputText) || PendingAttachments.Count > 0);
+        (!IsBusy || (_chatService?.CanQueueMessages == true && !IsStopPending))
+        && (!string.IsNullOrWhiteSpace(InputText) || PendingAttachments.Count > 0);
+
+    private bool IsStopPending => _sendCts?.IsCancellationRequested == true;
 
     /// <summary>
     /// Images and files pasted into the input box, waiting to go out with the
@@ -1122,13 +1250,16 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             : $"{header}\n{list}\n\n{text}";
     }
 
-    [RelayCommand(CanExecute = nameof(CanSend))]
+    // Concurrent: a message sent while a turn runs is a second SendAsync
+    // alongside the first. Without it the command reports itself disabled
+    // until the running call returns, whatever CanSend says.
+    [RelayCommand(CanExecute = nameof(CanSend), AllowConcurrentExecutions = true)]
     private async Task SendAsync()
     {
-        var message = InputText.Trim();
+        var typed = InputText.Trim();
 
         // "/model", "/effort" and "/fast" change the panel, not go to the CLI.
-        if (PendingAttachments.Count == 0 && TryRunPanelCommand(message))
+        if (PendingAttachments.Count == 0 && TryRunPanelCommand(typed))
         {
             InputText = "";
             return;
@@ -1136,11 +1267,12 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
         InputText = "";
 
-        var images = PendingAttachments.OfType<ChatImageAttachment>().ToList();
+        var attachments = PendingAttachments.ToList();
+        var images = attachments.OfType<ChatImageAttachment>().ToList();
         // In the order they were pasted, so the names line up with the
         // thumbnails the message carries.
-        var named = PendingAttachments.Where(a => a.SourcePath is not null && a is not EditorContext).ToList();
-        var editorContexts = PendingAttachments.OfType<EditorContext>().ToList();
+        var named = attachments.Where(a => a.SourcePath is not null && a is not EditorContext).ToList();
+        var editorContexts = attachments.OfType<EditorContext>().ToList();
         var sentImages = images.Count > 0 ? images : null;
         PendingAttachments.Clear();
         SendCommand.NotifyCanExecuteChanged();
@@ -1150,43 +1282,26 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         // reads them off disk with the same tools it uses for the rest of the
         // project. Listing them in the message itself also leaves a record in
         // the transcript of what went out.
-        if (named.Count > 0)
-            message = WithFileReferences(message, named);
+        var message = named.Count > 0 ? WithFileReferences(typed, named) : typed;
 
         // Editor contexts go first, then the same way as files, except that the
-        // CLI also gets the selected text.
+        // CLI also gets the selected text. The chat shows message; the CLI
+        // gets sentMessage.
         WithEditorContexts(editorContexts, ref message, out var sentMessage);
 
-        // Written next to the session so reopening it shows the images again.
-        var storedImageNames = sentImages is null
-            ? null
-            : await PersistImagesAsync(sentImages);
+        // Sent while a turn runs: the message waits in the CLI, which reads it
+        // into the running turn at the next step. It stays in the strip above
+        // the input box until then, and enters the chat at the point where
+        // Claude read it (OnChatServiceMessageStarted).
+        if (IsBusy && _chatService is not null)
+        {
+            var queued = new QueuedMessageViewModel(typed, message, sentImages, attachments);
+            QueuedMessages.Add(queued);
+            await RunTurnAsync(sentMessage, sentImages, queued);
+            return;
+        }
 
-        var userMsgId = $"user-{++_userMsgCounter}";
-        Items.Add(new ChatItemViewModel
-        {
-            Type = ChatItemType.User,
-            Content = message,
-            Title = "You"
-        });
-        MessageAdded?.Invoke(userMsgId, ChatItemType.User, new ChatMessageData
-        {
-            Id = userMsgId,
-            Type = "User",
-            Content = message,
-            Title = "You",
-            Images = sentImages?.Select(i => i.ToDataUri()).ToList()
-        });
-        RequestScroll();
-
-        PersistMessageFireAndForget(new PersistedMessage
-        {
-            ItemType = ChatItemType.User.ToString(),
-            Content = message,
-            Title = "You",
-            ImageFileNames = storedImageNames,
-            CreatedUtc = DateTime.UtcNow
-        });
+        await ShowUserMessageAsync(message, sentImages);
 
         if (_chatService is null)
         {
@@ -1208,6 +1323,54 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             return;
         }
 
+        await RunTurnAsync(sentMessage, sentImages, queued: null);
+    }
+
+    /// <summary>
+    /// Adds the user's message to the chat, stores it with the session, and
+    /// names the session after its first message.
+    /// </summary>
+    private async Task ShowUserMessageAsync(string message, List<ChatImageAttachment>? sentImages)
+    {
+        // Shown before the images are stored: a queued message enters the
+        // chat while the turn runs on, and its next step must come after it.
+        var userMsgId = $"user-{++_userMsgCounter}";
+        Items.Add(new ChatItemViewModel
+        {
+            Type = ChatItemType.User,
+            Content = message,
+            Title = "You"
+        });
+        MessageAdded?.Invoke(userMsgId, ChatItemType.User, new ChatMessageData
+        {
+            Id = userMsgId,
+            Type = "User",
+            Content = message,
+            Title = "You",
+            Images = sentImages?.Select(i => i.ToDataUri()).ToList()
+        });
+        RequestScroll();
+
+        if (_chatService is not null)
+            NameSessionAfter(message);
+
+        // Written next to the session so reopening it shows the images again.
+        var storedImageNames = sentImages is null
+            ? null
+            : await PersistImagesAsync(sentImages);
+
+        PersistMessageFireAndForget(new PersistedMessage
+        {
+            ItemType = ChatItemType.User.ToString(),
+            Content = message,
+            Title = "You",
+            ImageFileNames = storedImageNames,
+            CreatedUtc = DateTime.UtcNow
+        });
+    }
+
+    private void NameSessionAfter(string message)
+    {
         // Generate a title from the first user message that has text (fire-and-forget,
         // non-blocking). Skipped when the user already named the session by hand.
         // The title model only sees text: handed an image-only prompt it names the
@@ -1230,7 +1393,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             {
                 try
                 {
-                    var title = await _chatService.GenerateTitleAsync(titleSource);
+                    var title = await _chatService!.GenerateTitleAsync(titleSource);
                     Dispatch(() =>
                     {
                         // The user may have renamed the session while the
@@ -1244,21 +1407,51 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 catch { /* best effort */ }
             });
         }
+    }
 
-        IsBusy = true;
-        _sendCts = new CancellationTokenSource();
-        var token = _sendCts.Token;
+    /// <summary>
+    /// Sends one message and waits for the turn that answers it. Calls for
+    /// queued messages run alongside the one for the running turn; the session
+    /// is busy until the last of them returns, and Stop cancels them all.
+    /// </summary>
+    private async Task RunTurnAsync(string message, List<ChatImageAttachment>? sentImages, QueuedMessageViewModel? queued)
+    {
+        if (_sendsInFlight++ == 0)
+        {
+            _sendCts = new CancellationTokenSource();
+            _stopNoticeShown = false;
+            IsBusy = true;
+        }
+        var token = _sendCts!.Token;
+
         try
         {
-            await foreach (var _ in _chatService.SendMessageAsync(sentMessage, sentImages, token))
+            await foreach (var _ in _chatService!.SendMessageAsync(message, sentImages, queued?.Id, token))
             {
                 // Output is handled by listener callbacks
+            }
+
+            // Cancelled with ×, or the CLI stopped before a turn read it.
+            if (queued is { Started: false })
+            {
+                ReturnToInput(queued);
+                return;
             }
 
             OnExchangeCompleted();
         }
         catch (OperationCanceledException)
         {
+            if (queued is { Started: false })
+            {
+                ReturnToInput(queued);
+                return;
+            }
+
+            // Once per Stop, however many messages the stopped turn had read.
+            if (_stopNoticeShown) return;
+            _stopNoticeShown = true;
+
             var cancelId = $"cancel-{++_userMsgCounter}";
             var cancelContent = "_Processing stopped._";
             Items.Add(new ChatItemViewModel
@@ -1276,6 +1469,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
+            if (queued is { Started: false })
+                ReturnToInput(queued);
+
             var catchErrId = $"err-{++_userMsgCounter}";
             var catchErrContent = $"**Error:** {ex.Message}";
             Items.Add(new ChatItemViewModel
@@ -1293,18 +1489,85 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         }
         finally
         {
-            _sendCts?.Dispose();
-            _sendCts = null;
+            if (queued is not null)
+                QueuedMessages.Remove(queued);
 
-            // A turn the CLI started on its own may already be running; it
-            // keeps the session busy and ends the turn when it completes.
-            if (!_inUnsolicitedTurn)
+            if (--_sendsInFlight == 0)
             {
-                IsBusy = false;
-                TurnEnded?.Invoke();
+                _sendCts?.Dispose();
+                _sendCts = null;
+                // A Stop that kept Send off is over.
+                SendCommand.NotifyCanExecuteChanged();
+
+                // A turn the CLI started on its own may already be running; it
+                // keeps the session busy and ends the turn when it completes.
+                if (!_inUnsolicitedTurn)
+                {
+                    IsBusy = false;
+                    TurnEnded?.Invoke();
+                }
             }
+            RequestScroll();
         }
-        RequestScroll();
+    }
+
+    private int _sendsInFlight;
+    private bool _stopNoticeShown;
+
+    /// <summary>
+    /// Messages sent while a turn runs, in the order sent, until a turn reads
+    /// them. Shown in the strip above the input box.
+    /// </summary>
+    public ObservableCollection<QueuedMessageViewModel> QueuedMessages { get; } = new();
+
+    /// <summary>
+    /// A turn has read a message. A queued one leaves the strip and enters the
+    /// chat here, after the steps the turn took before it read the message.
+    /// </summary>
+    private void OnChatServiceMessageStarted(string messageId)
+    {
+        Dispatch(() =>
+        {
+            var queued = QueuedMessages.FirstOrDefault(q => q.Id == messageId);
+            if (queued is null || queued.Started) return;
+
+            queued.Started = true;
+            QueuedMessages.Remove(queued);
+            _ = ShowUserMessageAsync(queued.Message, queued.Images);
+        });
+    }
+
+    /// <summary>
+    /// Takes a queued message back. The CLI drops it from its queue, and the
+    /// message returns to the input box (RunTurnAsync). If a turn has read it
+    /// first, it stays sent and moves into the chat.
+    /// </summary>
+    [RelayCommand]
+    private async Task CancelQueuedAsync(QueuedMessageViewModel? queued)
+    {
+        if (queued is null || queued.IsCancelling || queued.Started || _chatService is null) return;
+
+        queued.IsCancelling = true;
+        if (!await _chatService.CancelQueuedMessageAsync(queued.Id))
+            queued.IsCancelling = false;
+    }
+
+    /// <summary>
+    /// Puts a message no turn has read back into the input box, so nothing the
+    /// user wrote is lost. Text already in the box stays first.
+    /// </summary>
+    private void ReturnToInput(QueuedMessageViewModel queued)
+    {
+        QueuedMessages.Remove(queued);
+
+        if (queued.Text.Length > 0)
+        {
+            InputText = string.IsNullOrWhiteSpace(InputText)
+                ? queued.Text
+                : InputText.TrimEnd() + "\n\n" + queued.Text;
+        }
+        foreach (var attachment in queued.Attachments)
+            Attach(attachment);
     }
 
     private bool CanStop() => IsBusy;
@@ -1314,6 +1577,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         try { _sendCts?.Cancel(); }
         catch { /* best effort — token may already be disposed */ }
+        // Off until the cancelled calls have returned (RunTurnAsync).
+        SendCommand.NotifyCanExecuteChanged();
 
         // Also with a sent message pending: its call interrupts the CLI only
         // while it still waits for its own result.
@@ -1343,6 +1608,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         _chatService?.ClearHistory();
         Items.Clear();
         _activeItems.Clear();
+        _stepParents.Clear();
+        _agentTitles.Clear();
         PromptSuggestion = null;
         AllCleared?.Invoke();
     }
@@ -1372,6 +1639,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             };
             _activeItems[item.Id] = vm;
             Items.Add(vm);
+            NoteSubagentStep(item);
             MessageAdded?.Invoke(item.Id, type, new ChatMessageData
             {
                 Id = item.Id,
@@ -1395,6 +1663,26 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             UpdateBusyStatus();
             RequestScroll();
         });
+    }
+
+    /// <summary>
+    /// Remembers which subagent a step belongs to. The CLI sends the tool call
+    /// and asks for permission to run it at nearly the same moment, so the
+    /// prompt can be on screen before its step: name the subagent then.
+    /// </summary>
+    private void NoteSubagentStep(OutputItem item)
+    {
+        if (item.ToolName == "Agent")
+            _agentTitles[item.Id] = item.Title;
+        if (item.ParentId is null)
+            return;
+
+        _stepParents[item.Id] = item.ParentId;
+        var asking = _waitingPrompts.Prepend(ActiveBanner)
+            .OfType<PermissionBannerViewModel>()
+            .FirstOrDefault(p => p.ToolUseId == item.Id && p.AskedBy is null);
+        if (asking is not null)
+            asking.AskedBy = FindAskingSubagent(item.Id);
     }
 
     private void OnStepUpdated(OutputItem item)
@@ -1634,6 +1922,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         try { _activityTimer?.Stop(); } catch { }
         try { EditorContextProvider = null; } catch { }
+        try { DebuggerModeSource = null; } catch { }
 
         // Closing the window kills the CLI, so the row must not go on claiming
         // the session works or waits.
@@ -1657,6 +1946,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 _chatService.AppliedEffortChanged -= OnChatServiceAppliedEffortChanged;
                 _chatService.FastModeChanged -= OnChatServiceFastModeChanged;
                 _chatService.BackgroundTasksChanged -= OnChatServiceBackgroundTasksChanged;
+                _chatService.MessageStarted -= OnChatServiceMessageStarted;
                 _chatService.PermissionModeChanged -= OnChatServicePermissionModeChanged;
                 _chatService.PermissionModeRejected -= OnChatServicePermissionModeRejected;
                 _chatService.StepBackgroundStateChanged -= OnChatServiceStepBackgroundStateChanged;

@@ -17,6 +17,7 @@ using Microsoft.Extensions.Options;
 using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.ClaudeCli.Permissions;
 using VsAgentic.Services.Configuration;
+using VsAgentic.Services.IdeContext;
 using VsAgentic.Services.Services;
 
 namespace VsAgentic.Services.ClaudeCli;
@@ -29,6 +30,8 @@ namespace VsAgentic.Services.ClaudeCli;
 ///    inside the CLI for as long as the process is alive.
 ///  - Each <see cref="SendMessageAsync"/> call writes one user message line
 ///    and consumes events until the matching <c>result</c> event arrives.
+///    A call made while a turn runs queues its message in the CLI; see
+///    <see cref="CanQueueMessages"/>.
 ///  - Tool permission requests are intercepted via an in-process MCP server
 ///    and surfaced through <see cref="IPermissionBroker"/>. The same MCP
 ///    server also intercepts <c>AskUserQuestion</c> calls and answers them via
@@ -90,19 +93,25 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     private readonly UsageLog _usageLog = UsageLog.Shared;
 
-    // The dispatcher consumes events from the host and routes them to whichever
-    // turn is currently active. We only ever have one active turn at a time —
-    // SendMessageAsync calls are serialized by the UI (IsBusy gate) — so a
-    // single mutable reference is enough.
-    private TurnState? _activeTurn;
+    // The dispatcher consumes events from the host and routes them to the
+    // turn that is running. One entry per message sent and not yet answered,
+    // in the order sent. More than one only on a CLI that queues messages
+    // (CanQueueMessages): a message sent while a turn runs waits in the CLI,
+    // which then either reads it into the running turn at the next step or
+    // starts a turn for it after the running one ends.
+    private readonly List<TurnState> _turns = new List<TurnState>();
     private readonly object _activeTurnLock = new object();
 
     // The CLI can also start a turn on its own, for example when a background
     // command finishes and its notification wakes the model. No
     // SendMessageAsync call waits on it: the dispatcher opens it on the turn's
     // first message and closes it on the turn's result. It can run while our
-    // message waits in the CLI's queue behind it. Guarded by _activeTurnLock.
+    // messages wait in the CLI's queue behind it. Guarded by _activeTurnLock.
     private TurnState? _cliTurn;
+
+    // The interrupt in flight, shared by every message that Stop cancels: one
+    // request ends the running turn and cancels the queued messages with it.
+    private Task<bool>? _interruptRequest;
 
     // Set when the CLI announces that it starts a message of its own because
     // a check the model scheduled is due ("command_lifecycle" with a
@@ -141,6 +150,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     // Set when the running process could not take a change. The next message
     // then restarts it, so the change still lands — but never mid-turn.
     private volatile bool _restartBeforeNextMessage;
+
+    /// <summary>The IDE tools of this chat, for their step titles. Optional.</summary>
+    public IdeContextRegistry? IdeContext { get; init; }
 
     public ClaudeCliChatService(
         IOptions<VsAgenticOptions> options,
@@ -195,15 +207,22 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         psi.EnvironmentVariables["ANTHROPIC_API_KEY"] = "";
     }
 
+    public bool CanQueueMessages => _host.IsRunning && _capabilities.Has(CliCapabilities.MessageLifecycle);
+
+    public event Action<string>? MessageStarted;
+
     public async IAsyncEnumerable<string> SendMessageAsync(
         string userMessage,
         IReadOnlyList<ChatImageAttachment>? images = null,
+        string? messageId = null,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         // Lazy start: bring the long-running process up if it's not running.
         try
         {
-            if (_restartBeforeNextMessage)
+            // A pending restart waits while a turn runs: this message then
+            // joins the queue of the running process instead of killing it.
+            if (_restartBeforeNextMessage && !HasOpenTurns())
             {
                 _restartBeforeNextMessage = false;
                 _host.Stop();
@@ -244,12 +263,14 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // no turn of its own running, and on an older CLI, which sends no
         // lifecycle. In both cases the turn starts at once, as before.
         var turn = new TurnState(
-            Guid.NewGuid().ToString(),
+            messageId ?? Guid.NewGuid().ToString(),
             startedAtOnce: !_capabilities.Has(CliCapabilities.MessageLifecycle));
         lock (_activeTurnLock)
         {
-            _activeTurn = turn;
+            _turns.Add(turn);
         }
+        if (turn.Started)
+            RaiseMessageStarted(turn);
 
         // Send the user message line.
         try
@@ -299,28 +320,32 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     /// the next message starts a clean turn. If the CLI does not answer, or
     /// the result does not follow in time, we stop waiting and return, which
     /// is where Stop used to leave things.
+    ///
+    /// Stop cancels every message in flight at once. The first one sends the
+    /// interrupt; the others wait on the same request. Its cancel_queued
+    /// closes the queued messages, each with a "cancelled" lifecycle.
     /// </summary>
     private async Task InterruptTurnAsync(TurnState turn)
     {
         if (!_host.IsRunning || turn.Ended.Task.IsCompleted) return;
 
-        // Set before the request goes out: the result can arrive before the
-        // answer to the interrupt has been read. The interrupt aborts whatever
-        // the CLI runs, so a turn it started itself, which our message may
-        // wait behind, ends the same way.
-        turn.Interrupted = true;
+        Task<bool> request;
         lock (_activeTurnLock)
         {
-            if (_cliTurn is { } cliTurn)
-                cliTurn.Interrupted = true;
+            // Set before the request goes out: the result can arrive before
+            // the answer to the interrupt has been read. The interrupt aborts
+            // whatever the CLI runs, so a turn it started itself, which our
+            // messages may wait behind, ends the same way.
+            turn.Interrupted = true;
+            foreach (var t in _turns) t.Interrupted = true;
+            if (_cliTurn is { } cliTurn) cliTurn.Interrupted = true;
+
+            if (_interruptRequest is not { IsCompleted: false })
+                _interruptRequest = SendInterruptAsync();
+            request = _interruptRequest;
         }
 
-        var reply = await _control.SendAsync(StreamJsonProtocol.BuildInterrupt).ConfigureAwait(false);
-        if (!reply.Succeeded)
-        {
-            _logger.LogWarning("[ClaudeCli] interrupt failed: {Error}", reply.Error);
-            return;
-        }
+        if (!await request.ConfigureAwait(false)) return;
 
         var done = await Task.WhenAny(turn.Ended.Task, Task.Delay(InterruptResultTimeout)).ConfigureAwait(false);
         if (done == turn.Ended.Task)
@@ -329,16 +354,45 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             _logger.LogWarning("[ClaudeCli] interrupt answered, but the turn did not end within {Timeout}", InterruptResultTimeout);
     }
 
+    private async Task<bool> SendInterruptAsync()
+    {
+        var reply = await _control.SendAsync(StreamJsonProtocol.BuildInterrupt).ConfigureAwait(false);
+        if (!reply.Succeeded)
+            _logger.LogWarning("[ClaudeCli] interrupt failed: {Error}", reply.Error);
+        return reply.Succeeded;
+    }
+
     // The CLI writes the interrupted turn's result right after its answer to
     // the interrupt; a measured gap is a few milliseconds.
     private static readonly TimeSpan InterruptResultTimeout = TimeSpan.FromSeconds(5);
+
+    public async Task<bool> CancelQueuedMessageAsync(string messageId)
+    {
+        TurnState? turn;
+        lock (_activeTurnLock) { turn = _turns.Find(t => t.MessageUuid == messageId); }
+        if (turn is null || turn.Started || !_host.IsRunning) return false;
+
+        // The CLI closes the message with a "cancelled" lifecycle, which ends
+        // its call (HandleCommandLifecycle). The answer only says whether the
+        // message was still in the queue.
+        var reply = await _control.SendAsync(
+            requestId => StreamJsonProtocol.BuildCancelAsyncMessage(requestId, messageId)).ConfigureAwait(false);
+        var cancelled = reply.Response is { ValueKind: JsonValueKind.Object } body
+            && body.TryGetProperty("cancelled", out var c) && c.ValueKind == JsonValueKind.True;
+
+        if (!reply.Succeeded)
+            _logger.LogWarning("[ClaudeCli] cancel_async_message failed: {Error}", reply.Error);
+        else
+            _logger.LogInformation("[ClaudeCli] Queued message {Result}",
+                cancelled ? "cancelled" : "was already read by a turn");
+        return cancelled;
+    }
 
     private void ClearActiveTurn(TurnState turn)
     {
         lock (_activeTurnLock)
         {
-            if (ReferenceEquals(_activeTurn, turn))
-                _activeTurn = null;
+            _turns.Remove(turn);
         }
     }
 
@@ -406,6 +460,17 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] UnsolicitedTurnCompleted handler threw"); }
     }
 
+    private bool HasOpenTurns()
+    {
+        lock (_activeTurnLock) return _turns.Count > 0;
+    }
+
+    private void RaiseMessageStarted(TurnState turn)
+    {
+        try { MessageStarted?.Invoke(turn.MessageUuid); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] MessageStarted handler threw"); }
+    }
+
     private void EnsureDispatcherStarted()
     {
         lock (_dispatcherLock)
@@ -444,33 +509,24 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         }
         finally
         {
-            // Process exited unexpectedly; tear down any active turn so callers unblock.
-            TurnState? turn, cliTurn;
-            lock (_activeTurnLock) { turn = _activeTurn; _activeTurn = null; cliTurn = _cliTurn; _scheduledWakeupPending = false; }
-            var reported = false;
-            if (turn != null)
-            {
+            // Process exited unexpectedly; tear down every open turn so callers unblock.
+            TurnState[] turns;
+            TurnState? cliTurn;
+            lock (_activeTurnLock) { turns = _turns.ToArray(); _turns.Clear(); cliTurn = _cliTurn; _scheduledWakeupPending = false; }
+            foreach (var turn in turns)
                 FinalizeOpenBlocks(turn);
 
-                // A CLI that dies before it writes a result (a bad argument, a
-                // crash, an older CLI refusing to start) would otherwise end
-                // the turn with nothing on screen.
-                if (exit != null && !turn.ResultReceived)
-                {
-                    EmitFatalError(DescribeExit(exit));
-                    reported = true;
-                }
+            // A CLI that dies before it writes a result (a bad argument, a
+            // crash, an older CLI refusing to start) would otherwise end the
+            // turn with nothing on screen. Once, however many messages wait,
+            // and also for a turn the CLI started on its own.
+            if (exit != null && (cliTurn != null || turns.Any(t => !t.ResultReceived)))
+                EmitFatalError(DescribeExit(exit));
 
+            foreach (var turn in turns)
                 turn.End();
-            }
-
-            // The same goes for a turn the CLI started on its own.
             if (cliTurn != null)
-            {
-                if (exit != null && !reported)
-                    EmitFatalError(DescribeExit(exit));
                 EndCliTurn(cliTurn);
-            }
 
             // Background tasks are children of the CLI and end with it.
             SetBackgroundTasks(Array.Empty<BackgroundTask>());
@@ -702,37 +758,62 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     }
 
     /// <summary>
-    /// The turn that events from the CLI belong to: the active turn, once the
-    /// CLI has started it and until its result. Otherwise the turn the CLI
-    /// started on its own, if one is open: our message may wait in the CLI's
-    /// queue behind it, or our turn may have had its result while
-    /// SendMessageAsync has not yet let go of it.
+    /// The turn that events from the CLI belong to: the oldest of our
+    /// messages the CLI has started, until its result. Otherwise the turn the
+    /// CLI started on its own, if one is open: our messages may wait in the
+    /// CLI's queue behind it.
+    ///
+    /// A queued message the CLI reads into the running turn is started too,
+    /// but the turn's steps stay with the message that began it, which is
+    /// first in the list. A turn that has had its result stays in the list
+    /// until its call lets go of it, and no longer counts.
     /// </summary>
     private TurnState? RunningTurn()
     {
         lock (_activeTurnLock)
-            return _activeTurn is { Started: true, ResultReceived: false } turn ? turn : _cliTurn;
+            return _turns.Find(t => t.Started && !t.ResultReceived) ?? _cliTurn;
     }
 
-    /// <summary>
-    /// Routes the CLI's events to our turn from now on. A turn of the CLI's
-    /// own that is still open has taken our message in: its result will be
-    /// ours, so it ends here.
-    /// </summary>
+    private TurnState? FindTurn(string? messageUuid)
+    {
+        if (messageUuid is null) return null;
+        lock (_activeTurnLock)
+            return _turns.Find(t => t.MessageUuid == messageUuid);
+    }
+
+    /// <summary>Marks a queued message as read by a turn. Raises
+    /// <see cref="MessageStarted"/> once per message.</summary>
     private void StartTurn(TurnState turn)
     {
-        turn.Started = true;
+        TurnState? running, cliTurn;
+        lock (_activeTurnLock)
+        {
+            if (turn.Started) return;
+            running = _turns.Find(t => t.Started && !t.ResultReceived);
+            cliTurn = _cliTurn;
+            turn.Started = true;
+        }
+        _logger.LogInformation("[ClaudeCli] Queued message started");
 
-        TurnState? cliTurn;
-        lock (_activeTurnLock) { cliTurn = _cliTurn; }
-        if (cliTurn == null) return;
+        // The CLI reads a queued message into a running turn only between
+        // tool rounds, so the open step is done. Closing it here puts it
+        // before the message in the saved transcript too; otherwise it is
+        // saved only when the next block arrives, after the message.
+        if (running is not null)
+            FinalizeOpenBlocks(running);
 
-        _logger.LogInformation("[ClaudeCli] Our message joined the CLI's own turn");
-        EndCliTurn(cliTurn);
+        // A turn of the CLI's own that is still open has taken our message
+        // in: its result will be ours, so it ends here.
+        if (cliTurn is not null)
+        {
+            _logger.LogInformation("[ClaudeCli] Our message joined the CLI's own turn");
+            EndCliTurn(cliTurn);
+        }
+        RaiseMessageStarted(turn);
     }
 
     /// <summary>
-    /// Follows our message through the CLI's queue. The CLI reports each
+    /// Follows our messages through the CLI's queue. The CLI reports each
     /// message that carries a uuid as queued, started, then completed or
     /// cancelled. Lifecycles of other messages (the CLI's own) are ignored.
     /// </summary>
@@ -741,9 +822,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         var uuid = CliProcessInfo.ReadString(evt, "command_uuid");
         var state = CliProcessInfo.ReadString(evt, "state");
 
-        TurnState? turn;
-        lock (_activeTurnLock) { turn = _activeTurn; }
-        if (turn is null || uuid != turn.MessageUuid)
+        var turn = FindTurn(uuid);
+        if (turn is null)
         {
             // A message of the CLI's own. A check the model scheduled says
             // what woke it: "schedule_wakeup" for CronCreate, "loop_wakeup"
@@ -756,8 +836,6 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         switch (state)
         {
             case "started":
-                if (!turn.Started)
-                    _logger.LogInformation("[ClaudeCli] Queued message started");
                 StartTurn(turn);
                 return;
 
@@ -769,7 +847,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 {
                     _logger.LogInformation("[ClaudeCli] Message cancelled before its turn ended");
                     FinalizeOpenBlocks(turn);
-                    EndSubagents(includeBackground: false);
+                    // A message cancelled in the queue owns no subagents; the
+                    // running turn's go on.
+                    if (turn.Started)
+                        EndSubagents(includeBackground: false);
                     turn.End();
                 }
                 return;
@@ -1085,11 +1166,12 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         }
     }
 
-    // Session notices go to the turn that runs, and to ours while it waits.
+    // Session notices go to the turn that runs (ours, or the CLI's own), or
+    // to the first message still waiting for one.
     private TurnState? ActiveTurn()
     {
         lock (_activeTurnLock)
-            return _activeTurn is { Started: true, ResultReceived: false } turn ? turn : _cliTurn ?? _activeTurn;
+            return _turns.Find(t => t.Started && !t.ResultReceived) ?? _cliTurn ?? _turns.Find(t => !t.Started);
     }
 
     // ── Session notices ───────────────────────────────────────────────────
@@ -1743,14 +1825,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // The first assistant message of a turn names the user message it
         // answers. That starts a queued turn as well, should its "started"
         // lifecycle event go missing.
-        var answers = CliProcessInfo.ReadString(evt, "user_message_uuid");
-        if (answers is not null)
-        {
-            TurnState? active;
-            lock (_activeTurnLock) { active = _activeTurn; }
-            if (active is { Started: false } && active.MessageUuid == answers)
-                StartTurn(active);
-        }
+        if (FindTurn(CliProcessInfo.ReadString(evt, "user_message_uuid")) is { } answered)
+            StartTurn(answered);
 
         // A message no turn of ours is running to take starts a turn of the
         // CLI's own.
@@ -1931,7 +2007,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         FinalizeResponseItem(turn);
         FinalizeToolItem(turn);
 
-        var toolTitle = $"Using {toolName}";
+        var toolTitle = IdeContext?.Find(toolName) is { } ideTool && toolName.StartsWith(IdeContextRegistry.McpToolPrefix, StringComparison.Ordinal)
+            ? ideTool.Title
+            : $"Using {toolName}";
         string? toolBody = null;
         if (block.TryGetProperty("input", out var input))
         {
@@ -2109,8 +2187,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // belongs to a call that failed.
         var isError = block.TryGetProperty("is_error", out var ep) && ep.ValueKind == JsonValueKind.True;
         turn.ToolItem.Status = isError ? OutputItemStatus.Error : OutputItemStatus.Success;
-        if (turn.ToolItem.ToolName != "Agent")
-            turn.ToolItem.Title = $"Used {turn.ToolItem.ToolName}";
+        turn.ToolItem.Title = CompletedTitle(turn.ToolItem);
         turn.ToolItem.Body = content;
         turn.ToolItem.Delta = null;
         _outputListener.OnStepCompleted(turn.ToolItem);
@@ -2146,37 +2223,48 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             _cliSessionId = null;
         }
 
-        TurnState? turn, cliTurn;
+        // A result for another message, or for a turn the CLI started itself,
+        // must not end ours: our reply would then arrive after the call had
+        // returned, and be lost. One result can end several of our messages:
+        // those the CLI read into the turn while it ran are listed with the
+        // message that began it. One that ends none of ours closes the CLI's
+        // own turn, if one is open.
+        TurnState[] ended;
+        TurnState? cliTurn;
         lock (_activeTurnLock)
         {
-            turn = _activeTurn;
+            ended = _turns.Where(t => !t.ResultReceived && ResultBelongsTo(evt, t)).ToArray();
             cliTurn = _cliTurn;
             // A scheduled check that ran inside a turn already open never
             // opened one of its own; the flag must not mark the next one.
             _scheduledWakeupPending = false;
         }
-
-        // A result for another message, or for a turn the CLI started itself,
-        // must not end ours: our reply would then arrive after the call had
-        // returned, and be lost. One for the CLI's own turn closes that turn.
-        if (turn is null || turn.ResultReceived || !ResultBelongsTo(evt, turn))
+        if (ended.Length == 0)
         {
-            if (turn is { ResultReceived: false })
+            bool waiting;
+            lock (_activeTurnLock) { waiting = _turns.Any(t => !t.ResultReceived); }
+            if (waiting)
                 _logger.LogInformation("[ClaudeCli] Result of another turn ({Origin}); waiting for ours",
                     evt.TryGetProperty("origin", out var o) ? CliProcessInfo.ReadString(o, "kind") ?? "unknown" : "no origin");
             if (cliTurn is null) return;
-            turn = cliTurn;
+            ended = new[] { cliTurn };
         }
         else
         {
             cliTurn = null;
         }
 
+        // The steps belong to the first; the others own nothing to close.
+        var turn = ended[0];
+
         // A retry line still open when the turn fails ends as a failure.
         if (isError || turn.ApiError != null) FinalizeRetryItem(turn, OutputItemStatus.Error);
-        FinalizeOpenBlocks(turn);
+        foreach (var t in ended)
+        {
+            FinalizeOpenBlocks(t);
+            t.ResultReceived = true;
+        }
         EndSubagents(includeBackground: false);
-        turn.ResultReceived = true;
         ReadContextWindow(evt);
 
         // A synthetic error message counts even if the result is not flagged:
@@ -2249,12 +2337,20 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             RaiseUsageChanged();
         }
 
-        // Signal SendMessageAsync to return. No call waits on the CLI's own
-        // turn; the session hears that it ended.
+        // No call waits on the CLI's own turn; the session hears that it ended.
         if (cliTurn is not null)
+        {
             EndCliTurn(cliTurn);
-        else
-            turn.End();
+            return;
+        }
+
+        // Signal SendMessageAsync to return. A message listed here that never
+        // had its "started" (an older CLI's fold) still counts as read.
+        foreach (var t in ended)
+        {
+            StartTurn(t);
+            t.End();
+        }
     }
 
     // ── Finalization helpers ───────────────────────────────────────────────
@@ -2300,11 +2396,28 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (item == null) return;
 
         item.Status = status;
-        if (item.ToolName != "Agent")
-            item.Title = $"Used {item.ToolName}";
+        item.Title = CompletedTitle(item);
         item.Delta = null;
         _outputListener.OnStepCompleted(item);
         turn.ToolItem = null;
+    }
+
+    /// <summary>
+    /// The title of a finished tool step. A subagent keeps its description and
+    /// an IDE tool its own title ("Reading the Error List"); the internal name
+    /// mcp__vsagentic__… means nothing to the user.
+    /// </summary>
+    private string CompletedTitle(OutputItem item)
+    {
+        if (item.ToolName == "Agent")
+            return item.Title;
+        if (item.ToolName.StartsWith(IdeContextRegistry.McpToolPrefix, StringComparison.Ordinal) &&
+            IdeContext?.Find(item.ToolName) is { } ideTool)
+        {
+            return ideTool.Title;
+        }
+
+        return $"Used {item.ToolName}";
     }
 
     private void FinalizeOpenBlocks(StepStream turn)
@@ -2498,6 +2611,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                     parts.Add($"{prop.Name}: `{val}`");
                 }
                 if (parts.Count > 0) return string.Join("  \n", parts);
+
+                // A call without arguments, such as an IDE tool that reads the
+                // caret: "{}" under the step title says nothing.
+                return "";
             }
 
             var raw = input.GetRawText();
@@ -3500,8 +3617,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // message's lifecycle events and in the result of the turn.
         public string MessageUuid { get; }
 
-        // False while the message waits in the CLI's queue behind a turn the
-        // CLI started itself. Events are routed to this turn only once true.
+        // False while the message waits in the CLI's queue, behind a turn the
+        // CLI started itself or one of ours. Set under _activeTurnLock.
         public volatile bool Started;
 
         // The open retry and compaction lines; see HandleApiRetry, HandleStatus.

@@ -20,6 +20,8 @@ public sealed class PermissionBroker : IPermissionBroker
 
     public event Action<string>? PendingCancelled;
 
+    public event Action<string>? PendingWithdrawn;
+
     public Task<PermissionDecision> SubmitAsync(PermissionRequest request, CancellationToken cancellationToken)
     {
         var tcs = new TaskCompletionSource<PermissionDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -76,6 +78,22 @@ public sealed class PermissionBroker : IPermissionBroker
                 tcs.TrySetResult(deny);
                 RaisePendingCancelled(key);
             }
+        }
+    }
+
+    public void Withdraw(string requestId)
+    {
+        if (!_pending.TryRemove(requestId, out var tcs)) return;
+
+        _logger.LogInformation("[PermissionBroker] CLI withdrew {Id}", requestId);
+        tcs.TrySetResult(PermissionDecision.Deny("Withdrawn by the CLI"));
+        try
+        {
+            PendingWithdrawn?.Invoke(requestId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[PermissionBroker] PendingWithdrawn handler threw for {Id}", requestId);
         }
     }
 

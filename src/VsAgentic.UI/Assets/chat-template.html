@@ -21,6 +21,14 @@
     --thinking-bg: #252526;
     --code-bg: #3c3c3c;
     --pre-bg: #1e1e1e;
+    --hl-comment: #6a9955;
+    --hl-keyword: #569cd6;
+    --hl-string: #ce9178;
+    --hl-number: #b5cea8;
+    --hl-type: #4ec9b0;
+    --hl-function: #dcdcaa;
+    --hl-variable: #9cdcfe;
+    --hl-meta: #c586c0;
 }
 
 * { box-sizing: border-box; }
@@ -641,6 +649,20 @@ html, body {
     font-size: 12px;
     color: var(--text-primary);
 }
+/* Syntax colors. highlight.js marks tokens up; the host sets the --hl-* palette
+   to suit the theme's brightness. */
+.hljs-comment, .hljs-quote { color: var(--hl-comment); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag, .hljs-name { color: var(--hl-keyword); }
+.hljs-string, .hljs-regexp, .hljs-meta .hljs-string, .hljs-template-variable { color: var(--hl-string); }
+.hljs-number, .hljs-symbol, .hljs-bullet { color: var(--hl-number); }
+.hljs-type, .hljs-built_in, .hljs-title.class_ { color: var(--hl-type); }
+.hljs-title, .hljs-title.function_, .hljs-section { color: var(--hl-function); }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-params, .hljs-property, .hljs-selector-class, .hljs-selector-id { color: var(--hl-variable); }
+.hljs-meta, .hljs-link, .hljs-addition { color: var(--hl-meta); }
+.hljs-deletion { color: var(--error); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: bold; }
+
 /* Copy button on code blocks. The <pre> is wrapped in .code-block so the
    button stays pinned when the code scrolls horizontally inside the <pre>. */
 .code-block {
@@ -710,6 +732,7 @@ html, body {
 .md-content > *:last-child { margin-bottom: 0; }
 </style>
 <script>{{SHOWDOWN_JS}}</script>
+<script>{{HIGHLIGHT_JS}}</script>
 <script>
 // requireSpaceBeforeHeadingText: a heading needs "# " as in CommonMark.
 // Showdown's default reads "#176" at the start of a line as an <h1> and
@@ -2345,9 +2368,37 @@ function wrapWithCopyButton(el, wrapClass, btnClass, title, getText) {
     });
 }
 
+// Color the tokens of every fenced block that names a language the bundled
+// highlight.js knows. A block without a language stays plain: guessing one
+// would color prose and logs at random. Very long blocks stay plain as well,
+// because a streaming reply is rendered again on every update.
+var HIGHLIGHT_MAX_CHARS = 20000;
+
+function highlightCodeBlocks(container) {
+    if (typeof hljs === 'undefined') return;
+    var codes = container.querySelectorAll('pre > code');
+    for (var i = 0; i < codes.length; i++) {
+        var code = codes[i];
+        if (code.classList.contains('hljs')) continue;
+        var lang = null;
+        for (var c = 0; c < code.classList.length; c++) {
+            var m = /^language-(.+)$/.exec(code.classList[c]);
+            if (m) { lang = m[1]; break; }
+        }
+        if (!lang || !hljs.getLanguage(lang)) continue;
+        var text = code.textContent;
+        if (text.length > HIGHLIGHT_MAX_CHARS) continue;
+        try {
+            code.innerHTML = hljs.highlight(text, { language: lang, ignoreIllegals: true }).value;
+            code.classList.add('hljs');
+        } catch (e) { /* leave the block plain */ }
+    }
+}
+
 // Give every fenced code block and every block quote its own copy button, so a
 // prompt or snippet can be taken without selecting it by hand.
 function addBlockCopyButtons(container) {
+    highlightCodeBlocks(container);
     var pres = container.querySelectorAll('pre');
     for (var i = 0; i < pres.length; i++) {
         var pre = pres[i];

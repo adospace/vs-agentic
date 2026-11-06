@@ -395,6 +395,19 @@ public partial class ChatSessionControl : UserControl
         colors["--accent"] = ToCssHex(accent);
 
         var toolWindowBackground = VSColorTheme.GetThemedColor(EnvironmentColors.ToolWindowBackgroundColorKey);
+
+        // Token colors for code blocks: the VS Code Dark+ and Light+ palettes,
+        // picked by the brightness of the tool window background.
+        var light = RelativeLuminance(toolWindowBackground) >= 0.5;
+        colors["--hl-comment"] = light ? "#008000" : "#6a9955";
+        colors["--hl-keyword"] = light ? "#0000ff" : "#569cd6";
+        colors["--hl-string"] = light ? "#a31515" : "#ce9178";
+        colors["--hl-number"] = light ? "#098658" : "#b5cea8";
+        colors["--hl-type"] = light ? "#267f99" : "#4ec9b0";
+        colors["--hl-function"] = light ? "#795e26" : "#dcdcaa";
+        colors["--hl-variable"] = light ? "#001080" : "#9cdcfe";
+        colors["--hl-meta"] = light ? "#af00db" : "#c586c0";
+
         var promptAccent = accent;
         var promptBorderBase = VSColorTheme.GetThemedColor(EnvironmentColors.ToolWindowBorderColorKey);
         var promptBgBlend = RelativeLuminance(toolWindowBackground) >= 0.5 ? 0.08 : 0.12;

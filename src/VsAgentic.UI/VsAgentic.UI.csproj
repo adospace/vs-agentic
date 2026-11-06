@@ -27,6 +27,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Assets\showdown.min.js" />
+    <EmbeddedResource Include="Assets\highlight.min.js" />
     <EmbeddedResource Include="Assets\chat-template.html" />
   </ItemGroup>
 

@@ -464,8 +464,9 @@ public partial class ChatWebView : UserControl
     {
         var assembly = Assembly.GetExecutingAssembly();
         var showdownJs = ReadEmbeddedResource(assembly, "VsAgentic.UI.Assets.showdown.min.js");
+        var highlightJs = ReadEmbeddedResource(assembly, "VsAgentic.UI.Assets.highlight.min.js");
         var templateHtml = ReadEmbeddedResource(assembly, "VsAgentic.UI.Assets.chat-template.html");
-        return templateHtml.Replace("{{SHOWDOWN_JS}}", showdownJs);
+        return templateHtml.Replace("{{SHOWDOWN_JS}}", showdownJs).Replace("{{HIGHLIGHT_JS}}", highlightJs);
     }
 
     private static string ReadEmbeddedResource(Assembly assembly, string resourceName)

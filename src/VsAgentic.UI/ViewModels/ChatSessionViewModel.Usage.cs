@@ -781,7 +781,10 @@ public partial class ChatSessionViewModel
     /// </summary>
     private static string FormatResetTime(DateTimeOffset resetsAt)
     {
+        // Rounded to the minute: the CLI reports one window at 14:59:59 and
+        // the other at 15:00:00, and "14:59" next to "15:00" reads as two times.
         var local = resetsAt.ToLocalTime();
+        local = local.AddSeconds(30).AddTicks(-(local.AddSeconds(30).Ticks % TimeSpan.TicksPerMinute));
         var format = local - DateTimeOffset.Now > TimeSpan.FromHours(24) ? "ddd HH:mm" : "'at' HH:mm";
         return local.ToString(format, CultureInfo.InvariantCulture);
     }

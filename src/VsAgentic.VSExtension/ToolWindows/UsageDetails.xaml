@@ -1,0 +1,219 @@
+<UserControl x:Class="VsAgentic.VSExtension.ToolWindows.UsageDetails"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vs="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
+             xmlns:platformui="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0">
+
+    <!-- The usage panel: opens from the readings in the status bar. Its data
+         context is the session's view model, inherited through the popup. -->
+
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+
+        <!-- A thin level gauge. Nothing is written on it, so the fill is
+             opaque, unlike the status bar meter. The colour follows the
+             row's Level, with the status bar's thresholds. -->
+        <Style x:Key="PanelBarStyle" TargetType="ProgressBar">
+            <Setter Property="Minimum" Value="0"/>
+            <Setter Property="Maximum" Value="1"/>
+            <Setter Property="Height" Value="6"/>
+            <Setter Property="Margin" Value="0,5,0,0"/>
+            <Setter Property="Background"
+                    Value="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+            <Setter Property="Foreground"
+                    Value="{DynamicResource {x:Static vs:VsBrushes.PanelHyperlinkKey}}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Grid SnapsToDevicePixels="True">
+                            <Border x:Name="PART_Track"
+                                    CornerRadius="3"
+                                    Opacity="0.25"
+                                    Background="{TemplateBinding Background}"/>
+                            <Border x:Name="PART_Indicator"
+                                    HorizontalAlignment="Left"
+                                    CornerRadius="3"
+                                    Background="{TemplateBinding Foreground}"/>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Level}" Value="Warning">
+                    <Setter Property="Foreground" Value="{DynamicResource UsageWarningBrush}"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Level}" Value="Critical">
+                    <Setter Property="Foreground"
+                            Value="{DynamicResource {x:Static platformui:EnvironmentColors.ToolWindowValidationErrorTextBrushKey}}"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- One gauge: title on the left, when it resets and the reading on
+             the right, the bar below. -->
+        <DataTemplate x:Key="LimitRowTemplate">
+            <StackPanel Margin="0,0,0,12">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding Title}"
+                               TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding Detail}"
+                               Margin="10,0,0,0"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                    <TextBlock Grid.Column="2"
+                               Text="{Binding Value}"
+                               Margin="8,0,0,0"
+                               MinWidth="28"
+                               TextAlignment="Right">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Level}" Value="Warning">
+                                        <Setter Property="Foreground" Value="{DynamicResource UsageWarningBrush}"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Level}" Value="Critical">
+                                        <Setter Property="Foreground"
+                                                Value="{DynamicResource {x:Static platformui:EnvironmentColors.ToolWindowValidationErrorTextBrushKey}}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
+                <ProgressBar Style="{StaticResource PanelBarStyle}"
+                             Value="{Binding Fraction, Mode=OneWay}"
+                             Visibility="{Binding ShowBar, Converter={StaticResource BoolToVis}}"/>
+            </StackPanel>
+        </DataTemplate>
+
+        <Style x:Key="SectionTitleStyle" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,0,0,8"/>
+        </Style>
+
+        <Style x:Key="DividerStyle" TargetType="Border">
+            <Setter Property="Height" Value="1"/>
+            <Setter Property="Margin" Value="-14,4,-14,12"/>
+            <Setter Property="Background"
+                    Value="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"/>
+        </Style>
+
+        <!-- A label and its value on one line, with a faint rule below, as in
+             a table. -->
+        <Style x:Key="TableRowStyle" TargetType="Border">
+            <Setter Property="Padding" Value="0,4"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+            <Setter Property="BorderBrush"
+                    Value="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"/>
+        </Style>
+
+        <Style x:Key="GrayTextStyle" TargetType="TextBlock">
+            <Setter Property="Foreground"
+                    Value="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+        </Style>
+    </UserControl.Resources>
+
+    <Border Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
+            BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+            BorderThickness="1"
+            CornerRadius="4"
+            Width="320"
+            Padding="14,10,14,8"
+            SnapsToDevicePixels="True"
+            TextElement.FontSize="11"
+            TextElement.Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}">
+        <StackPanel>
+            <TextBlock Text="Usage" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,10"/>
+
+            <!-- Plan limits, or the local estimate where Claude Code has not
+                 reported one. Hidden when neither applies. -->
+            <StackPanel Visibility="{Binding HasLimitRows, Converter={StaticResource BoolToVis}}">
+                <ItemsControl ItemsSource="{Binding LimitRows}"
+                              ItemTemplate="{StaticResource LimitRowTemplate}"
+                              Focusable="False"/>
+                <TextBlock Text="{Binding LimitsNote}"
+                           Style="{StaticResource GrayTextStyle}"
+                           FontSize="10"
+                           TextWrapping="Wrap"
+                           Margin="0,-4,0,4"/>
+                <Border Style="{StaticResource DividerStyle}"/>
+            </StackPanel>
+
+            <!-- How full the model's context is now. It falls after a
+                 compaction, unlike the session totals below. -->
+            <ContentControl Content="{Binding ContextRow}"
+                            ContentTemplate="{StaticResource LimitRowTemplate}"
+                            Focusable="False"/>
+            <TextBlock Text="Falls back down when the conversation is compacted."
+                       Style="{StaticResource GrayTextStyle}"
+                       FontSize="10"
+                       Margin="0,-8,0,4"/>
+
+            <Border Style="{StaticResource DividerStyle}"/>
+
+            <!-- This session: what it cost and how well the cache served it. -->
+            <TextBlock Text="This session" Style="{StaticResource SectionTitleStyle}"/>
+            <Grid Margin="0,0,0,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="Cost" Style="{StaticResource GrayTextStyle}"/>
+                    <TextBlock Text="{Binding SessionCostDisplay}" Margin="6,0,0,0"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <TextBlock Text="Cache hit" Style="{StaticResource GrayTextStyle}"/>
+                    <TextBlock Text="{Binding CacheHitDisplay}" Margin="6,0,0,0"/>
+                </StackPanel>
+            </Grid>
+
+            <!-- Tokens by kind, for the model of this session. -->
+            <Border Style="{StaticResource TableRowStyle}">
+                <Grid>
+                    <TextBlock Text="Breakdown" FontWeight="SemiBold"/>
+                    <TextBlock Text="{Binding ModelDisplay}"
+                               HorizontalAlignment="Right"
+                               Style="{StaticResource GrayTextStyle}"/>
+                </Grid>
+            </Border>
+            <Border Style="{StaticResource TableRowStyle}">
+                <Grid>
+                    <TextBlock Text="Input" Style="{StaticResource GrayTextStyle}"/>
+                    <TextBlock Text="{Binding InputTokensDisplay}" HorizontalAlignment="Right"/>
+                </Grid>
+            </Border>
+            <Border Style="{StaticResource TableRowStyle}">
+                <Grid>
+                    <TextBlock Text="Output" Style="{StaticResource GrayTextStyle}"/>
+                    <TextBlock Text="{Binding OutputTokensDisplay}" HorizontalAlignment="Right"/>
+                </Grid>
+            </Border>
+            <Border Style="{StaticResource TableRowStyle}">
+                <Grid>
+                    <TextBlock Text="Cache read" Style="{StaticResource GrayTextStyle}"/>
+                    <TextBlock Text="{Binding CacheReadTokensDisplay}" HorizontalAlignment="Right"/>
+                </Grid>
+            </Border>
+            <Border Style="{StaticResource TableRowStyle}">
+                <Grid>
+                    <TextBlock Text="Cache write" Style="{StaticResource GrayTextStyle}"/>
+                    <TextBlock Text="{Binding CacheWriteTokensDisplay}" HorizontalAlignment="Right"/>
+                </Grid>
+            </Border>
+            <Border Style="{StaticResource TableRowStyle}" BorderThickness="0">
+                <Grid>
+                    <TextBlock Text="Total" FontWeight="SemiBold"/>
+                    <TextBlock Text="{Binding SessionTokensDisplay}"
+                               FontWeight="SemiBold"
+                               HorizontalAlignment="Right"/>
+                </Grid>
+            </Border>
+        </StackPanel>
+    </Border>
+</UserControl>

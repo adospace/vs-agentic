@@ -91,6 +91,13 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     // several times over.
     private readonly HashSet<string> _countedMessageIds = new HashSet<string>(StringComparer.Ordinal);
 
+    // The last call counted for each running subagent, by the id of its Agent
+    // call. The CLI writes a subagent's events, like the main conversation's,
+    // when the answer starts, and no result event follows them; the Agent
+    // call's result carries the final usage of the subagent's last call
+    // instead. Under _usageLock.
+    private readonly Dictionary<string, TokenUsage> _subagentLastUsage = new Dictionary<string, TokenUsage>(StringComparer.Ordinal);
+
     private readonly UsageLog _usageLog = UsageLog.Shared;
 
     // The dispatcher consumes events from the host and routes them to the
@@ -1795,7 +1802,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (subagent is not null)
         {
             if (!evt.TryGetProperty("message", out var subMsg)) return;
-            AccountUsage(subMsg, fromSubagent: true);
+            AccountUsage(subMsg, subagentCall: CliProcessInfo.ReadString(evt, "parent_tool_use_id"));
             if (subMsg.TryGetProperty("content", out var subContent) && subContent.ValueKind == JsonValueKind.Array)
                 await HandleContentBlocksAsync(subagent, subContent).ConfigureAwait(false);
             return;
@@ -1820,7 +1827,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
         // Before the content check: a message can carry usage worth counting
         // even when its content block is one we do not render.
-        AccountUsage(msg, fromSubagent: false);
+        AccountUsage(msg, subagentCall: null);
 
         // A failed sign-in arrives as a synthetic assistant message whose text
         // is the error, tagged with "error": "authentication_failed". The tag
@@ -2055,6 +2062,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     /// </summary>
     private void HandleUserEvent(JsonElement evt)
     {
+        // Before the subagent check: the tokens were spent whether or not the
+        // step is on screen, and a nested subagent reports to its parent.
+        AccountSubagentResult(evt);
+
         var subagent = SubagentOf(evt, out var known);
         if (!known) return;
         if (subagent is not null)
@@ -2801,9 +2812,13 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     /// context is its own, though, and says nothing about how full the main
     /// conversation is; reading it would have the meter jump to the
     /// subagent's figure and back while a subagent runs.
+    /// <paramref name="subagentCall"/> is the id of the Agent call the message
+    /// belongs to, or null for the main conversation.
     /// </summary>
-    private void AccountUsage(JsonElement message, bool fromSubagent)
+    private void AccountUsage(JsonElement message, string? subagentCall)
     {
+        var fromSubagent = subagentCall is not null;
+
         if (!message.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
             return;
 
@@ -2839,6 +2854,15 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             }
 
             AddUsage(input, output, cacheRead, cacheCreate);
+
+            if (subagentCall is not null)
+            {
+                // A subagent stopped before its result leaves an entry behind;
+                // a long session should not keep them all.
+                if (_subagentLastUsage.Count > 256 && !_subagentLastUsage.ContainsKey(subagentCall))
+                    _subagentLastUsage.Clear();
+                _subagentLastUsage[subagentCall] = new TokenUsage(input, output, cacheRead, cacheCreate);
+            }
 
             // Assigned, not accumulated: this is an occupancy reading, and it
             // drops back down when the CLI compacts the conversation.
@@ -2890,6 +2914,92 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
         if (input + output + cacheRead + cacheCreate > 0)
             RecordUsage(input, output, cacheRead, cacheCreate);
+    }
+
+    /// <summary>
+    /// Adds what a finished subagent's last call has beyond what its events
+    /// counted. The Agent call's result carries the final usage of that call
+    /// in <c>tool_use_result.usage</c> (CLI 2.1.310 and 2.1.316: the last call
+    /// only, not the subagent's sum). The call's event, if it came, carried the
+    /// output from the start of the answer: the difference is added. If it did
+    /// not come, the input side does not match the last call counted, and the
+    /// whole usage is added. The earlier calls of the subagent have no final
+    /// count anywhere in the stream and stay as their events gave them.
+    /// </summary>
+    private void AccountSubagentResult(JsonElement evt)
+    {
+        if (!evt.TryGetProperty("tool_use_result", out var toolUseResult)
+            || toolUseResult.ValueKind != JsonValueKind.Object) return;
+        // Only the Agent tool names the subagent; other tools may have a usage
+        // block of their own meaning.
+        if (CliProcessInfo.ReadString(toolUseResult, "agentId") is null) return;
+        if (!toolUseResult.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object) return;
+
+        if (!evt.TryGetProperty("message", out var msg)
+            || !msg.TryGetProperty("content", out var contentArr)
+            || contentArr.ValueKind != JsonValueKind.Array) return;
+
+        string? agentCall = null;
+        foreach (var block in contentArr.EnumerateArray())
+        {
+            if (block.TryGetProperty("type", out var bt) && bt.GetString() == "tool_result"
+                && block.TryGetProperty("tool_use_id", out var tp) && tp.ValueKind == JsonValueKind.String)
+            {
+                agentCall = tp.GetString();
+                break;
+            }
+        }
+        if (agentCall is null) return;
+
+        var final = new TokenUsage(
+            ReadTokenCount(usage, "input_tokens"),
+            ReadTokenCount(usage, "output_tokens"),
+            ReadTokenCount(usage, "cache_read_input_tokens"),
+            ReadTokenCount(usage, "cache_creation_input_tokens"));
+
+        long input, output, cacheRead, cacheCreate;
+        lock (_usageLock)
+        {
+            if (_subagentLastUsage.TryGetValue(agentCall, out var counted) && counted.SameInput(final))
+            {
+                input = cacheRead = cacheCreate = 0;
+                output = Math.Max(0, final.Output - counted.Output);
+            }
+            else
+            {
+                input = final.Input;
+                output = final.Output;
+                cacheRead = final.CacheRead;
+                cacheCreate = final.CacheCreate;
+            }
+
+            _subagentLastUsage.Remove(agentCall);
+            AddUsage(input, output, cacheRead, cacheCreate);
+        }
+
+        if (input + output + cacheRead + cacheCreate > 0)
+            RecordUsage(input, output, cacheRead, cacheCreate);
+    }
+
+    private readonly struct TokenUsage
+    {
+        public TokenUsage(long input, long output, long cacheRead, long cacheCreate)
+        {
+            Input = input;
+            Output = output;
+            CacheRead = cacheRead;
+            CacheCreate = cacheCreate;
+        }
+
+        public long Input { get; }
+        public long Output { get; }
+        public long CacheRead { get; }
+        public long CacheCreate { get; }
+
+        // The same API call: the input side is fixed when the request is sent,
+        // only the output grows while the answer streams.
+        public bool SameInput(TokenUsage other) =>
+            Input == other.Input && CacheRead == other.CacheRead && CacheCreate == other.CacheCreate;
     }
 
     // Under _usageLock.
@@ -3405,6 +3515,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             _contextReadings++;
             _contextWindowTokens = null;
             _countedMessageIds.Clear();
+            _subagentLastUsage.Clear();
             ResetTurnUsage();
         }
 

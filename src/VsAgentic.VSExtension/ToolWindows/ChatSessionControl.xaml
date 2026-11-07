@@ -1057,47 +1057,69 @@
                                                 HorizontalAlignment="Right"
                                                 VerticalAlignment="Center">
 
-                                        <!-- Plain text, not bars. Without a reading
-                                             from the CLI the 5h and 7d budgets are
-                                             estimates, and a bar would claim a
-                                             precision they do not have. With one, the
-                                             percentage is short and the colour warns;
-                                             a bar would also cost width these cells
-                                             do not have. -->
-                                        <StackPanel Orientation="Horizontal"
-                                                    Visibility="{Binding HasWindowMeters, Converter={StaticResource BoolToVis}}">
-                                            <local:UsageMeter Caption="7d"
-                                                              ValueText="{Binding LongWindowDisplay}"
-                                                              Level="{Binding LongWindowLevel}"
-                                                              ShowBar="False"
-                                                              ToolTip="{Binding LongWindowTooltip}"
-                                                              Visibility="{Binding ActualWidth, ElementName=StatusInfo,
-                                                                           Converter={StaticResource MinWidth},
-                                                                           ConverterParameter=405}"/>
-                                            <local:UsageMeter Caption="5h"
-                                                              ValueText="{Binding ShortWindowDisplay}"
-                                                              Level="{Binding ShortWindowLevel}"
-                                                              ShowBar="False"
-                                                              ToolTip="{Binding ShortWindowTooltip}"
-                                                              Visibility="{Binding ActualWidth, ElementName=StatusInfo,
-                                                                           Converter={StaticResource MinWidth},
-                                                                           ConverterParameter=320}"/>
-                                        </StackPanel>
+                                        <!-- The readings are one button: a click opens the
+                                             usage panel with each limit, its reset time and
+                                             the session's tokens by kind. Not hit-testable
+                                             while the panel is open, as the model button. -->
+                                        <ToggleButton x:Name="UsageToggle"
+                                                      Style="{StaticResource StatusToggleStyle}"
+                                                      Margin="0"
+                                                      AutomationProperties.Name="{Binding UsageSummary}"
+                                                      ToolTip="Usage details"
+                                                      IsHitTestVisible="{Binding IsOpen, ElementName=UsagePopup,
+                                                                         Converter={StaticResource InverseBool}}">
+                                            <StackPanel Orientation="Horizontal">
+                                                <!-- Plain text, not bars. Without a reading
+                                                     from the CLI the 5h and 7d budgets are
+                                                     estimates, and a bar would claim a
+                                                     precision they do not have. With one, the
+                                                     percentage is short and the colour warns;
+                                                     a bar would also cost width these cells
+                                                     do not have. The panel has the bars. -->
+                                                <StackPanel Orientation="Horizontal"
+                                                            Visibility="{Binding HasWindowMeters, Converter={StaticResource BoolToVis}}">
+                                                    <local:UsageMeter Caption="7d"
+                                                                      ValueText="{Binding LongWindowDisplay}"
+                                                                      Level="{Binding LongWindowLevel}"
+                                                                      ShowBar="False"
+                                                                      Visibility="{Binding ActualWidth, ElementName=StatusInfo,
+                                                                                   Converter={StaticResource MinWidth},
+                                                                                   ConverterParameter=405}"/>
+                                                    <local:UsageMeter Caption="5h"
+                                                                      ValueText="{Binding ShortWindowDisplay}"
+                                                                      Level="{Binding ShortWindowLevel}"
+                                                                      ShowBar="False"
+                                                                      Visibility="{Binding ActualWidth, ElementName=StatusInfo,
+                                                                                   Converter={StaticResource MinWidth},
+                                                                                   ConverterParameter=320}"/>
+                                                </StackPanel>
 
-                                        <local:UsageMeter Caption="Session"
-                                                          ValueText="{Binding SessionTokensDisplay}"
-                                                          ShowBar="False"
-                                                          ToolTip="{Binding SessionTokensTooltip}"
-                                                          Visibility="{Binding ActualWidth, ElementName=StatusInfo,
-                                                                       Converter={StaticResource MinWidth},
-                                                                       ConverterParameter=475}"/>
+                                                <local:UsageMeter Caption="Session"
+                                                                  ValueText="{Binding SessionTokensDisplay}"
+                                                                  ShowBar="False"
+                                                                  Visibility="{Binding ActualWidth, ElementName=StatusInfo,
+                                                                               Converter={StaticResource MinWidth},
+                                                                               ConverterParameter=475}"/>
 
-                                        <!-- The one bar: the context ceiling is real,
-                                             derived from the model id. -->
-                                        <local:UsageMeter ValueText="{Binding ContextDisplay}"
-                                                          Fraction="{Binding ContextFraction}"
-                                                          Level="{Binding ContextLevel}"
-                                                          ToolTip="{Binding ContextTooltip}"/>
+                                                <!-- The one bar: the context ceiling is real,
+                                                     derived from the model id. -->
+                                                <local:UsageMeter ValueText="{Binding ContextDisplay}"
+                                                                  Fraction="{Binding ContextFraction}"
+                                                                  Level="{Binding ContextLevel}"/>
+                                            </StackPanel>
+                                        </ToggleButton>
+
+                                        <!-- Opens upwards with the right edges in line, as
+                                             the model panel. -->
+                                        <Popup x:Name="UsagePopup"
+                                               PlacementTarget="{Binding ElementName=UsageToggle}"
+                                               Placement="Custom"
+                                               StaysOpen="False"
+                                               AllowsTransparency="True"
+                                               PopupAnimation="Fade"
+                                               IsOpen="{Binding IsChecked, ElementName=UsageToggle, Mode=TwoWay}">
+                                            <local:UsageDetails/>
+                                        </Popup>
 
                                         <!-- One button for model, effort and Fast mode, reading
                                              like the state it sets ("Opus 5.5 · Medium", ⚡ while

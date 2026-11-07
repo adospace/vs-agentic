@@ -103,7 +103,14 @@ public partial class UsageMeter : UserControl
     /// than hard-coded: a single value legible on both Dark and Light does not
     /// exist.
     /// </summary>
-    private void ApplyWarningBrush()
+    private void ApplyWarningBrush() => ApplyWarningBrush(Resources);
+
+    /// <summary>
+    /// Puts the amber for the current theme under <c>UsageWarningBrush</c>.
+    /// Shared with the usage panel, so a limit near its end has the same
+    /// colour in the status bar and in the panel.
+    /// </summary>
+    internal static void ApplyWarningBrush(ResourceDictionary resources)
     {
         try
         {
@@ -116,7 +123,7 @@ public partial class UsageMeter : UserControl
 
             var brush = new SolidColorBrush(amber);
             brush.Freeze();
-            Resources["UsageWarningBrush"] = brush;
+            resources["UsageWarningBrush"] = brush;
         }
         catch (Exception)
         {

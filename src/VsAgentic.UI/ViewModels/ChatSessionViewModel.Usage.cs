@@ -25,18 +25,25 @@ public partial class ChatSessionViewModel
 {
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ContextDisplay))]
-    [NotifyPropertyChangedFor(nameof(ContextTooltip))]
     [NotifyPropertyChangedFor(nameof(ContextFraction))]
     [NotifyPropertyChangedFor(nameof(ContextLevel))]
+    [NotifyPropertyChangedFor(nameof(ContextRow))]
     [NotifyPropertyChangedFor(nameof(SessionTokensDisplay))]
-    [NotifyPropertyChangedFor(nameof(SessionTokensTooltip))]
     [NotifyPropertyChangedFor(nameof(ShortWindowDisplay))]
-    [NotifyPropertyChangedFor(nameof(ShortWindowTooltip))]
     [NotifyPropertyChangedFor(nameof(ShortWindowLevel))]
     [NotifyPropertyChangedFor(nameof(LongWindowDisplay))]
-    [NotifyPropertyChangedFor(nameof(LongWindowTooltip))]
     [NotifyPropertyChangedFor(nameof(LongWindowLevel))]
     [NotifyPropertyChangedFor(nameof(HasWindowMeters))]
+    [NotifyPropertyChangedFor(nameof(LimitRows))]
+    [NotifyPropertyChangedFor(nameof(HasLimitRows))]
+    [NotifyPropertyChangedFor(nameof(LimitsNote))]
+    [NotifyPropertyChangedFor(nameof(SessionCostDisplay))]
+    [NotifyPropertyChangedFor(nameof(CacheHitDisplay))]
+    [NotifyPropertyChangedFor(nameof(InputTokensDisplay))]
+    [NotifyPropertyChangedFor(nameof(OutputTokensDisplay))]
+    [NotifyPropertyChangedFor(nameof(CacheReadTokensDisplay))]
+    [NotifyPropertyChangedFor(nameof(CacheWriteTokensDisplay))]
+    [NotifyPropertyChangedFor(nameof(UsageSummary))]
     private SessionUsage _usage = SessionUsage.Empty;
 
     /// <summary>
@@ -47,9 +54,10 @@ public partial class ChatSessionViewModel
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ModelDisplay))]
     [NotifyPropertyChangedFor(nameof(ContextDisplay))]
-    [NotifyPropertyChangedFor(nameof(ContextTooltip))]
     [NotifyPropertyChangedFor(nameof(ContextFraction))]
     [NotifyPropertyChangedFor(nameof(ContextLevel))]
+    [NotifyPropertyChangedFor(nameof(ContextRow))]
+    [NotifyPropertyChangedFor(nameof(UsageSummary))]
     private string? _modelId;
 
     // ── Model / effort pickers ────────────────────────────────────────────
@@ -594,22 +602,12 @@ public partial class ChatSessionViewModel
     public string ContextDisplay =>
         $"{FormatTokens(Usage.ContextTokens)} / {FormatTokens(ContextWindowTokens)}";
 
-    public string ContextTooltip =>
-        "Context window\n"
-        + $"Used: {FormatExact(Usage.ContextTokens)} of {FormatExact(ContextWindowTokens)} tokens "
-        + $"({ContextFraction:P0})\n"
-        + "How full the model's context is right now. This falls back down when the conversation is compacted.";
+    /// <summary>The context window as a row of the usage panel, drawn like the limits.</summary>
+    public UsageLimitRow ContextRow => new(
+        "Context window", ContextDisplay, FormatPercent(ContextFraction * 100d),
+        ContextFraction, ContextLevel, showBar: true);
 
     public string SessionTokensDisplay => FormatTokens(Usage.TotalTokens);
-
-    public string SessionTokensTooltip =>
-        "This session\n"
-        + $"Input: {FormatExact(Usage.InputTokens)}\n"
-        + $"Output: {FormatExact(Usage.OutputTokens)}\n"
-        + $"Cache read: {FormatExact(Usage.CacheReadTokens)}\n"
-        + $"Cache write: {FormatExact(Usage.CacheCreationTokens)}\n"
-        + $"Total: {FormatExact(Usage.TotalTokens)} tokens"
-        + (Usage.CostUsd is { } cost ? $"\nCost: {cost.ToString("C2", CultureInfo.GetCultureInfo("en-US"))}" : "");
 
     public bool HasWindowMeters => Usage.HasWindowBudget;
 
@@ -621,48 +619,132 @@ public partial class ChatSessionViewModel
         ? FormatPercent(limit.Percent)
         : FormatBudget(Usage.ShortWindowTokens, Usage.ShortWindowBudget);
 
-    public string ShortWindowTooltip => Usage.ShortWindowLimit is { } limit
-        ? LimitTooltip("5-hour limit", limit, Array.Empty<PlanLimitWindow>())
-        : WindowTooltip("Last 5 hours", Usage.ShortWindowTokens, Usage.ShortWindowBudget, Usage.ShortWindowFraction);
-
     public UsageLevel ShortWindowLevel => Usage.ShortWindowLevel;
 
     public string LongWindowDisplay => Usage.LongWindowLimit is { } limit
         ? FormatPercent(limit.Percent)
         : FormatBudget(Usage.LongWindowTokens, Usage.LongWindowBudget);
 
-    public string LongWindowTooltip => Usage.LongWindowLimit is { } limit
-        ? LimitTooltip("Weekly limit", limit, Usage.ModelLimits)
-        : WindowTooltip("Last 7 days", Usage.LongWindowTokens, Usage.LongWindowBudget, Usage.LongWindowFraction);
-
     public UsageLevel LongWindowLevel => Usage.LongWindowLevel;
 
-    private static string WindowTooltip(string title, long used, long budget, double fraction) =>
-        title + "\n"
-        + $"Used: {FormatExact(used)} of about {FormatExact(budget)} tokens ({fraction:P0})\n"
-        + "Counted across every VsAgentic session on this machine, and kept between restarts.\n"
-        + "The budget is an estimate — Anthropic does not publish the real limit, so treat this "
-        + "as a gauge rather than an authority. Adjust it under Tools → Options → VsAgentic.\n"
-        + "On a subscription, the limit Claude Code reports replaces this estimate after the first reply.";
+    // ── Usage panel ───────────────────────────────────────────────────────
+    // A click on the readings opens a panel with the details: each limit with
+    // its reset time, the context window, and what this session has spent.
 
-    private static string LimitTooltip(string title, PlanLimitWindow limit, IReadOnlyList<PlanLimitWindow> models)
+    /// <summary>
+    /// The limit rows of the panel: 5-hour, weekly, then one per model with a
+    /// weekly window of its own. A window the CLI has not reported shows the
+    /// local estimate instead, without a bar, as the status bar does.
+    /// </summary>
+    public IReadOnlyList<UsageLimitRow> LimitRows
     {
-        var text = title + "\n"
-            + $"Used: {FormatPercent(limit.Percent)} of your plan's limit\n";
-        if (limit.ResetsAt is { } resetsAt)
-            text += $"Resets: {FormatResetTime(resetsAt)}\n";
-
-        foreach (var model in models)
+        get
         {
-            text += $"{model.Name}: {FormatPercent(model.Percent)}";
-            if (model.ResetsAt is { } modelReset) text += $", resets {FormatResetTime(modelReset)}";
-            text += "\n";
-        }
+            var rows = new List<UsageLimitRow>();
 
-        return text
-            + "Reported by Claude Code for your account, so it includes use outside VsAgentic, "
-            + "such as the terminal and claude.ai.";
+            if (Usage.ShortWindowLimit is { } shortLimit)
+                rows.Add(LimitRow("5-hour limit", shortLimit));
+            else if (Usage.ShortWindowBudget > 0)
+                rows.Add(EstimateRow("Last 5 hours", Usage.ShortWindowTokens, Usage.ShortWindowBudget));
+
+            if (Usage.LongWindowLimit is { } longLimit)
+                rows.Add(LimitRow("Weekly · all models", longLimit));
+            else if (Usage.LongWindowBudget > 0)
+                rows.Add(EstimateRow("Last 7 days", Usage.LongWindowTokens, Usage.LongWindowBudget));
+
+            foreach (var model in Usage.ModelLimits)
+            {
+                // The CLI names the window ("Fable", or a name that already
+                // says it is weekly); the prefix is added only when missing.
+                var title = model.Name.IndexOf("week", StringComparison.OrdinalIgnoreCase) >= 0
+                    ? model.Name
+                    : $"Weekly · {model.Name}";
+                rows.Add(LimitRow(title, model));
+            }
+
+            return rows;
+        }
     }
+
+    public bool HasLimitRows => LimitRows.Count > 0;
+
+    /// <summary>Where the numbers above come from, which differs per row.</summary>
+    public string LimitsNote
+    {
+        get
+        {
+            var reported = Usage.ShortWindowLimit is not null || Usage.LongWindowLimit is not null || Usage.ModelLimits.Count > 0;
+            var estimated = (Usage.ShortWindowLimit is null && Usage.ShortWindowBudget > 0)
+                            || (Usage.LongWindowLimit is null && Usage.LongWindowBudget > 0);
+
+            var notes = new List<string>();
+            if (reported)
+                notes.Add("Limits are reported by Claude Code for your account, so they include use outside VsAgentic.");
+            if (estimated)
+                notes.Add("Rows without a bar are an estimate from the tokens VsAgentic counted on this machine. "
+                          + "Set the budget under Tools → Options → VsAgentic.");
+            return string.Join("\n", notes);
+        }
+    }
+
+    /// <summary>Cumulative cost the CLI reported for this session; a dash before the first reply.</summary>
+    public string SessionCostDisplay => Usage.CostUsd is { } cost
+        ? cost.ToString("C2", CultureInfo.GetCultureInfo("en-US"))
+        : "—";
+
+    /// <summary>
+    /// The share of input tokens served from the cache. Output is not input,
+    /// so it does not count.
+    /// </summary>
+    public string CacheHitDisplay
+    {
+        get
+        {
+            var input = Usage.InputTokens + Usage.CacheReadTokens + Usage.CacheCreationTokens;
+            return input > 0 ? FormatPercent(100d * Usage.CacheReadTokens / input) : "—";
+        }
+    }
+
+    public string InputTokensDisplay => FormatTokens(Usage.InputTokens);
+
+    public string OutputTokensDisplay => FormatTokens(Usage.OutputTokens);
+
+    public string CacheReadTokensDisplay => FormatTokens(Usage.CacheReadTokens);
+
+    public string CacheWriteTokensDisplay => FormatTokens(Usage.CacheCreationTokens);
+
+    /// <summary>What a screen reader hears on the button that opens the panel.</summary>
+    public string UsageSummary
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (HasWindowMeters)
+            {
+                parts.Add($"weekly {LongWindowDisplay}");
+                parts.Add($"5 hours {ShortWindowDisplay}");
+            }
+            parts.Add($"session {SessionTokensDisplay} tokens");
+            parts.Add($"context {ContextDisplay}");
+            return "Usage: " + string.Join(", ", parts);
+        }
+    }
+
+    private static UsageLimitRow LimitRow(string title, PlanLimitWindow limit) => new(
+        title,
+        limit.ResetsAt is { } resetsAt ? $"Resets {FormatResetTime(resetsAt)}" : "",
+        FormatPercent(limit.Percent),
+        limit.Fraction,
+        SessionUsage.LevelOf(limit.Fraction),
+        showBar: true);
+
+    private static UsageLimitRow EstimateRow(string title, long used, long budget) => new(
+        title,
+        "Estimate",
+        FormatBudget(used, budget),
+        SessionUsage.Fraction(used, budget),
+        UsageLevel.Normal,
+        showBar: false);
 
     // ── Formatting ────────────────────────────────────────────────────────
 
@@ -689,22 +771,18 @@ public partial class ChatSessionViewModel
             : Math.Round(millions).ToString("0", CultureInfo.InvariantCulture) + "M";
     }
 
-    /// <summary>Grouped digits for tooltips, where the exact number is the point.</summary>
-    private static string FormatExact(long tokens) =>
-        tokens.ToString("N0", CultureInfo.InvariantCulture);
-
     /// <summary>Whole percent: "13%". The CLI reports whole numbers too.</summary>
     private static string FormatPercent(double percent) =>
         Math.Round(percent).ToString("0", CultureInfo.InvariantCulture) + "%";
 
     /// <summary>
     /// Local time, with the day added once the reset is more than a day out:
-    /// "11:49", or "Sat 16:00" for the weekly window.
+    /// "at 11:49", or "Sat 16:00" for the weekly window.
     /// </summary>
     private static string FormatResetTime(DateTimeOffset resetsAt)
     {
         var local = resetsAt.ToLocalTime();
-        var format = local - DateTimeOffset.Now > TimeSpan.FromHours(24) ? "ddd HH:mm" : "HH:mm";
+        var format = local - DateTimeOffset.Now > TimeSpan.FromHours(24) ? "ddd HH:mm" : "'at' HH:mm";
         return local.ToString(format, CultureInfo.InvariantCulture);
     }
 
@@ -716,6 +794,37 @@ public partial class ChatSessionViewModel
         budget > 0
             ? $"{FormatTokens(used)} / ~{FormatTokens(budget)}"
             : FormatTokens(used);
+}
+
+/// <summary>
+/// One limit in the usage panel: a title, when it resets, the reading, and a
+/// bar. <see cref="ShowBar"/> is false for a local estimate, whose budget is a
+/// guess.
+/// </summary>
+public sealed class UsageLimitRow
+{
+    public UsageLimitRow(string title, string detail, string value, double fraction, UsageLevel level, bool showBar)
+    {
+        Title = title;
+        Detail = detail;
+        Value = value;
+        Fraction = fraction;
+        Level = level;
+        ShowBar = showBar;
+    }
+
+    public string Title { get; }
+
+    /// <summary>"Resets at 15:40", "Resets Sat 15:00", "Estimate", or empty.</summary>
+    public string Detail { get; }
+
+    public string Value { get; }
+
+    public double Fraction { get; }
+
+    public UsageLevel Level { get; }
+
+    public bool ShowBar { get; }
 }
 
 /// <summary>

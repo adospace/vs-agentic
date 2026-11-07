@@ -1106,6 +1106,15 @@
                                                 <local:UsageMeter ValueText="{Binding ContextDisplay}"
                                                                   Fraction="{Binding ContextFraction}"
                                                                   Level="{Binding ContextLevel}"/>
+
+                                                <!-- The model button's arrow: a click opens a
+                                                     panel. The meter already ends in an 8 px
+                                                     gap, so the negative margin leaves the
+                                                     model button's 5 px. -->
+                                                <Path Margin="-3,1,0,0"
+                                                      VerticalAlignment="Center"
+                                                      Data="M 0 0 L 3.5 3.5 L 7 0 Z"
+                                                      Fill="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
                                             </StackPanel>
                                         </ToggleButton>
 

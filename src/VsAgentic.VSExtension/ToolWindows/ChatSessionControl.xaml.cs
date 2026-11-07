@@ -37,10 +37,18 @@ public partial class ChatSessionControl : UserControl
         // line. The button sits near the right of the status bar, so a panel
         // aligned to its left edge would run past the window. Above or, if
         // there is no room, below.
-        ModelPickerPopup.CustomPopupPlacementCallback = (popupSize, targetSize, offset) => new[]
+        ModelPickerPopup.CustomPopupPlacementCallback = PlaceAboveRightAligned;
+
+        // The usage panel opens the same way. It only shows values, so the
+        // focus stays on the readings; Escape there closes it.
+        UsagePopup.CustomPopupPlacementCallback = PlaceAboveRightAligned;
+        UsageToggle.PreviewKeyDown += (_, e) =>
         {
-            new CustomPopupPlacement(new Point(targetSize.Width - popupSize.Width, -popupSize.Height), PopupPrimaryAxis.Horizontal),
-            new CustomPopupPlacement(new Point(targetSize.Width - popupSize.Width, targetSize.Height), PopupPrimaryAxis.Horizontal),
+            if (e.Key == Key.Escape && UsageToggle.IsChecked == true)
+            {
+                UsageToggle.IsChecked = false;
+                e.Handled = true;
+            }
         };
 
         // The panel works from the keyboard: it opens with the focus on the
@@ -57,6 +65,12 @@ public partial class ChatSessionControl : UserControl
         };
         ModelPickerToggle.PreviewKeyDown += ModelPickerToggle_PreviewKeyDown;
     }
+
+    private static CustomPopupPlacement[] PlaceAboveRightAligned(Size popupSize, Size targetSize, Point offset) => new[]
+    {
+        new CustomPopupPlacement(new Point(targetSize.Width - popupSize.Width, -popupSize.Height), PopupPrimaryAxis.Horizontal),
+        new CustomPopupPlacement(new Point(targetSize.Width - popupSize.Width, targetSize.Height), PopupPrimaryAxis.Horizontal),
+    };
 
     // Alt+Down and F4 open the panel, as they open a dropdown list.
     private void ModelPickerToggle_PreviewKeyDown(object sender, KeyEventArgs e)

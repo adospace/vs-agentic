@@ -1465,12 +1465,14 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         }
 
         var who = string.IsNullOrWhiteSpace(server) ? "An MCP server" : $"The MCP server {server}";
-        var text = new StringBuilder(mode == "url"
+        var title = mode == "url"
             ? $"{who} asked you to open a page. VsAgentic cannot do this yet, so the request was cancelled."
-            : $"{who} asked you a question. VsAgentic cannot show it yet, so the question was cancelled.");
-        if (!string.IsNullOrWhiteSpace(message)) text.Append("\n\n").Append(message!.Trim());
-        if (!string.IsNullOrWhiteSpace(url)) text.Append("\n\n").Append(url!.Trim());
-        EmitNotice(text.ToString(), null, OutputItemStatus.Error);
+            : $"{who} asked you a question. VsAgentic cannot show it yet, so the question was cancelled.";
+
+        // The body is what the server wrote, without the title again.
+        var body = string.Join("\n\n", new[] { message, url }
+            .Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s!.Trim()));
+        EmitNotice(body.Length == 0 ? title : body, title, OutputItemStatus.Error);
     }
 
     /// <summary>

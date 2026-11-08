@@ -572,38 +572,70 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     // True while a turn the CLI started on its own is running. It holds the
     // session busy like a sent message does, so Send stays off and Stop works.
+    // A line from a running Monitor does not: one turn per line would set the
+    // session working and done again for each, while the Monitor's task, with
+    // its own Stop, already shows the session working. A message sent then
+    // waits in the strip like one sent while busy.
     //
     // Such a turn can start while SendAsync is still closing the turn before
     // it (the service already has that turn's result). Whichever of the two
     // ends last clears IsBusy and ends the turn in the view.
     private bool _inUnsolicitedTurn;
 
-    private void OnUnsolicitedTurnStarted(bool scheduled)
+    private void OnUnsolicitedTurnStarted(UnsolicitedTurn turn)
     {
         Dispatch(() =>
         {
             _inUnsolicitedTurn = true;
-            IsBusy = true;
-            if (scheduled) AddScheduledCheckMark();
+            var quiet = turn.TaskRuns && _chatService?.CanQueueMessages == true;
+            if (!quiet) IsBusy = true;
+
+            switch (turn.Source)
+            {
+                case UnsolicitedTurnSource.ScheduledCheck:
+                    AddUnsolicitedTurnMark(ScheduledCheckTool, "Scheduled check");
+                    break;
+                case UnsolicitedTurnSource.BackgroundTask:
+                    AddUnsolicitedTurnMark(BackgroundUpdateTool, BackgroundUpdateLabel(turn));
+                    break;
+            }
         });
     }
 
     /// <summary>Tool name of the notice that opens a scheduled check.</summary>
     public const string ScheduledCheckTool = "ScheduledCheck";
 
-    // Opens a check the model scheduled for itself (CronCreate, /loop). The
-    // web view folds consecutive checks into one block, with this notice as
-    // the boundary between them; it is saved, so a reopened session folds
-    // them the same way. The title is the time of the check.
-    private void AddScheduledCheckMark()
+    /// <summary>
+    /// Tool name of the notice that opens a turn a background task started:
+    /// a line from a Monitor, or the end of a task.
+    /// </summary>
+    public const string BackgroundUpdateTool = "BackgroundUpdate";
+
+    private const int MaxTaskLabelLength = 80;
+
+    private static string BackgroundUpdateLabel(UnsolicitedTurn turn)
+    {
+        var kind = turn.IsMonitor ? "Monitor" : "Background task";
+        var description = turn.TaskDescription?.Trim();
+        if (string.IsNullOrEmpty(description)) return kind;
+        if (description!.Length > MaxTaskLabelLength)
+            description = description.Substring(0, MaxTaskLabelLength - 1).TrimEnd() + "…";
+        return kind + " · " + description;
+    }
+
+    // Opens a turn the CLI started on its own for a check the model scheduled
+    // (CronCreate, /loop) or for a background task. The web view folds
+    // consecutive turns with the same label into one block, with this notice
+    // as the boundary between them; it is saved, so a reopened session folds
+    // them the same way. The title is the time of the turn.
+    private void AddUnsolicitedTurnMark(string toolName, string text)
     {
         var id = $"check-{Guid.NewGuid():N}";
-        const string text = "Scheduled check";
         var time = DateTime.Now.ToString("HH:mm");
         Items.Add(new ChatItemViewModel
         {
             Type = ChatItemType.Notice,
-            ToolName = ScheduledCheckTool,
+            ToolName = toolName,
             Title = time,
             Content = text,
             Status = OutputItemStatus.Info,
@@ -613,7 +645,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         {
             Id = id,
             Type = ChatItemType.Notice.ToString(),
-            ToolName = ScheduledCheckTool,
+            ToolName = toolName,
             Title = time,
             Content = text,
             Status = OutputItemStatus.Info.ToString()
@@ -623,7 +655,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         PersistMessageFireAndForget(new PersistedMessage
         {
             ItemType = ChatItemType.Notice.ToString(),
-            ToolName = ScheduledCheckTool,
+            ToolName = toolName,
             Title = time,
             Content = text,
             StatusText = OutputItemStatus.Info.ToString(),
@@ -1260,8 +1292,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         // Sent while a turn runs: the message waits in the CLI, which reads it
         // into the running turn at the next step. It stays in the strip above
         // the input box until then, and enters the chat at the point where
-        // Claude read it (OnChatServiceMessageStarted).
-        if (IsBusy && _chatService is not null)
+        // Claude read it (OnChatServiceMessageStarted). So does one sent while
+        // a Monitor's line runs a turn that leaves the session idle.
+        if ((IsBusy || _inUnsolicitedTurn) && _chatService is not null)
         {
             var queued = new QueuedMessageViewModel(typed, message, sentImages, attachments);
             QueuedMessages.Add(queued);

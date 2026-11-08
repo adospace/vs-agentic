@@ -2160,14 +2160,19 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
         if (CloseAgentStep(turn, block)) return;
         if (turn.ToolItem == null) return;
-        var content = block.TryGetProperty("content", out var cp) ? ExtractToolResultText(cp) : "";
+        var result = block.TryGetProperty("content", out var cp) ? ToolResultContent.Read(cp) : null;
 
         // Same flag as in HandleUserEvent: a result block that carries is_error
         // belongs to a call that failed.
         var isError = block.TryGetProperty("is_error", out var ep) && ep.ValueKind == JsonValueKind.True;
         turn.ToolItem.Status = isError ? OutputItemStatus.Error : OutputItemStatus.Success;
         turn.ToolItem.Title = CompletedTitle(turn.ToolItem);
-        turn.ToolItem.Body = content;
+        turn.ToolItem.Body = result?.Text ?? "";
+        if (result is { Images.Count: > 0 })
+        {
+            turn.ToolItem.Images = result.Images;
+            _logger.LogInformation("[ClaudeCli] {Tool} returned {Count} image(s)", turn.ToolItem.ToolName, result.Images.Count);
+        }
         turn.ToolItem.Delta = null;
         _outputListener.OnStepCompleted(turn.ToolItem);
         turn.ToolItem = null;

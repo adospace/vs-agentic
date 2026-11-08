@@ -485,6 +485,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     public event Action<string, string>? MessageContentUpdated;
     public event Action<string, OutputItemStatus, string>? MessageStatusUpdated;
     public event Action<string, string, OutputBodyMode>? MessageBodySet;
+
+    /// <summary>The images a completed tool step returned, as data URIs.</summary>
+    public event Action<string, List<string>>? MessageImagesSet;
     public event Action<string, BackgroundStepState, string?>? MessageBackgroundStateSet;
     public event Action<string>? MessageCompleted;
     public event Action? AllCleared;
@@ -1731,6 +1734,10 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                     MessageBodySet?.Invoke(item.Id, item.Body!, item.BodyMode);
                 }
 
+                var images = item.Images is { Count: > 0 } ? item.Images : null;
+                if (images is not null)
+                    MessageImagesSet?.Invoke(item.Id, images.Select(i => i.ToDataUri()).ToList());
+
                 MessageCompleted?.Invoke(item.Id);
 
                 // Back to the plain "Thinking..." until the next step names
@@ -1746,7 +1753,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 RequestScroll();
 
                 // Persist completed step
-                PersistMessageFireAndForget(new PersistedMessage
+                var persisted = new PersistedMessage
                 {
                     ItemType = vm.Type.ToString(),
                     Content = vm.Content,
@@ -1759,9 +1766,27 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                     StepId = item.Id,
                     ParentId = item.ParentId,
                     CreatedUtc = DateTime.UtcNow
-                });
+                };
+                if (images is null)
+                    PersistMessageFireAndForget(persisted);
+                else
+                    _ = PersistStepWithImagesAsync(persisted, images);
             }
         });
+    }
+
+    /// <summary>
+    /// Stores a step's images in the session folder, then the step that names
+    /// them, as for the images of a user message. Copies rather than the paths
+    /// the CLI gives: the CLI's tool-results folder is removed with its
+    /// transcript, and the file Read opened can change after the step.
+    /// </summary>
+    private async Task PersistStepWithImagesAsync(PersistedMessage message, IReadOnlyList<ChatImageAttachment> images)
+    {
+        // Copies, so the step's own list keeps no store-assigned file names.
+        var copies = images.Select(i => new ChatImageAttachment(i.Data, i.MediaType)).ToList();
+        message.ImageFileNames = await PersistImagesAsync(copies);
+        PersistMessageFireAndForget(message);
     }
 
     // --- Persistence helpers (fire-and-forget) ---

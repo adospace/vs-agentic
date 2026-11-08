@@ -425,6 +425,10 @@ html, body {
 .toolstep-body {
     margin: 4px 0 0 18px;
 }
+/* Under the body, at its indent. */
+.msg-toolstep > .msg-images {
+    margin: 6px 0 4px 18px;
+}
 .toolstep-body.capped {
     max-height: 120px;
     overflow: hidden;
@@ -1344,6 +1348,40 @@ function endActivity() {
     endScheduledCheck();
 }
 
+// Thumbnails of the images of a user message or a tool step; click one to see
+// all of it. The sources are URLs the host built, never user-authored markup.
+function imageStrip(images) {
+    var strip = document.createElement('div');
+    strip.className = 'msg-images';
+    for (var ii = 0; ii < images.length; ii++) {
+        var thumb = document.createElement('img');
+        thumb.src = images[ii];
+        thumb.className = 'msg-image';
+        thumb.addEventListener('click', function() {
+            this.classList.toggle('expanded');
+        });
+        // A thumbnail has no height until it decodes, so the scroll that
+        // followed the message ran against a container that was still too
+        // short. Land on the bottom again once it does.
+        thumb.addEventListener('load', function() {
+            if (!_userScrolledUp) scrollToBottom();
+        });
+        strip.appendChild(thumb);
+    }
+    return strip;
+}
+
+// The images a tool step returned, under its body. Sent once, when the step
+// completes; a second call replaces the strip rather than adding one.
+function setImages(id, images) {
+    var el = messageElement(id);
+    if (!el || !images || !images.length) return;
+    var old = el.querySelector(':scope > .msg-images');
+    if (old) old.remove();
+    el.appendChild(imageStrip(images));
+    maybeScrollToBottom();
+}
+
 function addMessage(id, type, dataJson) {
     var data = typeof dataJson === 'string' ? JSON.parse(dataJson) : dataJson;
     var div = document.createElement('div');
@@ -1360,27 +1398,7 @@ function addMessage(id, type, dataJson) {
         label.textContent = 'YOU';
         div.appendChild(label);
 
-        if (data.Images && data.Images.length) {
-            var strip = document.createElement('div');
-            strip.className = 'msg-images';
-            for (var ii = 0; ii < data.Images.length; ii++) {
-                var thumb = document.createElement('img');
-                // Data URI built on the host side; never user-authored markup.
-                thumb.src = data.Images[ii];
-                thumb.className = 'msg-image';
-                thumb.addEventListener('click', function() {
-                    this.classList.toggle('expanded');
-                });
-                // A thumbnail has no height until it decodes, so the scroll
-                // that follows the prompt runs against a container that is
-                // still too short. Land on the bottom again once it does.
-                thumb.addEventListener('load', function() {
-                    if (!_userScrolledUp) scrollToBottom();
-                });
-                strip.appendChild(thumb);
-            }
-            div.appendChild(strip);
-        }
+        if (data.Images && data.Images.length) div.appendChild(imageStrip(data.Images));
 
         var content = document.createElement('div');
         content.className = 'md-content msg-content';
@@ -1493,6 +1511,9 @@ function addMessage(id, type, dataJson) {
         body.className = 'md-content toolstep-body msg-body';
         body.style.display = 'none';
         div.appendChild(body);
+
+        // A restored step brings its images along; a live one gets them from setImages.
+        if (data.Images && data.Images.length) div.appendChild(imageStrip(data.Images));
     }
     else if (type === 'Notice') {
         div.classList.add('msg-notice', 'notice-' + (data.Status || 'Info'));

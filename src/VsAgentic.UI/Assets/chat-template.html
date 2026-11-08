@@ -1230,23 +1230,35 @@ function closeActivityGroup() {
     setActivityDetail(group, '');
 }
 
-// --- Scheduled checks ---
+// --- Scheduled checks and background updates ---
 // A check the model scheduled for itself (CronCreate, /loop) is a turn the CLI
-// starts on its own, opened by a notice with the ScheduledCheck tool name.
-// Consecutive checks go into one block: the last check stays in the open and
-// the ones before it fold behind the block's header, which counts them.
+// starts on its own, opened by a notice with the ScheduledCheck tool name. So
+// is each line a running Monitor writes, and the end of a background task,
+// opened by a notice with the BackgroundUpdate tool name; its content names
+// the task. Consecutive turns of the same kind, and for a task of the same
+// task, go into one block: the last one stays in the open and the ones before
+// it fold behind the block's header, which counts them.
 //
-// A check that edited files or failed is not folded away: the next check opens
-// a block of its own. So does anything that comes between two checks. Shell
+// A turn that edited files or failed is not folded away: the next one opens a
+// block of its own. So does anything that comes between two of them. Shell
 // commands do not count as edits; most checks read the folder with one.
 
 var CHECK_KEEPS = '.msg[data-tool="Edit"], .msg[data-tool="Write"], .msg[data-tool="MultiEdit"], .msg[data-tool="NotebookEdit"], .msg[data-tool="ClaudeCli"][data-status="Error"]';
 
-// The block whose check is running; its output goes there.
+// The block whose turn is running; its output goes there.
 var _checkBlock = null;
 
-function isScheduledCheck(type, data) {
-    return type === 'Notice' && data.ToolName === 'ScheduledCheck';
+function isCheckMark(type, data) {
+    return type === 'Notice' && (data.ToolName === 'ScheduledCheck' || data.ToolName === 'BackgroundUpdate');
+}
+
+// What the header of a block says, and how it counts what it holds.
+function checkKind(data) {
+    if (data.ToolName === 'BackgroundUpdate') {
+        return { key: 'task:' + (data.Content || ''), name: data.Content || 'Background task',
+                 icon: '↳', unit: 'updates' };
+    }
+    return { key: 'check', name: 'Scheduled check', icon: '↻', unit: 'checks' };
 }
 
 // Where output that is not part of a row goes: the running check, or the chat.
@@ -1254,10 +1266,11 @@ function outputHost() {
     return _checkBlock ? _checkBlock._current : _container;
 }
 
-function createCheckBlock() {
+function createCheckBlock(kind) {
     var block = document.createElement('div');
     block.className = 'check-block';
     block._count = 0;
+    block._kind = kind;
 
     var header = document.createElement('div');
     header.className = 'check-header';
@@ -1266,7 +1279,7 @@ function createCheckBlock() {
     arrow.textContent = '▶';
     var icon = document.createElement('span');
     icon.className = 'notice-icon';
-    icon.textContent = '↻';
+    icon.textContent = kind.icon;
     var label = document.createElement('span');
     label.className = 'check-label';
     header.appendChild(arrow);
@@ -1283,7 +1296,7 @@ function createCheckBlock() {
         var show = !history.classList.contains('visible');
         history.classList.toggle('visible', show);
         arrow.classList.toggle('expanded', show);
-        header.title = show ? 'Hide the earlier checks' : 'Show the earlier checks';
+        header.title = (show ? 'Hide the earlier ' : 'Show the earlier ') + kind.unit;
         if (show) applyPendingBodyCaps(history);
     });
 
@@ -1298,17 +1311,18 @@ function createCheckBlock() {
     return block;
 }
 
-// The block the next check can join: the last thing in the chat, with a last
-// check that changed nothing.
-function foldableCheckBlock() {
+// The block the next turn of this kind can join: the last thing in the chat,
+// of the same kind, with a last turn that changed nothing.
+function foldableCheckBlock(kind) {
     var last = _container.lastElementChild;
-    if (!last || !last.classList.contains('check-block')) return null;
+    if (!last || !last.classList.contains('check-block') || last._kind.key !== kind.key) return null;
     return last._current.querySelector(CHECK_KEEPS) ? null : last;
 }
 
-function startScheduledCheck(data) {
-    endScheduledCheck();
-    var block = foldableCheckBlock();
+function startCheck(data) {
+    endCheck();
+    var kind = checkKind(data);
+    var block = foldableCheckBlock(kind);
     if (block) {
         var tick = document.createElement('div');
         tick.className = 'check-tick';
@@ -1319,18 +1333,18 @@ function startScheduledCheck(data) {
         while (block._current.firstChild) tick.appendChild(block._current.firstChild);
         block._history.appendChild(tick);
         block.classList.add('has-history');
-        if (!block._header.title) block._header.title = 'Show the earlier checks';
+        if (!block._header.title) block._header.title = 'Show the earlier ' + kind.unit;
     } else {
-        block = createCheckBlock();
+        block = createCheckBlock(kind);
     }
     block._count++;
     block._time = data.Title || '';
-    block._label.textContent = 'Scheduled check' + (block._time ? ' · ' + block._time : '')
-        + (block._count > 1 ? ' · ' + block._count + ' checks' : '');
+    block._label.textContent = kind.name + (block._time ? ' · ' + block._time : '')
+        + (block._count > 1 ? ' · ' + block._count + ' ' + kind.unit : '');
     _checkBlock = block;
 }
 
-function endScheduledCheck() {
+function endCheck() {
     _checkBlock = null;
 }
 
@@ -1341,7 +1355,7 @@ function endScheduledCheck() {
 // message happened to close it.
 function endActivity() {
     closeActivityGroup();
-    endScheduledCheck();
+    endCheck();
 }
 
 function addMessage(id, type, dataJson) {
@@ -1586,15 +1600,15 @@ function placeMessage(div, type, data) {
     if (data.ParentId) {
         addSubagentStep(div, type, data);
         maybeScrollToBottom();
-    } else if (isScheduledCheck(type, data)) {
+    } else if (isCheckMark(type, data)) {
         // The notice is not shown; the check's block says it all.
         closeActivityGroup();
-        startScheduledCheck(data);
+        startCheck(data);
         maybeScrollToBottom();
     } else if (type === 'User') {
         // A new prompt ends the previous turn's row for good.
         closeActivityGroup();
-        endScheduledCheck();
+        endCheck();
         _container.appendChild(div);
         // A prompt the user just sent themselves: take them to it no matter
         // where they were reading. Only output that arrives on its own is
@@ -1608,7 +1622,7 @@ function placeMessage(div, type, data) {
         // steps do not fold into the last one, nor take its reply with them,
         // and leave the notice standing.
         closeActivityGroup();
-        endScheduledCheck();
+        endCheck();
         _container.appendChild(div);
         maybeScrollToBottom();
     } else if (isSessionLine(type, data)) {
@@ -1905,7 +1919,7 @@ function loadMessages(jsonArray) {
     // Nothing in a restored transcript is still running, including a run of
     // steps that the session ended on.
     closeActivityGroup();
-    endScheduledCheck();
+    endCheck();
     _userScrolledUp = false;
     scrollToBottom();
     updateScrollButton();

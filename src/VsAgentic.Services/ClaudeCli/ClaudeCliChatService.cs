@@ -119,6 +119,11 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     // takes the flag with it. Guarded by _activeTurnLock.
     private bool _scheduledWakeupPending;
 
+    // The last task that ended (task_notification) since a turn last started.
+    // The CLI wakes the model with the task's end and starts a turn for it.
+    // Guarded by _activeTurnLock.
+    private CliTask? _endedTaskPending;
+
     // ── Subagents ─────────────────────────────────────────────────────────
     // One stream of steps per subagent, keyed by the id of the Agent step that
     // started it. The CLI tags each of its messages with that id
@@ -398,7 +403,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     // ── Turns the CLI starts on its own ───────────────────────────────────
 
-    public event Action<bool>? UnsolicitedTurnStarted;
+    public event Action<UnsolicitedTurn>? UnsolicitedTurnStarted;
     public event Action? UnsolicitedTurnCompleted;
 
     public void StopUnsolicitedTurn() => _ = StopCliTurnAsync();
@@ -433,17 +438,66 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // No message of ours: the turn needs no uuid, and it is under way.
         var turn = new TurnState(string.Empty, startedAtOnce: true);
         bool scheduled;
+        CliTask? endedTask;
         lock (_activeTurnLock)
         {
             _cliTurn = turn;
             scheduled = _scheduledWakeupPending;
             _scheduledWakeupPending = false;
+            endedTask = _endedTaskPending;
+            _endedTaskPending = null;
         }
 
-        _logger.LogInformation("[ClaudeCli] CLI started a turn on its own{Kind}", scheduled ? " (scheduled check)" : "");
-        try { UnsolicitedTurnStarted?.Invoke(scheduled); }
+        var source = scheduled ? UnsolicitedTurn.ScheduledCheck : BackgroundTaskTurn(endedTask);
+        turn.Source = source;
+
+        _logger.LogInformation("[ClaudeCli] CLI started a turn on its own ({Source}{Task})",
+            source.Source, source.TaskDescription is null ? "" : ": " + source.TaskDescription);
+        try { UnsolicitedTurnStarted?.Invoke(source); }
         catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] UnsolicitedTurnStarted handler threw"); }
         return turn;
+    }
+
+    /// <summary>
+    /// The task behind a turn the CLI starts on its own, read from the tasks
+    /// alone. The CLI starts one when a task ends (task_notification just
+    /// before), and one for each line a Monitor writes while it runs. Those
+    /// turns carry no id of their task until their result, and the last one
+    /// only, so a line is put down to a Monitor only when exactly one runs.
+    /// </summary>
+    private UnsolicitedTurn BackgroundTaskTurn(CliTask? endedTask)
+    {
+        if (endedTask is not null)
+            return new UnsolicitedTurn(UnsolicitedTurnSource.BackgroundTask, endedTask.Description, endedTask.IsMonitor);
+
+        CliTask[] monitors;
+        lock (_tasks) { monitors = _tasks.Values.Where(t => t.IsMonitor).ToArray(); }
+        return monitors.Length switch
+        {
+            0 => UnsolicitedTurn.Unknown,
+            1 => new UnsolicitedTurn(UnsolicitedTurnSource.BackgroundTask, monitors[0].Description, IsMonitor: true, TaskRuns: true),
+            _ => new UnsolicitedTurn(UnsolicitedTurnSource.BackgroundTask, null, IsMonitor: true, TaskRuns: true),
+        };
+    }
+
+    // The result of a turn the CLI started says what started it (origin), too
+    // late to show the turn under it. A turn shown under a task that the
+    // result does not put down to one is worth knowing about.
+    private void LogCliTurnOrigin(JsonElement evt, TurnState turn)
+    {
+        string? kind = null, runId = null;
+        if (evt.TryGetProperty("origin", out var origin) && origin.ValueKind == JsonValueKind.Object)
+        {
+            kind = CliProcessInfo.ReadString(origin, "kind");
+            runId = CliProcessInfo.ReadString(origin, "runId");
+        }
+
+        var shownAsTask = turn.Source?.Source == UnsolicitedTurnSource.BackgroundTask;
+        if (shownAsTask && kind is not null && kind != "task-notification")
+            _logger.LogWarning("[ClaudeCli] CLI's own turn shown under a background task, but its origin is {Origin}", kind);
+        else
+            _logger.LogInformation("[ClaudeCli] CLI's own turn ended (origin {Origin}{RunId})",
+                kind ?? "none", runId is null ? "" : ", run " + runId);
     }
 
     private void EndCliTurn(TurnState turn)
@@ -512,7 +566,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             // Process exited unexpectedly; tear down every open turn so callers unblock.
             TurnState[] turns;
             TurnState? cliTurn;
-            lock (_activeTurnLock) { turns = _turns.ToArray(); _turns.Clear(); cliTurn = _cliTurn; _scheduledWakeupPending = false; }
+            lock (_activeTurnLock) { turns = _turns.ToArray(); _turns.Clear(); cliTurn = _cliTurn; _scheduledWakeupPending = false; _endedTaskPending = null; }
             foreach (var turn in turns)
                 FinalizeOpenBlocks(turn);
 
@@ -538,7 +592,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                 cutOff = _runningBackgroundSteps.ToArray();
                 _runningBackgroundSteps.Clear();
             }
-            lock (_tasks) { _tasks.Clear(); }
+            lock (_tasks) { _tasks.Clear(); _monitorSteps.Clear(); }
             foreach (var stepId in cutOff)
                 RaiseStepBackgroundStateChanged(stepId, BackgroundStepState.Stopped, "Ended with the Claude CLI process.", null);
 
@@ -942,7 +996,19 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         public string? StepId;
         public string? Type;
         public string? Description;
+
+        // Started by a Monitor step. Each line it writes starts a turn.
+        public bool IsMonitor;
+
+        // Started by a subagent, which hears of its end; the main
+        // conversation does not.
+        public bool IsNested;
     }
+
+    // Ids of the Monitor steps of the main conversation. The task a Monitor
+    // starts is a shell task like any other (local_bash); only its step says
+    // what it is. Guarded by _tasks.
+    private readonly HashSet<string> _monitorSteps = new HashSet<string>(StringComparer.Ordinal);
 
     public event Action<string, BackgroundStepState, string?, string?>? StepBackgroundStateChanged;
 
@@ -961,6 +1027,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                     StepId = toolUseId,
                     Type = CliProcessInfo.ReadString(evt, "task_type"),
                     Description = CliProcessInfo.ReadString(evt, "description"),
+                    IsMonitor = toolUseId is not null && _monitorSteps.Remove(toolUseId),
+                    IsNested = CliProcessInfo.ReadString(evt, "parent_task_id") is not null,
                 };
             }
         }
@@ -1030,6 +1098,11 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             if (taskId is not null && _tasks.TryGetValue(taskId, out task))
                 _tasks.Remove(taskId);
         }
+
+        // The CLI tells the model and starts a turn for it, unless a turn of
+        // ours runs and takes the news in.
+        if (task is { IsNested: false })
+            lock (_activeTurnLock) { _endedTaskPending = task; }
 
         var toolUseId = CliProcessInfo.ReadString(evt, "tool_use_id");
         if (toolUseId is null) return;
@@ -2008,6 +2081,11 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         };
         _outputListener.OnStepStarted(item);
 
+        // Its task_started follows; the step is how that task is known to be
+        // a Monitor.
+        if (toolName == "Monitor" && toolId.Length > 0 && turn.ParentId is null)
+            lock (_tasks) { _monitorSteps.Add(toolId); }
+
         if (toolName == "Agent" && toolId.Length > 0)
         {
             // Not the open tool step: the next block would close that, and an
@@ -2217,6 +2295,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             // A scheduled check that ran inside a turn already open never
             // opened one of its own; the flag must not mark the next one.
             _scheduledWakeupPending = false;
+            // Nor a task that ended while one of our turns ran: the CLI told
+            // the model in that turn.
+            if (ended.Length > 0) _endedTaskPending = null;
         }
         if (ended.Length == 0)
         {
@@ -2227,6 +2308,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                     evt.TryGetProperty("origin", out var o) ? CliProcessInfo.ReadString(o, "kind") ?? "unknown" : "no origin");
             if (cliTurn is null) return;
             ended = new[] { cliTurn };
+            LogCliTurnOrigin(evt, cliTurn);
         }
         else
         {
@@ -3411,7 +3493,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // Forget the running steps before the process goes, or the dispatcher
         // reports them as stopped into the transcript that was just cleared.
         lock (_runningBackgroundSteps) { _runningBackgroundSteps.Clear(); }
-        lock (_tasks) { _tasks.Clear(); }
+        lock (_tasks) { _tasks.Clear(); _monitorSteps.Clear(); }
 
         _host.Stop();
         lock (_dispatcherLock) { _dispatcherTask = null; }
@@ -3595,6 +3677,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // The uuid our user message carried. The CLI names it in the
         // message's lifecycle events and in the result of the turn.
         public string MessageUuid { get; }
+
+        // For a turn the CLI started on its own: what started it, as known
+        // when it started. Compared with the result's origin, for the log.
+        public UnsolicitedTurn? Source { get; set; }
 
         // False while the message waits in the CLI's queue, behind a turn the
         // CLI started itself or one of ours. Set under _activeTurnLock.

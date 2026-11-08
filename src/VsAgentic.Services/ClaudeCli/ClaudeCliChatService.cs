@@ -2086,8 +2086,24 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             var toolUseId = block.TryGetProperty("tool_use_id", out var tp) ? tp.GetString() : null;
             if (turn.ToolItem == null || toolUseId != turn.ToolItem.Id) continue;
 
+            NoteAutoModeBlock(turn.ToolItem, block);
             CompleteToolItem(turn, OutputItemStatus.Error);
         }
+    }
+
+    /// <summary>
+    /// Says in a failed step that auto mode blocked it, and why. Without this
+    /// the step shows its input and the error mark only, which reads as if
+    /// the command had run and failed.
+    /// </summary>
+    private void NoteAutoModeBlock(OutputItem step, JsonElement resultBlock)
+    {
+        var text = resultBlock.TryGetProperty("content", out var cp) ? ExtractToolResultText(cp) : "";
+        if (!AutoModeBlock.TryReadReason(text, out var reason)) return;
+
+        _logger.LogInformation("[ClaudeCli] Auto mode blocked {Tool}: {Reason}", step.ToolName, reason);
+        var line = AutoModeBlock.BodyLine(reason);
+        step.Body = string.IsNullOrEmpty(step.Body) ? line : line + "\n\n" + step.Body;
     }
 
     /// <summary>
@@ -2111,6 +2127,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             if (subagent.ToolItem == null || toolUseId != subagent.ToolItem.Id) continue;
 
             var isError = block.TryGetProperty("is_error", out var ep) && ep.ValueKind == JsonValueKind.True;
+            if (isError) NoteAutoModeBlock(subagent.ToolItem, block);
             CompleteToolItem(subagent, isError ? OutputItemStatus.Error : OutputItemStatus.Success);
         }
     }

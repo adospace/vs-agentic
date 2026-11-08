@@ -11,6 +11,7 @@ using System.Threading.Channels;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.ClaudeCli.Permissions;
 using VsAgentic.Services.ClaudeCli.Questions;
 using VsAgentic.Services.Configuration;
@@ -40,6 +41,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
     private readonly IPermissionBroker _permissionBroker;
     private readonly IUserQuestionBroker _questionBroker;
     private readonly IdeContextRegistry? _ideContext;
+    private readonly IWorkspaceFolders? _workspaceFolders;
     private readonly ILogger _logger;
 
     private Process? _process;
@@ -70,12 +72,14 @@ public sealed class ClaudeCliProcessHost : IDisposable
         IPermissionBroker permissionBroker,
         IUserQuestionBroker questionBroker,
         ILogger<ClaudeCliProcessHost> logger,
-        IdeContextRegistry? ideContext = null)
+        IdeContextRegistry? ideContext = null,
+        IWorkspaceFolders? workspaceFolders = null)
     {
         _options = options.Value;
         _permissionBroker = permissionBroker;
         _questionBroker = questionBroker;
         _ideContext = ideContext;
+        _workspaceFolders = workspaceFolders;
         _logger = logger;
     }
 
@@ -147,7 +151,8 @@ public sealed class ClaudeCliProcessHost : IDisposable
         File.WriteAllText(_mcpConfigTempPath, mcpConfigJson, new UTF8Encoding(false));
         _logger.LogInformation("[ClaudeCli] MCP config written to: {Path}", _mcpConfigTempPath);
 
-        var args = BuildArguments(_mcpConfigTempPath);
+        var addDirs = _workspaceFolders?.FoldersOutside(_options.WorkingDirectory) ?? Array.Empty<string>();
+        var args = BuildArguments(_mcpConfigTempPath, addDirs);
         _logger.LogInformation("[ClaudeCli] Launching: {Exe} {Args}", _options.ClaudeCliPath, args);
 
         var psi = new ProcessStartInfo
@@ -166,6 +171,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
 
         ClaudeCliChatService.UseSubscriptionAuth(psi);
         ApplyBackgroundCommandLimit(psi);
+        if (addDirs.Count > 0) LoadInstructionsFromAddedFolders(psi);
 
         // Without this, a CLI that refuses to start (bad proxy URL, missing
         // shell, a session held elsewhere ...) explains itself on stderr only.
@@ -252,7 +258,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
             _logger.LogWarning("[ClaudeCli] CLI ended on its own (exit code {Code})", exitCode);
     }
 
-    private string BuildArguments(string mcpConfigPath)
+    private string BuildArguments(string mcpConfigPath, IReadOnlyList<string> addDirs)
     {
         var sb = new StringBuilder();
         // -p (print mode) is required for --permission-prompt-tool to take effect.
@@ -290,6 +296,18 @@ public sealed class ClaudeCliProcessHost : IDisposable
         {
             sb.Append(" --effort ");
             sb.Append(_options.Effort.ToCliValue());
+        }
+
+        // Projects of the solution that live outside its folder, such as
+        // ..\Shared. Without this the CLI treats them as foreign: reading
+        // there asks first, and acceptEdits does not cover edits there. The
+        // CLI also loads the skills of these folders (2.1.319). One flag per
+        // folder: the option takes several values, and a later value that is
+        // not a flag would be read as one more folder.
+        foreach (var dir in addDirs)
+        {
+            sb.Append(" --add-dir ");
+            sb.Append(EscapeArgument(dir));
         }
 
         // Wire the MCP permission tool so the CLI asks us before running gated tools.
@@ -343,6 +361,24 @@ public sealed class ClaudeCliProcessHost : IDisposable
         }
 
         psi.EnvironmentVariables[name] = value;
+    }
+
+    /// <summary>
+    /// Has the CLI read the CLAUDE.md files of the folders passed with
+    /// <c>--add-dir</c>, as it does for the solution folder. The CLI does that
+    /// only when asked (measured with 2.1.319). A value the user already set
+    /// in the environment Visual Studio inherited wins.
+    /// </summary>
+    private void LoadInstructionsFromAddedFolders(ProcessStartInfo psi)
+    {
+        const string name = "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD";
+        if (!string.IsNullOrEmpty(psi.EnvironmentVariables[name]))
+        {
+            _logger.LogInformation("[ClaudeCli] {Name} kept from the environment: {Value}", name, psi.EnvironmentVariables[name]);
+            return;
+        }
+
+        psi.EnvironmentVariables[name] = "1";
     }
 
     private const string AskUserQuestionPromptNudge =

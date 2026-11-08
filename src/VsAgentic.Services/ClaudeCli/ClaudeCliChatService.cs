@@ -2071,6 +2071,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (contentArr.ValueKind != JsonValueKind.Array) return;
 
         AttachResourceLinks(turn, evt, contentArr);
+        AttachToolResultImages(turn, contentArr);
 
         foreach (var block in contentArr.EnumerateArray())
         {
@@ -2150,6 +2151,40 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         _logger.LogInformation("[ClaudeCli] {Tool} returned {Count} resource link(s)", step.ToolName, links.Count);
     }
 
+    /// <summary>
+    /// Gives the open step the images its tool returned: a file Read opened, or
+    /// a screenshot from an MCP tool. They arrive as image blocks in the
+    /// tool_result, which the step otherwise never shows. Like the resource
+    /// links, this reaches only the open step; the step shows them when it
+    /// completes.
+    /// </summary>
+    private void AttachToolResultImages(TurnState turn, JsonElement contentArr)
+    {
+        var step = turn.ToolItem;
+        if (step == null) return;
+
+        foreach (var block in contentArr.EnumerateArray())
+        {
+            if (!block.TryGetProperty("type", out var bt) || bt.GetString() != "tool_result") continue;
+            if (!block.TryGetProperty("tool_use_id", out var tp) || tp.GetString() != step.Id) continue;
+            if (!block.TryGetProperty("content", out var content)) return;
+
+            var images = ToolResultImages.Read(content, out var skipped);
+            if (skipped > 0)
+            {
+                // Said in the step, so a missing image does not look like a bug.
+                var note = skipped == 1 ? "*1 image not shown*" : $"*{skipped} images not shown*";
+                step.Body = string.IsNullOrEmpty(step.Body) ? note : step.Body + "\n\n" + note;
+                _logger.LogInformation("[ClaudeCli] {Tool}: {Count} image(s) not shown (limit, size or format)", step.ToolName, skipped);
+            }
+            if (images.Count == 0) return;
+
+            step.Images = images;
+            _logger.LogInformation("[ClaudeCli] {Tool} returned {Count} image(s)", step.ToolName, images.Count);
+            return;
+        }
+    }
+
     private void HandleToolResultBlock(StepStream turn, JsonElement block)
     {
         // The matching tool_use for AskUserQuestion was suppressed from the UI;
@@ -2160,19 +2195,14 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
         if (CloseAgentStep(turn, block)) return;
         if (turn.ToolItem == null) return;
-        var result = block.TryGetProperty("content", out var cp) ? ToolResultContent.Read(cp) : null;
+        var content = block.TryGetProperty("content", out var cp) ? ExtractToolResultText(cp) : "";
 
         // Same flag as in HandleUserEvent: a result block that carries is_error
         // belongs to a call that failed.
         var isError = block.TryGetProperty("is_error", out var ep) && ep.ValueKind == JsonValueKind.True;
         turn.ToolItem.Status = isError ? OutputItemStatus.Error : OutputItemStatus.Success;
         turn.ToolItem.Title = CompletedTitle(turn.ToolItem);
-        turn.ToolItem.Body = result?.Text ?? "";
-        if (result is { Images.Count: > 0 })
-        {
-            turn.ToolItem.Images = result.Images;
-            _logger.LogInformation("[ClaudeCli] {Tool} returned {Count} image(s)", turn.ToolItem.ToolName, result.Images.Count);
-        }
+        turn.ToolItem.Body = content;
         turn.ToolItem.Delta = null;
         _outputListener.OnStepCompleted(turn.ToolItem);
         turn.ToolItem = null;

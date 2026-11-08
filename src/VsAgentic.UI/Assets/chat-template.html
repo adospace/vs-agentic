@@ -563,6 +563,16 @@ html, body {
     flex-shrink: 0;
     font-size: 11px;
 }
+/* Says that a step in the row returned an image, so the row is worth opening. */
+.activity-images {
+    flex-shrink: 0;
+    display: none;
+    align-items: center;
+    gap: 3px;
+    font-size: 11px;
+}
+.activity-images.visible { display: inline-flex; }
+.activity-images svg { width: 13px; height: 13px; }
 .activity-items {
     display: none;
     border-top: 1px solid var(--border);
@@ -1002,6 +1012,25 @@ function setActivityCount(group, count) {
     if (el) el.textContent = count === 1 ? '1 step' : count + ' steps';
 }
 
+// A picture outline; drawn in the text colour, so it follows the theme.
+var IMAGE_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3">' +
+    '<rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><circle cx="5.5" cy="6" r="1.3"/>' +
+    '<path d="M2 12l4-4 3 3 2-2 3.5 3.5"/></svg>';
+
+// Shows in the header of every row around `el` how many images its steps hold,
+// a subagent's row included. The row's own header, not one inside it: a row
+// nests inside an Agent step of another row.
+function refreshActivityImages(el) {
+    for (var group = el.closest('.activity'); group; group = group.parentNode.closest('.activity')) {
+        var n = group.querySelectorAll('.activity-items .msg-toolstep > .msg-images > img').length;
+        var badge = group.querySelector(':scope > .activity-header > .activity-images');
+        if (!badge) continue;
+        badge.classList.toggle('visible', n > 0);
+        badge.querySelector('.activity-images-count').textContent = n > 1 ? String(n) : '';
+        badge.title = n === 0 ? '' : n === 1 ? '1 image in these steps' : n + ' images in these steps';
+    }
+}
+
 // The one-line summary a group carries once it is closed: which tools ran,
 // most recent last, so the row still says what happened without being opened.
 function activitySummary(group) {
@@ -1059,9 +1088,14 @@ function createActivityGroup(before, host) {
     var count = document.createElement('span');
     count.className = 'activity-count';
 
+    var images = document.createElement('span');
+    images.className = 'activity-images';
+    images.innerHTML = IMAGE_ICON + '<span class="activity-images-count"></span>';
+
     header.appendChild(arrow);
     header.appendChild(dot);
     header.appendChild(current);
+    header.appendChild(images);
     header.appendChild(count);
 
     var items = document.createElement('div');
@@ -1103,6 +1137,8 @@ function addToActivityGroup(div, type, data, group) {
     group.querySelector('.activity-items').appendChild(div);
     group._count++;
     setActivityCount(group, group._count);
+    // A restored step arrives with its images already in it.
+    refreshActivityImages(div);
 
     // Marked here rather than only in updateStatus, so a step that is already
     // finished when it arrives still marks the row. That is every step in a
@@ -1379,6 +1415,7 @@ function setImages(id, images) {
     var old = el.querySelector(':scope > .msg-images');
     if (old) old.remove();
     el.appendChild(imageStrip(images));
+    refreshActivityImages(el);
     maybeScrollToBottom();
 }
 

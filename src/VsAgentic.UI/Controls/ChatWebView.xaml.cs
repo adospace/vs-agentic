@@ -604,6 +604,16 @@ public partial class ChatWebView : UserControl
             $"setBody({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(body)}, {JsonSerializer.Serialize(bodyMode.ToString())})");
     }
 
+    /// <summary>
+    /// Shows the images a tool step returned. Like the images of a message,
+    /// they go to the page as virtual-host URLs, written when the script runs.
+    /// </summary>
+    public Task SetImagesAsync(string id, List<string> images)
+    {
+        return ExecuteOrQueueAsync(() =>
+            $"setImages({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(MaterializeImages(new ChatMessageData { Images = images }).Images)})");
+    }
+
     public Task CompleteMessageAsync(string id)
     {
         return ExecuteOrQueueAsync(

@@ -25,6 +25,12 @@ public record OutputItem
     public string? Delta { get; set; }
 
     /// <summary>
+    /// Images the tool returned, such as a file Read opened or a screenshot an
+    /// MCP tool took. Set when the step completes; null when there were none.
+    /// </summary>
+    public IReadOnlyList<ChatImageAttachment>? Images { get; set; }
+
+    /// <summary>
     /// The id of the Agent step this step ran under, when a subagent produced
     /// it. Null for steps of the main conversation. Subagents can start
     /// subagents of their own, so the parent may itself have a parent.

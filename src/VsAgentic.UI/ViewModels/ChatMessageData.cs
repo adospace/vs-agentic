@@ -27,7 +27,8 @@ public class ChatMessageData
 
     /// <summary>
     /// Data URIs for images attached to a user message, rendered inside the
-    /// prompt block. Null when the message has none.
+    /// prompt block, or returned by a tool step, rendered under its body.
+    /// Null when the message has none.
     /// </summary>
     public List<string>? Images { get; init; }
 }

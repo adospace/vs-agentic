@@ -81,6 +81,7 @@ public partial class ChatSessionViewModel
     {
         ClaudeCommandCatalog.ReportedChanged += OnReportedCommandsChanged;
         RebuildSlashCommands();
+        SubscribeSetupFixes();
     }
 
     // Another folder's list holds that project's skills, not ours.
@@ -208,11 +209,18 @@ public partial class ChatSessionViewModel
     private async Task RunSetupCheckInChatAsync(Func<ISessionSetupInfo?, Task<SetupCheckReport>> run)
     {
         var (id, item) = AddNotice("_Checking the setup…_", "setup-check", SetupCheckLabel);
+        await FillSetupCheckAsync(id, item, run, note: null);
+    }
 
+    /// <summary>Runs the check and puts its report and fixes in the row.</summary>
+    private async Task FillSetupCheckAsync(
+        string id, ChatItemViewModel item, Func<ISessionSetupInfo?, Task<SetupCheckReport>> run, string? note)
+    {
         string content;
+        SetupCheckReport? report = null;
         try
         {
-            var report = await run(_chatService as ISessionSetupInfo);
+            report = await run(_chatService as ISessionSetupInfo);
             content = report.ToMarkdown();
         }
         catch (Exception ex)
@@ -221,10 +229,122 @@ public partial class ChatSessionViewModel
             content = $"**{SetupCheckReport.Title}** could not finish: {ex.Message}";
         }
 
+        if (!string.IsNullOrEmpty(note)) content = note + "\n\n" + content;
+
+        _setupChecks[id] = new SetupCheckRow(item, report);
         item.Content = content;
         MessageContentUpdated?.Invoke(id, content);
+        NoticeActionsChanged?.Invoke(id, SetupCheckActions(report, enabled: true));
         RequestScroll();
     }
+
+    // ── Setup fixes ───────────────────────────────────────────────────────
+    // A line of the report that VsAgentic can fix gets a button under the
+    // report. A fix that runs a command does so in a terminal window the user
+    // sees; the check runs again in the same row when the fix is done.
+
+    private sealed record SetupCheckRow(ChatItemViewModel Item, SetupCheckReport? Report);
+
+    // The rows with a setup check report, by row id. Lives as long as the chat.
+    private readonly Dictionary<string, SetupCheckRow> _setupChecks = new();
+
+    private const string RecheckActionId = "recheck";
+
+    // Offered once per chat when a message finds no CLI; /doctor still works.
+    private bool _setupCheckOffered;
+
+    /// <summary>
+    /// Runs a fix and returns a sentence for the top of the next report, or
+    /// null. Set by the host, which can change the options and open windows.
+    /// </summary>
+    public Func<SetupFix, Task<string?>>? ApplySetupFix { get; set; }
+
+    /// <summary>
+    /// Raised with the buttons a row VsAgentic wrote should now have. The
+    /// view passes them to the chat page.
+    /// </summary>
+    public event Action<string, IReadOnlyList<ChatNoticeAction>>? NoticeActionsChanged;
+
+    private static IReadOnlyList<ChatNoticeAction> SetupCheckActions(SetupCheckReport? report, bool enabled)
+    {
+        var actions = new List<ChatNoticeAction>();
+        if (report is not null)
+        {
+            // Without WebView2 there is no chat to show this button in; the
+            // dialog in Tools → Options offers it.
+            foreach (var fix in report.Fixes.Where(f => f.Kind != SetupFixKind.InstallWebView2))
+                actions.Add(new ChatNoticeAction { Id = fix.Id, Label = fix.Label, Enabled = enabled });
+        }
+        actions.Add(new ChatNoticeAction { Id = RecheckActionId, Label = "Check again", Enabled = enabled });
+        return actions;
+    }
+
+    private void SubscribeSetupFixes()
+    {
+        if (_chatService is ISessionSetupInfo session)
+            session.CliNotFound += OnCliNotFound;
+    }
+
+    // A message found no CLI: show the check, which offers to install it.
+    private void OnCliNotFound()
+    {
+        Dispatch(() =>
+        {
+            if (_setupCheckOffered || RunSetupCheck is null) return;
+            _setupCheckOffered = true;
+            _ = RunSetupCheckInChatAsync(RunSetupCheck);
+        });
+    }
+
+    /// <summary>A button under a row VsAgentic wrote was clicked. UI thread.</summary>
+    public void OnNoticeAction(string noticeId, string actionId)
+    {
+        if (!_setupChecks.TryGetValue(noticeId, out var row) || RunSetupCheck is not { } run) return;
+        _ = RunSetupFixAsync(noticeId, row, actionId, run);
+    }
+
+    private async Task RunSetupFixAsync(
+        string id, SetupCheckRow row, string actionId, Func<ISessionSetupInfo?, Task<SetupCheckReport>> run)
+    {
+        NoticeActionsChanged?.Invoke(id, SetupCheckActions(row.Report, enabled: false));
+
+        string? note = null;
+        var fix = row.Report?.Fixes.FirstOrDefault(f => f.Id == actionId);
+        if (fix is not null && ApplySetupFix is { } apply)
+        {
+            var waiting = $"_{fix.Label}: {WaitingText(fix.Kind)}_";
+            row.Item.Content = waiting;
+            MessageContentUpdated?.Invoke(id, waiting);
+
+            try
+            {
+                note = await apply(fix);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Setup fix {Fix} failed", fix.Kind);
+                note = $"{fix.Label} did not run: {ex.Message}";
+            }
+
+            // The next message starts a CLI with the new path or sign-in.
+            if (fix.Kind != SetupFixKind.InstallWebView2 && !IsBusy)
+            {
+                try { (_chatService as ISessionSetupInfo)?.RestartAfterSetupFix(); }
+                catch (Exception ex) { _logger.LogWarning(ex, "Could not restart the CLI after a setup fix"); }
+            }
+        }
+
+        row.Item.Content = "_Checking the setup…_";
+        MessageContentUpdated?.Invoke(id, row.Item.Content);
+        await FillSetupCheckAsync(id, row.Item, run, note is null ? null : "**" + note + "**");
+    }
+
+    private static string WaitingText(SetupFixKind kind) => kind switch
+    {
+        SetupFixKind.UseFoundCli => "setting Claude CLI Path…",
+        SetupFixKind.InstallWebView2 => "opening the download page…",
+        _ => "follow the terminal window that opened. VsAgentic checks the setup again when you close it.",
+    };
 
     /// <summary>
     /// The rows whose name holds what was typed after the slash, those that

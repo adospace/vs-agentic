@@ -55,6 +55,12 @@ public partial class ChatWebView : UserControl
     public event Action<string>? MoveToBackgroundRequested;
 
     /// <summary>
+    /// Raised when the user clicks a button on a row VsAgentic wrote (the
+    /// setup check's fixes). The arguments are the row id and the action id.
+    /// </summary>
+    public event Action<string, string>? NoticeActionRequested;
+
+    /// <summary>
     /// Raised when the user presses a pointer button anywhere in the rendered
     /// chat. The transcript is a browser child window, so a click in it is not
     /// a WPF mouse event and need not move WPF focus either — without this
@@ -140,12 +146,12 @@ public partial class ChatWebView : UserControl
         {
             var version = CoreWebView2Environment.GetAvailableBrowserVersionString();
             return string.IsNullOrEmpty(version)
-                ? new SetupCheckItem(SetupCheckStatus.Error, title, NotInstalled)
+                ? new SetupCheckItem(SetupCheckStatus.Error, title, NotInstalled, GetRuntime)
                 : new SetupCheckItem(SetupCheckStatus.Ok, title, $"Runtime {version}.");
         }
         catch (WebView2RuntimeNotFoundException)
         {
-            return new SetupCheckItem(SetupCheckStatus.Error, title, NotInstalled);
+            return new SetupCheckItem(SetupCheckStatus.Error, title, NotInstalled, GetRuntime);
         }
         catch (Exception ex)
         {
@@ -153,9 +159,15 @@ public partial class ChatWebView : UserControl
         }
     }
 
+    /// <summary>Microsoft's download page for the Evergreen runtime.</summary>
+    public const string RuntimeDownloadUrl = "https://developer.microsoft.com/microsoft-edge/webview2/";
+
     private const string NotInstalled =
-        "The runtime is not installed, so the chat stays empty. Install the Evergreen runtime from " +
-        "https://developer.microsoft.com/microsoft-edge/webview2/ and restart Visual Studio.";
+        "The runtime is not installed, so the chat stays empty. Click Get WebView2 to open the download page, " +
+        "install the Evergreen runtime and restart Visual Studio.";
+
+    private static readonly SetupFix GetRuntime =
+        new SetupFix(SetupFixKind.InstallWebView2, "Get WebView2", RuntimeDownloadUrl);
 
     /// <summary>
     /// Creates the WebView2 environment on a user data folder scoped to this
@@ -443,6 +455,7 @@ public partial class ChatWebView : UserControl
             IsStreaming = data.IsStreaming,
             ParentId = data.ParentId,
             Label = data.Label,
+            Actions = data.Actions,
             Images = urls
         };
     }
@@ -572,6 +585,13 @@ public partial class ChatWebView : UserControl
                 if (!string.IsNullOrEmpty(id))
                     MoveToBackgroundRequested?.Invoke(id!);
             }
+            else if (type == "noticeAction")
+            {
+                var id = root.GetProperty("id").GetString();
+                var action = root.GetProperty("action").GetString();
+                if (!string.IsNullOrEmpty(id) && !string.IsNullOrEmpty(action))
+                    NoticeActionRequested?.Invoke(id!, action!);
+            }
             else if (type == "click")
             {
                 Clicked?.Invoke();
@@ -597,6 +617,16 @@ public partial class ChatWebView : UserControl
         // null folder and carry its images inline. See ExecuteOrQueueAsync.
         return ExecuteOrQueueAsync(() =>
             $"addMessage({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(type.ToString())}, {JsonSerializer.Serialize(MaterializeImages(data))})");
+    }
+
+    /// <summary>
+    /// Replaces the buttons under a row VsAgentic wrote; an empty list
+    /// removes them.
+    /// </summary>
+    public Task SetNoticeActionsAsync(string id, IReadOnlyList<ChatNoticeAction> actions)
+    {
+        return ExecuteOrQueueAsync(
+            $"setNoticeActions({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(actions)})");
     }
 
     public Task UpdateContentAsync(string id, string content)

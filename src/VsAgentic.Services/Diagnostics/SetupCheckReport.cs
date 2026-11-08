@@ -17,6 +17,17 @@ public sealed class SetupCheckReport
     private const string Footer =
         "Nothing was changed. For Claude Code's own check, run `claude doctor` in a terminal.";
 
+    /// <summary>
+    /// The fixes offered, one per kind, in the order of their lines. Install
+    /// comes before sign-in: signing in needs the CLI.
+    /// </summary>
+    public IReadOnlyList<SetupFix> Fixes => Items
+        .Where(i => i.Fix is not null)
+        .Select(i => i.Fix!)
+        .GroupBy(f => f.Kind)
+        .Select(g => g.First())
+        .ToList();
+
     public SetupCheckReport(string? environment, IReadOnlyList<SetupCheckSection> sections)
     {
         Environment = environment;

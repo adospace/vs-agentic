@@ -7,20 +7,23 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using Microsoft.VisualStudio.PlatformUI;
 using Microsoft.VisualStudio.Shell;
+using VsAgentic.Services.Abstractions;
 using VsAgentic.Services.Diagnostics;
 
 namespace VsAgentic.VSExtension.Options;
 
 /// <summary>
 /// The setup check opened from Tools → Options: the report as plain text,
-/// with Copy for a bug report and Run again after a fix. The same check runs
-/// as <c>/doctor</c> in a chat, where it also covers that chat's session.
+/// with Copy for a bug report, Run again, and on the left a button for each
+/// fix the report offers. The same check runs as <c>/doctor</c> in a chat,
+/// where it also covers that chat's session.
 /// </summary>
 internal sealed class SetupCheckDialog : DialogWindow
 {
     private readonly TextBox _text;
     private readonly Button _copy;
     private readonly Button _again;
+    private readonly WrapPanel _fixes;
     private readonly CancellationTokenSource _cts = new();
     private SetupCheckReport? _report;
 
@@ -59,15 +62,22 @@ internal sealed class SetupCheckDialog : DialogWindow
         {
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right,
-            Margin = new Thickness(0, 10, 0, 0),
         };
         buttons.Children.Add(_copy);
         buttons.Children.Add(_again);
         buttons.Children.Add(close);
 
+        // The fixes the report offers, on the left; filled after each check.
+        _fixes = new WrapPanel { Orientation = Orientation.Horizontal };
+
+        var bar = new DockPanel { Margin = new Thickness(0, 10, 0, 0), LastChildFill = true };
+        DockPanel.SetDock(buttons, Dock.Right);
+        bar.Children.Add(buttons);
+        bar.Children.Add(_fixes);
+
         var root = new DockPanel { Margin = new Thickness(12), LastChildFill = true };
-        DockPanel.SetDock(buttons, Dock.Bottom);
-        root.Children.Add(buttons);
+        DockPanel.SetDock(bar, Dock.Bottom);
+        root.Children.Add(bar);
         root.Children.Add(_text);
         Content = root;
 
@@ -89,17 +99,61 @@ internal sealed class SetupCheckDialog : DialogWindow
         return button;
     }
 
-    private void Run()
+    private void Run(string? note = null)
     {
         _copy.IsEnabled = false;
         _again.IsEnabled = false;
+        _fixes.Children.Clear();
         _text.Text = "Checking the setup…";
 
-        _ = RunAsync();
+        _ = RunAsync(note);
+    }
+
+    /// <summary>One button per fix the report offers, the first one without a left margin.</summary>
+    private void ShowFixes()
+    {
+        _fixes.Children.Clear();
+        if (_report is null) return;
+        foreach (var fix in _report.Fixes)
+        {
+            // Labels are plain text: an underscore would become an access key.
+            var button = MakeButton(fix.Label.Replace("_", "__"), (_, _) => _ = ApplyAsync(fix));
+            if (_fixes.Children.Count == 0) button.Margin = new Thickness(0);
+            _fixes.Children.Add(button);
+        }
+    }
+
+    // Runs one fix, then the check again. Commands run in a terminal window;
+    // the dialog waits for it to close.
+    private async System.Threading.Tasks.Task ApplyAsync(SetupFix fix)
+    {
+        foreach (UIElement child in _fixes.Children) child.IsEnabled = false;
+        _again.IsEnabled = false;
+        _text.Text = fix.Label + ": " + (fix.Kind is SetupFixKind.UseFoundCli or SetupFixKind.InstallWebView2
+            ? "…"
+            : "follow the terminal window that opened. VsAgentic checks the setup again when you close it.");
+
+        string? note;
+        try
+        {
+            var task = VsAgenticPackage.ApplySetupFixFromOptionsAsync(fix, _cts.Token);
+            note = task is null ? "VsAgentic is not loaded yet." : await task;
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            note = fix.Label + " did not run: " + ex.Message;
+        }
+
+        if (_cts.IsCancellationRequested) return;
+        Run(note);
     }
 
     // Started on the dialog's thread, so it resumes there after the check.
-    private async System.Threading.Tasks.Task RunAsync()
+    private async System.Threading.Tasks.Task RunAsync(string? note)
     {
         string text;
         try
@@ -127,9 +181,10 @@ internal sealed class SetupCheckDialog : DialogWindow
         }
 
         if (_cts.IsCancellationRequested) return;
-        _text.Text = text;
+        _text.Text = string.IsNullOrEmpty(note) ? text : note!.Replace("`", "") + "\r\n\r\n" + text;
         _copy.IsEnabled = _report is not null;
         _again.IsEnabled = true;
+        ShowFixes();
     }
 
     /// <summary>Markdown, for pasting into a GitHub issue.</summary>

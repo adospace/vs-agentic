@@ -18,7 +18,8 @@ namespace VsAgentic.Services.ClaudeCli;
 /// The part of the setup check that is about Claude Code: the CLI and its
 /// version, sign-in, VsAgentic's permission server, and the settings files
 /// the CLI reads. Every check only reads; none of them starts a session or
-/// spends tokens.
+/// spends tokens. A line VsAgentic can fix carries a <see cref="SetupFix"/>,
+/// which <see cref="ClaudeSetupFixer"/> runs when the user clicks it.
 ///
 /// CLI 2.1.316 has a <c>/doctor</c> of its own, but in a stream-json session
 /// it is a skill: the model runs shell commands to inspect the install,
@@ -48,8 +49,7 @@ public static class ClaudeSetupCheck
         var version = await RunAsync(cliPath, "--version", ct).ConfigureAwait(false);
         if (version.StartError is not null)
         {
-            items.Add(new SetupCheckItem(SetupCheckStatus.Error, "Claude Code CLI",
-                NotFoundDetail(cliPath, version.StartError)));
+            items.Add(NotFoundItem(cliPath, version.StartError));
             return items;
         }
 
@@ -64,22 +64,44 @@ public static class ClaudeSetupCheck
             return items;
         }
 
+        // The fixes run the CLI the chat starts, by its full path when known.
+        var runnable = resolved ?? cliPath;
+
         items.Add(parsed < MinimumTestedCliVersion
             ? new SetupCheckItem(SetupCheckStatus.Warning, "Claude Code CLI",
                 $"Version {parsed}{where} is older than {MinimumTestedCliVersion}, the oldest this VsAgentic was tested with. " +
-                "Run `claude update` in a terminal.")
+                "Click Update Claude Code, or run `claude update` in a terminal.",
+                new SetupFix(SetupFixKind.UpdateCli, "Update Claude Code", runnable))
             : new SetupCheckItem(SetupCheckStatus.Ok, "Claude Code CLI", $"Version {parsed}{where}."));
 
-        items.Add(await CheckSignInAsync(cliPath, ct).ConfigureAwait(false));
+        items.Add(await CheckSignInAsync(cliPath, runnable, ct).ConfigureAwait(false));
         return items;
     }
 
-    private static string NotFoundDetail(string cliPath, string error)
+    /// <summary>
+    /// The CLI did not start. When a <c>claude.exe</c> is on disk where Claude
+    /// Code installs it, the fix points VsAgentic to it; otherwise it installs.
+    /// </summary>
+    private static SetupCheckItem NotFoundItem(string cliPath, string error)
     {
+        const string title = "Claude Code CLI";
         var setting = cliPath == "claude" ? "" : $" Claude CLI Path is set to `{cliPath}`.";
-        return "Not found or could not start (" + error + ")." + setting +
-               " Install Claude Code (https://code.claude.com/docs/en/setup), or set Tools → Options → VsAgentic → " +
-               "Claude CLI Path to the full path of `claude.exe`. Restart Visual Studio after installing, so it sees the new PATH.";
+        var notFound = "Not found or could not start (" + error + ")." + setting;
+
+        var found = ClaudeSetupFixer.FindInstalledCli()
+            .FirstOrDefault(p => !string.Equals(p, cliPath, StringComparison.OrdinalIgnoreCase));
+        if (found is not null)
+        {
+            return new SetupCheckItem(SetupCheckStatus.Error, title,
+                notFound + $" Claude Code is installed at `{found}`, but Visual Studio does not see it, " +
+                "most likely because it started before the install. Click Use this Claude Code to set Claude CLI Path to it.",
+                new SetupFix(SetupFixKind.UseFoundCli, "Use this Claude Code", found));
+        }
+
+        return new SetupCheckItem(SetupCheckStatus.Error, title,
+            notFound + " Click Install Claude Code to run Anthropic's installer (`" + ClaudeSetupFixer.InstallCommand +
+            "`) in a terminal window, or install it as described at https://code.claude.com/docs/en/setup.",
+            new SetupFix(SetupFixKind.InstallCli, "Install Claude Code"));
     }
 
     /// <summary>
@@ -88,7 +110,7 @@ public static class ClaudeSetupCheck
     /// The e-mail address and organisation are left out of the report: it is
     /// meant to be pasted into a public issue.
     /// </summary>
-    private static async Task<SetupCheckItem> CheckSignInAsync(string cliPath, CancellationToken ct)
+    private static async Task<SetupCheckItem> CheckSignInAsync(string cliPath, string runnable, CancellationToken ct)
     {
         const string title = "Sign-in";
         var result = await RunAsync(cliPath, "auth status --json", ct).ConfigureAwait(false);
@@ -105,14 +127,16 @@ public static class ClaudeSetupCheck
         catch (JsonException)
         {
             return new SetupCheckItem(SetupCheckStatus.Warning, title,
-                "Could not check: this CLI did not answer `claude auth status`. Run `claude update` in a terminal.");
+                "Could not check: this CLI did not answer `claude auth status`. Click Update Claude Code, or run `claude update` in a terminal.",
+                new SetupFix(SetupFixKind.UpdateCli, "Update Claude Code", runnable));
         }
 
         var loggedIn = root.TryGetProperty("loggedIn", out var li) && li.ValueKind == JsonValueKind.True;
         if (!loggedIn)
         {
             return new SetupCheckItem(SetupCheckStatus.Error, title,
-                "Not signed in. Run `claude` in a terminal and type `/login`, or send a message in a chat and click Sign in on the banner.");
+                "Not signed in. Click Sign in, or run `claude auth login` in a terminal.",
+                new SetupFix(SetupFixKind.SignIn, "Sign in", runnable));
         }
 
         var method = CliProcessInfo.ReadString(root, "authMethod");

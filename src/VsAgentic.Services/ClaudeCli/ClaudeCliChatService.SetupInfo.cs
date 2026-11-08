@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Microsoft.Extensions.Logging;
 using VsAgentic.Services.Abstractions;
 
 namespace VsAgentic.Services.ClaudeCli;
@@ -78,6 +79,33 @@ public sealed partial class ClaudeCliChatService
         }
 
         return items;
+    }
+
+    public event Action? CliNotFound;
+
+    private void RaiseCliNotFound()
+    {
+        try { CliNotFound?.Invoke(); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] CliNotFound handler threw"); }
+    }
+
+    public void RestartAfterSetupFix()
+    {
+        bool busy;
+        lock (_activeTurnLock) { busy = _turns.Count > 0 || _cliTurn is not null; }
+        if (busy || !_host.IsRunning) return;
+
+        // As for a new sign-in: the next message starts a fresh process, which
+        // reads the new path and credentials. The conversation is resumed.
+        try
+        {
+            _host.Stop();
+            lock (_dispatcherLock) { _dispatcherTask = null; }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[ClaudeCli] Could not stop the CLI after a setup fix");
+        }
     }
 
     private static string Capitalize(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s.Substring(1);

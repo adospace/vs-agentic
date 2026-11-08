@@ -311,6 +311,26 @@ html, body {
     margin-bottom: 6px;
     color: var(--text-muted);
 }
+/* The setup check's fixes, under its report. */
+.notice-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+.notice-actions:empty { display: none; }
+.notice-action {
+    font: inherit;
+    font-size: 12px;
+    padding: 2px 10px;
+    color: var(--accent);
+    background: transparent;
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.notice-action:hover { background: var(--bg-input); }
+.notice-action:disabled { opacity: 0.5; cursor: default; }
 .msg-assistant-inner {
     display: flex;
     gap: 6px;
@@ -1425,6 +1445,7 @@ function addMessage(id, type, dataJson) {
         linkifyFilePaths(content);
         addBlockCopyButtons(content);
         div.appendChild(content);
+        if (data.Actions) fillNoticeActions(div, id, data.Actions);
     }
     else if (type === 'Assistant') {
         div.classList.add('msg-assistant');
@@ -1780,6 +1801,34 @@ function setCanMoveToBackground(id) {
         window.chrome.webview.postMessage(JSON.stringify({type:'moveToBackground', id:id}));
     });
     host.insertBefore(btn, group ? host.querySelector('.activity-count') : null);
+}
+
+// Buttons under a row VsAgentic wrote: the setup check's fixes. A click
+// disables every button of the row until the host sends the next set.
+function fillNoticeActions(div, id, actions) {
+    var bar = div.querySelector('.notice-actions');
+    if (!bar) {
+        bar = document.createElement('div');
+        bar.className = 'notice-actions';
+        div.appendChild(bar);
+    }
+    bar.innerHTML = '';
+    (actions || []).forEach(function(a) {
+        var btn = document.createElement('button');
+        btn.className = 'notice-action';
+        btn.textContent = a.Label;
+        btn.disabled = a.Enabled === false;
+        btn.addEventListener('click', function() {
+            bar.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
+            window.chrome.webview.postMessage(JSON.stringify({type:'noticeAction', id:id, action:a.Id}));
+        });
+        bar.appendChild(btn);
+    });
+}
+
+function setNoticeActions(id, actions) {
+    var el = document.getElementById('msg-' + id);
+    if (el) fillNoticeActions(el, id, actions);
 }
 
 function moveToBackgroundButton(id) {

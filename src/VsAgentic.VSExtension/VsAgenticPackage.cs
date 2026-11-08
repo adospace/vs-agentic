@@ -57,6 +57,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     private readonly List<IIdeContextProvider> _ideContextProviders = new();
     private DebuggerStateTracker? _debuggerState;
     private ErrorListReader? _errorList;
+    private SolutionFolderTracker? _solutionFolders;
 
     // For "Add to VsAgentic Chat": the open chat windows, the one the user was
     // in last, and an editor context waiting for a window still being opened.
@@ -169,6 +170,10 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         if (await GetServiceAsync(typeof(SVsSolution)) is IVsSolution solutionService)
         {
             solutionService.AdviseSolutionEvents(this, out _solutionEventsCookie);
+
+            // A solution opened before the package loaded raises no event.
+            _solutionFolders = new SolutionFolderTracker(solutionService, JoinableTaskFactory);
+            _solutionFolders.ScheduleRefresh();
         }
 
         Initialized?.Invoke();
@@ -380,6 +385,8 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         services.AddSingleton<IOutputListener>(outputListener);
         foreach (var ideContextProvider in _ideContextProviders)
             services.AddSingleton(ideContextProvider);
+        if (_solutionFolders is not null)
+            services.AddSingleton<IWorkspaceFolders>(_solutionFolders);
         services.AddVsAgenticServices(options =>
         {
             options.WorkingDirectory = workingDir;
@@ -783,6 +790,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
     int IVsSolutionEvents.OnAfterOpenSolution(object pUnkReserved, int fNewSolution)
     {
+        _solutionFolders?.ScheduleRefresh();
         _ = JoinableTaskFactory.RunAsync(async () =>
         {
             await JoinableTaskFactory.SwitchToMainThreadAsync();
@@ -796,6 +804,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     int IVsSolutionEvents.OnBeforeCloseSolution(object pUnkReserved) => Microsoft.VisualStudio.VSConstants.S_OK;
     int IVsSolutionEvents.OnAfterCloseSolution(object pUnkReserved)
     {
+        _solutionFolders?.Clear();
         _ = JoinableTaskFactory.RunAsync(async () =>
         {
             var fallback = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -804,12 +813,20 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         return Microsoft.VisualStudio.VSConstants.S_OK;
     }
 
-    int IVsSolutionEvents.OnAfterOpenProject(IVsHierarchy pHierarchy, int fAdded) => Microsoft.VisualStudio.VSConstants.S_OK;
+    // Projects added, removed, loaded or unloaded change the folders a chat
+    // starts with. The list is built again once VS is idle, after the change.
+    int IVsSolutionEvents.OnAfterOpenProject(IVsHierarchy pHierarchy, int fAdded) => RefreshSolutionFolders();
     int IVsSolutionEvents.OnQueryCloseProject(IVsHierarchy pHierarchy, int fRemoving, ref int pfCancel) => Microsoft.VisualStudio.VSConstants.S_OK;
-    int IVsSolutionEvents.OnBeforeCloseProject(IVsHierarchy pHierarchy, int fRemoved) => Microsoft.VisualStudio.VSConstants.S_OK;
-    int IVsSolutionEvents.OnAfterLoadProject(IVsHierarchy pStubHierarchy, IVsHierarchy pRealHierarchy) => Microsoft.VisualStudio.VSConstants.S_OK;
+    int IVsSolutionEvents.OnBeforeCloseProject(IVsHierarchy pHierarchy, int fRemoved) => RefreshSolutionFolders();
+    int IVsSolutionEvents.OnAfterLoadProject(IVsHierarchy pStubHierarchy, IVsHierarchy pRealHierarchy) => RefreshSolutionFolders();
     int IVsSolutionEvents.OnQueryUnloadProject(IVsHierarchy pRealHierarchy, ref int pfCancel) => Microsoft.VisualStudio.VSConstants.S_OK;
-    int IVsSolutionEvents.OnBeforeUnloadProject(IVsHierarchy pRealHierarchy, IVsHierarchy pStubHierarchy) => Microsoft.VisualStudio.VSConstants.S_OK;
+    int IVsSolutionEvents.OnBeforeUnloadProject(IVsHierarchy pRealHierarchy, IVsHierarchy pStubHierarchy) => RefreshSolutionFolders();
+
+    private int RefreshSolutionFolders()
+    {
+        _solutionFolders?.ScheduleRefresh();
+        return Microsoft.VisualStudio.VSConstants.S_OK;
+    }
     int IVsSolutionEvents.OnQueryCloseSolution(object pUnkReserved, ref int pfCancel) => Microsoft.VisualStudio.VSConstants.S_OK;
 
     private void OnFileLinkRequested(string rawPath, FileLinkAction action)

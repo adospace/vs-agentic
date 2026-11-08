@@ -207,8 +207,39 @@ public partial class SessionListViewModel : ObservableObject
         Sessions.CollectionChanged += (_, _) => OnPropertyChanged(nameof(ArchiveButtonText));
 
         // Fires on every add, remove, move and filter refresh.
-        FilteredSessions.CollectionChanged += (_, _) => UpdatePinnedBoundary();
+        FilteredSessions.CollectionChanged += (_, _) =>
+        {
+            UpdatePinnedBoundary();
+            OnPropertyChanged(nameof(FilterSummary));
+        };
     }
+
+    /// <summary>
+    /// True while a search term hides part of the list. The view marks the
+    /// list as filtered, so a term typed earlier is not forgotten.
+    /// </summary>
+    public bool IsFiltered => !string.IsNullOrWhiteSpace(SearchText);
+
+    /// <summary>
+    /// How many sessions of the current view the search term leaves visible,
+    /// e.g. "9 of 104 sessions shown".
+    /// </summary>
+    public string FilterSummary
+    {
+        get
+        {
+            var shown = FilteredSessions.Cast<object>().Count();
+            var total = Sessions.Count(s => s.IsArchived == ShowArchived);
+            var noun = ShowArchived ? "archived sessions" : "sessions";
+            return $"{shown} of {total} {noun} shown";
+        }
+    }
+
+    /// <summary>
+    /// Empties the search box, which shows the whole list again.
+    /// </summary>
+    [RelayCommand]
+    private void ClearSearch() => SearchText = string.Empty;
 
     /// <summary>
     /// Marks the row where the pinned group ends. Works on the visible list,
@@ -235,6 +266,7 @@ public partial class SessionListViewModel : ObservableObject
         // is part of the new one, and clearing them would make rows blink out
         // and back.
         FilteredSessions.Refresh();
+        OnPropertyChanged(nameof(IsFiltered));
         _ = SearchContentAsync(value);
     }
 

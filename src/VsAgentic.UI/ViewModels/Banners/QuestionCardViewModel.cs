@@ -112,8 +112,8 @@ public partial class QuestionCardViewModel : ObservableObject, IQueuedPrompt
     // again: the next prompt in the queue would be taken down unread.
     private bool _submitted;
 
-    /// <summary>True for a moment after the card comes up from the queue,
-    /// while Submit stays disabled. See <see cref="HoldInput"/>.</summary>
+    /// <summary>True for a moment after the card comes up from the queue or
+    /// right after another prompt was answered, while Submit stays disabled. See <see cref="HoldInput"/>.</summary>
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SubmitCommand))]
     private bool _isInputHeld;

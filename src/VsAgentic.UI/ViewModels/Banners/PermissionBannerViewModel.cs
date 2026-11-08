@@ -55,8 +55,8 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
     // answer again: the next banner in the queue would be taken down unread.
     private bool _resolved;
 
-    /// <summary>True for a moment after the banner comes up from the queue,
-    /// while the buttons stay disabled. See <see cref="HoldInput"/>.</summary>
+    /// <summary>True for a moment after the banner comes up from the queue or
+    /// right after another prompt was answered, while the buttons stay disabled. See <see cref="HoldInput"/>.</summary>
     [ObservableProperty]
     private bool _isInputHeld;
 

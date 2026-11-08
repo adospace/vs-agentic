@@ -27,6 +27,11 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     // Subagents running in parallel ask at the same time. UI thread only.
     private readonly List<IBannerViewModel> _waitingPrompts = new();
 
+    // Runs from the last answer to a prompt. The CLI often asks the next
+    // question only after the answered tool has run, so a new prompt can come
+    // up under the pointer a few milliseconds after the click. UI thread only.
+    private System.Diagnostics.Stopwatch? _sinceLastAnswer;
+
     // Which Agent step each subagent step ran under, and the Agent steps'
     // titles, so a permission prompt can say which subagent asks. Kept after
     // the steps finish: a background subagent asks long after its Agent step
@@ -916,6 +921,10 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             _waitingPrompts.Add(prompt);
             return;
         }
+        // A prompt that arrives just after an answer comes up where the user
+        // just clicked, the same as one from the queue.
+        if (prompt is IQueuedPrompt fresh && _sinceLastAnswer?.Elapsed < PromptHold)
+            fresh.HoldInput(PromptHold);
         ActiveBanner = prompt;
     }
 
@@ -929,19 +938,21 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         var next = _waitingPrompts[0];
         _waitingPrompts.RemoveAt(0);
         // It comes up where the user just clicked or pressed Enter.
-        if (next is IQueuedPrompt queued) queued.HoldInput(QueuedPromptHold);
+        if (next is IQueuedPrompt queued) queued.HoldInput(PromptHold);
         ActiveBanner = next;
     }
 
     // Long enough for the second click of a double-click or a held Enter,
-    // short enough not to be noticed.
-    private static readonly TimeSpan QueuedPromptHold = TimeSpan.FromMilliseconds(400);
+    // short enough not to be noticed. Also how soon after an answer a new
+    // prompt counts as coming up under the same click.
+    private static readonly TimeSpan PromptHold = TimeSpan.FromMilliseconds(400);
 
     /// <summary>After a prompt is answered: the next one comes up only if the
     /// answered one is still on screen. A Stop or a withdrawal may have taken
     /// it down already. Must run on the UI thread.</summary>
     private void ShowNextPromptAfter(IBannerViewModel? answered)
     {
+        _sinceLastAnswer = System.Diagnostics.Stopwatch.StartNew();
         if (answered is not null && ReferenceEquals(ActiveBanner, answered))
             ShowNextPrompt();
     }

@@ -130,6 +130,34 @@ public partial class ChatWebView : UserControl
     }
 
     /// <summary>
+    /// The setup check's line for the WebView2 runtime the chat is drawn
+    /// with. Only asks which version is installed; nothing is started.
+    /// </summary>
+    public static SetupCheckItem CheckRuntime()
+    {
+        const string title = "Chat view (WebView2)";
+        try
+        {
+            var version = CoreWebView2Environment.GetAvailableBrowserVersionString();
+            return string.IsNullOrEmpty(version)
+                ? new SetupCheckItem(SetupCheckStatus.Error, title, NotInstalled)
+                : new SetupCheckItem(SetupCheckStatus.Ok, title, $"Runtime {version}.");
+        }
+        catch (WebView2RuntimeNotFoundException)
+        {
+            return new SetupCheckItem(SetupCheckStatus.Error, title, NotInstalled);
+        }
+        catch (Exception ex)
+        {
+            return new SetupCheckItem(SetupCheckStatus.Warning, title, $"Could not check: {ex.Message}");
+        }
+    }
+
+    private const string NotInstalled =
+        "The runtime is not installed, so the chat stays empty. Install the Evergreen runtime from " +
+        "https://developer.microsoft.com/microsoft-edge/webview2/ and restart Visual Studio.";
+
+    /// <summary>
     /// Creates the WebView2 environment on a user data folder scoped to this
     /// process, so no two hosts ever contend for the same one.
     /// </summary>
@@ -414,6 +442,7 @@ public partial class ChatWebView : UserControl
             Body = data.Body,
             IsStreaming = data.IsStreaming,
             ParentId = data.ParentId,
+            Label = data.Label,
             Images = urls
         };
     }

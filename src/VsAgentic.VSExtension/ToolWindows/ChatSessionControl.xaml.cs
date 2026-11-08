@@ -486,6 +486,27 @@ public partial class ChatSessionControl : UserControl
     {
         ShellPalette.OverrideBrushes(this, ChromeBrushes);
         ShellPalette.OverrideColors(this, ChromeColors);
+        ApplyPromptSuggestionBrush();
+    }
+
+    /// <summary>
+    /// The suggested prompt is a step dimmer than the placeholder, so it does
+    /// not read as text already typed: the shell's tertiary text against the
+    /// placeholder's secondary. Visual Studio 2022 has no tertiary text, and
+    /// there the suggestion takes the placeholder's color.
+    /// </summary>
+    private void ApplyPromptSuggestionBrush()
+    {
+        if (ShellPalette.TryGetColor("TextFillTertiary") is Color tertiary)
+        {
+            var brush = new SolidColorBrush(tertiary);
+            brush.Freeze();
+            Resources["PromptSuggestionBrush"] = brush;
+        }
+        else
+        {
+            Resources["PromptSuggestionBrush"] = FindResource(VsBrushes.GrayTextKey);
+        }
     }
 
     private static System.Drawing.Color Blend(System.Drawing.Color from, System.Drawing.Color to, double amount)
@@ -741,7 +762,9 @@ public partial class ChatSessionControl : UserControl
         // removes the attachments, so the text goes first and a second press
         // is needed for both. An open @ list takes the key first, in
         // PreviewKeyDown, so the first Escape only closes it. With nothing
-        // left the key goes on to Visual Studio.
+        // left the key goes on to Visual Studio. In the empty box a suggested
+        // prompt is hidden before the attachments go, as it costs nothing to
+        // lose.
         if (e.Key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None)
         {
             if (!string.IsNullOrEmpty(InputTextBox.Text))
@@ -749,7 +772,8 @@ public partial class ChatSessionControl : UserControl
                 InputTextBox.Clear();
                 e.Handled = true;
             }
-            else if (DataContext is ChatSessionViewModel vm && vm.RemoveAllAttachments())
+            else if (DataContext is ChatSessionViewModel vm &&
+                     (vm.DismissPromptSuggestion() || vm.RemoveAllAttachments()))
             {
                 e.Handled = true;
             }
@@ -1021,6 +1045,19 @@ public partial class ChatSessionControl : UserControl
 
         if (SlashPopup.IsOpen && HandleSlashKey(e))
         {
+            e.Handled = true;
+            return;
+        }
+
+        // Tab takes the suggested prompt into the empty box, ready to edit or
+        // send. With text in the box, or no suggestion, Tab moves focus on as
+        // before.
+        if (e.Key == Key.Tab && Keyboard.Modifiers == ModifierKeys.None &&
+            string.IsNullOrEmpty(InputTextBox.Text) &&
+            DataContext is ChatSessionViewModel { PromptSuggestion: { } suggestion })
+        {
+            InputTextBox.Text = suggestion;
+            InputTextBox.CaretIndex = suggestion.Length;
             e.Handled = true;
             return;
         }

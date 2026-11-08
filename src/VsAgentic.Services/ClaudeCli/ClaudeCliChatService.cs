@@ -40,7 +40,7 @@ namespace VsAgentic.Services.ClaudeCli;
 ///    part of the natural tool execution rather than via a side-channel
 ///    tool_result write.
 /// </summary>
-public sealed class ClaudeCliChatService : IChatService, IDisposable
+public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupInfo, IDisposable
 {
     private readonly VsAgenticOptions _options;
     private readonly IOutputListener _outputListener;
@@ -238,6 +238,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             {
                 _control = NewControlChannel();
                 _capabilities = CliCapabilities.None;
+                _lastInit = null;
                 lock (_reportedMcpProblems) { _reportedMcpProblems.Clear(); }
 
                 // A process that stopped mid-turn never sent the result for
@@ -1550,6 +1551,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     private void HandleInit(CliInitEvent init)
     {
+        _lastInit = init;
+
         if (init.SlashCommands is not null)
             SetCommandNames(init.SlashCommands, init.TerminalSlashCommands);
 

@@ -295,6 +295,22 @@ html, body {
 .msg-assistant {
     padding: 0 8px;
 }
+/* A row VsAgentic wrote itself (the setup check), not Claude's reply. */
+.msg-local {
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--text-muted);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-top: 10px;
+    margin-bottom: 10px;
+}
+.msg-local .msg-label {
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.6px;
+    margin-bottom: 6px;
+    color: var(--text-muted);
+}
 .msg-assistant-inner {
     display: flex;
     gap: 6px;
@@ -1393,6 +1409,22 @@ function addMessage(id, type, dataJson) {
         // height first; measured once it is laid out.
         content.classList.add('capped');
         requestAnimationFrame(function() { applyPromptCap(content, data.Content || ''); });
+    }
+    else if (type === 'Assistant' && data.Label) {
+        // Written by VsAgentic, not by Claude (the setup check): framed and
+        // headed like a prompt, in grey, so nobody reads it as Claude's reply.
+        div.classList.add('msg-local');
+        var localLabel = document.createElement('div');
+        localLabel.className = 'msg-label';
+        localLabel.textContent = data.Label;
+        div.appendChild(localLabel);
+        var content = document.createElement('div');
+        content.className = 'md-content msg-content';
+        content.innerHTML = renderMd(data.Content || '');
+        keepMarkdownSource(content, data.Content || '');
+        linkifyFilePaths(content);
+        addBlockCopyButtons(content);
+        div.appendChild(content);
     }
     else if (type === 'Assistant') {
         div.classList.add('msg-assistant');

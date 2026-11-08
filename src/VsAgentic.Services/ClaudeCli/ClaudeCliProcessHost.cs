@@ -126,7 +126,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
         _pipeServer = new PermissionPipeServer(_permissionBroker, _questionBroker, _ideContext, _logger);
         _pipeServer.Start();
 
-        var helperExePath = ResolveHelperExePath();
+        var helperExePath = ResolveHelperExePath(_logger);
         if (!File.Exists(helperExePath))
         {
             _logger.LogError("[ClaudeCli] Permission helper exe not found at '{Path}'. Permission prompts will hang.", helperExePath);
@@ -426,7 +426,11 @@ public sealed class ClaudeCliProcessHost : IDisposable
         return sb.ToString();
     }
 
-    private string ResolveHelperExePath()
+    /// <summary>
+    /// Path of the MCP helper exe, extracted on first use. Also used by the
+    /// setup check, which starts the helper on its own to see that it runs.
+    /// </summary>
+    internal static string ResolveHelperExePath(ILogger? logger)
     {
         // The helper's entire bin folder (exe + its net472 dependencies like
         // System.Text.Json, Microsoft.Bcl.AsyncInterfaces, ...) is embedded in
@@ -488,7 +492,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
             }
         }
         File.WriteAllText(markerPath, expectedHash);
-        _logger.LogInformation("[ClaudeCli] Extracted permission helper to: {Path} (hash {Hash})",
+        logger?.LogInformation("[ClaudeCli] Extracted permission helper to: {Path} (hash {Hash})",
             helperPath, expectedHash.Substring(0, 12));
 
         return helperPath;

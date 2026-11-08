@@ -725,6 +725,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
                     _logger.LogDebug("[ClaudeCli] control_response for a request no one waits for");
                 return;
 
+            case "control_request":
+                await HandleControlRequestAsync(evt).ConfigureAwait(false);
+                return;
+
             case "command_lifecycle":
                 HandleCommandLifecycle(evt);
                 return;
@@ -1409,6 +1413,64 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             CliProcessInfo.ReadString(evt, "key"), text);
         if (string.IsNullOrWhiteSpace(text)) return;
         EmitNotice(text!, null, OutputItemStatus.Info);
+    }
+
+    /// <summary>
+    /// A request the CLI sends us and waits on. Only <c>elicitation</c> is
+    /// answered; other requests reach us only when we register for them.
+    /// </summary>
+    private async Task HandleControlRequestAsync(JsonElement evt)
+    {
+        var requestId = CliProcessInfo.ReadString(evt, "request_id");
+        if (string.IsNullOrEmpty(requestId)
+            || !evt.TryGetProperty("request", out var request) || request.ValueKind != JsonValueKind.Object)
+            return;
+
+        var subtype = CliProcessInfo.ReadString(request, "subtype");
+        if (subtype == "elicitation")
+        {
+            await CancelElicitationAsync(requestId!, request).ConfigureAwait(false);
+            return;
+        }
+
+        _logger.LogWarning("[ClaudeCli] CLI sent control_request {Subtype} ({RequestId}), which is not answered",
+            subtype, requestId);
+    }
+
+    /// <summary>
+    /// An MCP server asks the user for input: a form, or a page to open (for
+    /// example to sign in). The CLI hands the question to us and the tool call
+    /// waits for the answer; without one the turn does not end (measured on
+    /// CLI 2.1.319: still waiting after 240 s). There is no form for it yet,
+    /// so the question is cancelled at once and the transcript says so.
+    /// </summary>
+    private async Task CancelElicitationAsync(string requestId, JsonElement request)
+    {
+        var server = CliProcessInfo.ReadString(request, "mcp_server_name");
+        var message = CliProcessInfo.ReadString(request, "message");
+        var mode = CliProcessInfo.ReadString(request, "mode");
+        var url = CliProcessInfo.ReadString(request, "url");
+        _logger.LogInformation("[ClaudeCli] MCP server {Server} asked for input ({Mode}); cancelled: {Message}",
+            server, mode ?? "form", message);
+
+        try
+        {
+            await _host.WriteLineAsync(StreamJsonProtocol.BuildElicitationCancel(requestId), CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[ClaudeCli] Could not cancel the elicitation request");
+            return;
+        }
+
+        var who = string.IsNullOrWhiteSpace(server) ? "An MCP server" : $"The MCP server {server}";
+        var text = new StringBuilder(mode == "url"
+            ? $"{who} asked you to open a page. VsAgentic cannot do this yet, so the request was cancelled."
+            : $"{who} asked you a question. VsAgentic cannot show it yet, so the question was cancelled.");
+        if (!string.IsNullOrWhiteSpace(message)) text.Append("\n\n").Append(message!.Trim());
+        if (!string.IsNullOrWhiteSpace(url)) text.Append("\n\n").Append(url!.Trim());
+        EmitNotice(text.ToString(), null, OutputItemStatus.Error);
     }
 
     /// <summary>

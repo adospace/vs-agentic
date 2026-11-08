@@ -289,6 +289,39 @@ internal static class StreamJsonProtocol
             w.WriteEndObject();
         });
 
+    /// <summary>
+    /// Build the answer to a control request the CLI sent us:
+    /// <c>{"type":"control_response","response":{"subtype":"success","request_id":…,"response":{…}}}</c>.
+    /// <paramref name="writeFields"/> writes the fields of the inner response.
+    /// </summary>
+    public static string BuildControlResponse(string requestId, Action<Utf8JsonWriter> writeFields)
+    {
+        using var buffer = new MemoryStream();
+        using (var w = new Utf8JsonWriter(buffer))
+        {
+            w.WriteStartObject();
+            w.WriteString("type", "control_response");
+            w.WriteStartObject("response");
+            w.WriteString("subtype", "success");
+            w.WriteString("request_id", requestId);
+            w.WriteStartObject("response");
+            writeFields(w);
+            w.WriteEndObject();
+            w.WriteEndObject();
+            w.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(buffer.ToArray());
+    }
+
+    /// <summary>
+    /// Build the answer to an <c>elicitation</c> request that turns it down
+    /// without an answer: <c>{"action":"cancel"}</c>. The CLI passes it on to
+    /// the MCP server, and the tool call goes on (measured on CLI 2.1.319:
+    /// 12 ms after the answer, the tool result is back).
+    /// </summary>
+    public static string BuildElicitationCancel(string requestId) =>
+        BuildControlResponse(requestId, w => w.WriteString("action", "cancel"));
+
     private static void WriteStringOrNull(Utf8JsonWriter w, string name, string? value)
     {
         if (value is null) w.WriteNull(name);

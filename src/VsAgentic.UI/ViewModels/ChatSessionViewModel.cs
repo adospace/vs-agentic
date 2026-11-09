@@ -985,22 +985,25 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     /// <summary>Leaves a row in the chat that is not part of the conversation.
     /// Must run on the UI thread.</summary>
-    private void AddNotice(string notice, string idPrefix = "notice")
+    private (string Id, ChatItemViewModel Item) AddNotice(string notice, string idPrefix = "notice", string? label = null)
     {
         var noticeId = $"{idPrefix}-{++_userMsgCounter}";
-        Items.Add(new ChatItemViewModel
+        var item = new ChatItemViewModel
         {
             Type = ChatItemType.Assistant,
             Content = notice,
             IsStreaming = false
-        });
+        };
+        Items.Add(item);
         MessageAdded?.Invoke(noticeId, ChatItemType.Assistant, new ChatMessageData
         {
             Id = noticeId,
             Type = "Assistant",
-            Content = notice
+            Content = notice,
+            Label = label
         });
         RequestScroll();
+        return (noticeId, item);
     }
 
     /// <summary>
@@ -1226,8 +1229,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         var typed = InputText.Trim();
 
+        // "/doctor" is VsAgentic's setup check, which does not go to the CLI.
         // "/model", "/effort" and "/fast" change the panel, not go to the CLI.
-        if (PendingAttachments.Count == 0 && TryRunPanelCommand(typed))
+        if (PendingAttachments.Count == 0 && (TryStartSetupCheck(typed) || TryRunPanelCommand(typed)))
         {
             InputText = "";
             return;

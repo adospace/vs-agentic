@@ -71,6 +71,24 @@ public class VsAgenticOptionsPage : DialogPage
     [DefaultValue(true)]
     public bool CheckForCliUpdates { get; set; } = true;
 
+    // A button, not a setting: the "…" on the row runs the check. Hidden from
+    // DialogPage's storage, so nothing is written for it.
+    [Category("Claude CLI")]
+    [DisplayName("Check setup")]
+    [Description("Click the … button to check that VsAgentic can work: the Claude Code CLI and its version, sign-in, VsAgentic's permission server, the chat view and your Claude Code settings files. Nothing is changed and nothing is sent to Claude. Typing /doctor in a chat runs the same check and also shows that chat's MCP servers.")]
+    [Editor(typeof(SetupCheckEditor), typeof(System.Drawing.Design.UITypeEditor))]
+    [TypeConverter(typeof(SetupCheckConverter))]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    // Without a default the grid shows the text in bold, as a changed setting.
+    [DefaultValue(SetupCheckPrompt)]
+    public string SetupCheck
+    {
+        get => SetupCheckPrompt;
+        set { }
+    }
+
+    private const string SetupCheckPrompt = "Click … to run";
+
     [Category("Usage meters")]
     [DisplayName("Plan")]
     [Description("Subscription the 5-hour and weekly estimates under the chat input are sized against. Once Claude Code reports your plan's real limits, after the first reply, those replace the estimates. Display only — nothing here is sent to the CLI. Choose Unlimited to hide those readings.")]

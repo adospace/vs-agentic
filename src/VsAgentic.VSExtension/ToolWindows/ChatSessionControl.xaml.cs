@@ -180,6 +180,9 @@ public partial class ChatSessionControl : UserControl
         // The "Run in background" button on a running step.
         ChatWebView.MoveToBackgroundRequested += OnMoveToBackgroundRequested;
 
+        // The setup check's fix buttons.
+        InitializeSetupFixes(viewModel);
+
         // Zoom is one setting across every chat window, so follow it rather
         // than own it. Applied without the toast here: this is the window
         // adopting the level it was born into, not the user changing it.
@@ -333,6 +336,7 @@ public partial class ChatSessionControl : UserControl
         ChatZoom.Changed -= OnZoomChanged;
         ChatWebView.ZoomChangeRequested -= OnZoomChangeRequested;
         ChatWebView.MoveToBackgroundRequested -= OnMoveToBackgroundRequested;
+        ChatWebView.NoticeActionRequested -= OnNoticeActionRequested;
         ChatWebView.Clicked -= OnChatClicked;
         ChatWebView.ContentFocusChanged -= OnChatContentFocusChanged;
         IsKeyboardFocusWithinChanged -= OnKeyboardFocusWithinChanged;

@@ -18,6 +18,7 @@ using Microsoft.VisualStudio.Shell.Interop;
 using Microsoft.VisualStudio.Shell.TableManager;
 using Serilog;
 using VsAgentic.Services.Configuration;
+using VsAgentic.Services.Diagnostics;
 using VsAgentic.Services.IdeContext;
 using VsAgentic.VSExtension.Editor;
 using VsAgentic.VSExtension.IdeContext;
@@ -65,6 +66,60 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     private EditorContext? _pendingEditorContext;
 
     public static bool IsLoaded => _instance is not null;
+
+    /// <summary>
+    /// Runs the setup check for the button in Tools → Options, without a
+    /// chat. Null when the package is not loaded.
+    /// </summary>
+    internal static System.Threading.Tasks.Task<SetupCheckReport>? RunSetupCheckFromOptionsAsync(CancellationToken ct)
+    {
+        var package = _instance;
+        return package is null ? null : SetupCheckHost.RunAsync(package, package._solutionDirectory, null, null, ct);
+    }
+
+    /// <summary>
+    /// Runs a fix from the setup check dialog in Tools → Options. Null when
+    /// the package is not loaded.
+    /// </summary>
+    internal static System.Threading.Tasks.Task<string?>? ApplySetupFixFromOptionsAsync(
+        VsAgentic.Services.Abstractions.SetupFix fix, CancellationToken ct)
+    {
+        var package = _instance;
+        return package is null ? null : SetupFixHost.ApplyAsync(package, fix, ct);
+    }
+
+    // The options of every chat created in this Visual Studio, so a path to
+    // claude.exe set by the setup check reaches chats already open. Weak: a
+    // closed chat's options go with it. UI thread only.
+    private readonly List<WeakReference<VsAgenticOptions>> _chatOptions = new();
+
+    /// <summary>
+    /// Gives open chats that use <paramref name="oldPath"/> the new path; their
+    /// next CLI starts with it. UI thread only.
+    /// </summary>
+    internal void UpdateOpenChatsCliPath(string? oldPath, string newPath)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        var old = string.IsNullOrWhiteSpace(oldPath) ? "claude" : oldPath!.Trim();
+        _chatOptions.RemoveAll(r => !r.TryGetTarget(out _));
+        foreach (var reference in _chatOptions)
+        {
+            if (!reference.TryGetTarget(out var options)) continue;
+            var current = string.IsNullOrWhiteSpace(options.ClaudeCliPath) ? "claude" : options.ClaudeCliPath.Trim();
+            if (string.Equals(current, old, StringComparison.OrdinalIgnoreCase))
+                options.ClaudeCliPath = newPath;
+        }
+    }
+
+    /// <summary>The options page. UI thread only.</summary>
+    internal VsAgenticOptionsPage? OptionsPage
+    {
+        get
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            return (VsAgenticOptionsPage?)GetDialogPage(typeof(VsAgenticOptionsPage));
+        }
+    }
 
     /// <summary>Raised on the UI thread after the package has fully initialized.</summary>
     internal static event Action? Initialized;
@@ -423,6 +478,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         vm.IdeContext = provider.GetService<IdeContextRegistry>();
         vm.DebuggerAccess = optionsPage?.DebuggerAccess ?? DebuggerAccessLevel.Off;
         vm.DebuggerModeSource = _debuggerState;
+        vm.RunSetupCheck = session => SetupCheckHost.RunAsync(this, workingDir, session, vmLogger, DisposalToken);
+        vm.ApplySetupFix = fix => SetupFixHost.ApplyAsync(this, fix, DisposalToken);
+        _chatOptions.Add(new WeakReference<VsAgenticOptions>(optionsAccessor.Value));
 
         // The status bar pickers only change this session; persisting the choice so
         // the next one starts the same way is the host's side of the deal.

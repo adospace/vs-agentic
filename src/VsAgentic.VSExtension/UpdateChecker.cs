@@ -118,6 +118,15 @@ internal sealed class UpdateChecker : IVsInfoBarUIEvents
     /// update, the two diverge — the older one keeps loading because its files were
     /// locked at cleanup time.
     /// </summary>
+    /// <summary>The version in this build's own manifest; null when it cannot be read.</summary>
+    internal static Version? ReadRunningVersion()
+    {
+        var asmDir = Path.GetDirectoryName(typeof(UpdateChecker).Assembly.Location);
+        if (string.IsNullOrEmpty(asmDir)) return null;
+        var ownManifest = Path.Combine(asmDir, "extension.vsixmanifest");
+        return File.Exists(ownManifest) ? TryReadVersionFromManifest(ownManifest, extensionId: null) : null;
+    }
+
     private static (Version? running, Version? bestOnDisk) ReadVersions()
     {
         Version? running = null;

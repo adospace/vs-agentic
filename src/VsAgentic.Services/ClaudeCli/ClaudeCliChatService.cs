@@ -40,7 +40,7 @@ namespace VsAgentic.Services.ClaudeCli;
 ///    part of the natural tool execution rather than via a side-channel
 ///    tool_result write.
 /// </summary>
-public sealed class ClaudeCliChatService : IChatService, IDisposable
+public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupInfo, IDisposable
 {
     private readonly VsAgenticOptions _options;
     private readonly IOutputListener _outputListener;
@@ -238,6 +238,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             {
                 _control = NewControlChannel();
                 _capabilities = CliCapabilities.None;
+                _lastInit = null;
                 lock (_reportedMcpProblems) { _reportedMcpProblems.Clear(); }
 
                 // A process that stopped mid-turn never sent the result for
@@ -253,6 +254,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         {
             _logger.LogError(ex, "[ClaudeCli] Failed to start CLI process");
             EmitFatalError(DescribeStartFailure(ex));
+            if (IsCliNotFound(ex)) RaiseCliNotFound();
             yield break;
         }
 
@@ -1550,6 +1552,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
     private void HandleInit(CliInitEvent init)
     {
+        _lastInit = init;
+
         if (init.SlashCommands is not null)
             SetCommandNames(init.SlashCommands, init.TerminalSlashCommands);
 
@@ -2451,10 +2455,19 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (!string.IsNullOrEmpty(workingDirectory) && !Directory.Exists(workingDirectory))
             return $"Failed to start Claude CLI: the working directory '{workingDirectory}' does not exist.";
 
-        if (ex is Win32Exception { NativeErrorCode: ErrorFileNotFound or ErrorPathNotFound })
-            return $"Failed to start Claude CLI: {ex.Message}\n\nMake sure 'claude' is installed and on your PATH.\nInstall with: npm install -g @anthropic-ai/claude-code";
+        if (IsCliNotFound(ex))
+            return $"Failed to start Claude CLI: {ex.Message}\n\nClaude Code is not installed, or Visual Studio does not see it on PATH. " +
+                   "The setup check below can install it or point VsAgentic to it.";
 
         return $"Failed to start Claude CLI: {ex.Message}";
+    }
+
+    /// <summary>The executable is missing, not the working directory.</summary>
+    private bool IsCliNotFound(Exception ex)
+    {
+        var workingDirectory = _options.WorkingDirectory;
+        if (!string.IsNullOrEmpty(workingDirectory) && !Directory.Exists(workingDirectory)) return false;
+        return ex is Win32Exception { NativeErrorCode: ErrorFileNotFound or ErrorPathNotFound };
     }
 
     private static string DescribeExit(CliProcessExitedException exit)

@@ -20,6 +20,19 @@ public class ChatMessageData
     public bool IsStreaming { get; init; }
 
     /// <summary>
+    /// For an assistant-type row that VsAgentic wrote itself, not Claude: the
+    /// heading it gets in place of Claude's bullet (as "YOU" on a prompt).
+    /// Null for Claude's own text.
+    /// </summary>
+    public string? Label { get; init; }
+
+    /// <summary>
+    /// Buttons under a row VsAgentic wrote (the setup check's fixes). Null
+    /// for every other row.
+    /// </summary>
+    public IReadOnlyList<ChatNoticeAction>? Actions { get; init; }
+
+    /// <summary>
     /// The id of the Agent step a subagent's step goes under. Null for the
     /// main conversation.
     /// </summary>
@@ -30,4 +43,15 @@ public class ChatMessageData
     /// prompt block. Null when the message has none.
     /// </summary>
     public List<string>? Images { get; init; }
+}
+
+/// <summary>
+/// A button under a row VsAgentic wrote. A click sends <see cref="Id"/> back;
+/// <see cref="Enabled"/> is false while the action runs.
+/// </summary>
+public sealed class ChatNoticeAction
+{
+    public string Id { get; init; } = "";
+    public string Label { get; init; } = "";
+    public bool Enabled { get; init; } = true;
 }

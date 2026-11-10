@@ -149,9 +149,23 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// Whether the user is looking at this session right now. Maintained by
     /// the host, which is the only thing that can see focus; a turn that ends
     /// while this is true never arms the Completed indicator, because there is
-    /// nobody to call back to a window they are already in.
+    /// nobody to call back to a window they are already in. For the same
+    /// reason neither the status bar nor the caption moves for a question while
+    /// this is true.
     /// </summary>
-    public bool IsSessionFocused { get; set; }
+    public bool IsSessionFocused
+    {
+        get => _isSessionFocused;
+        set
+        {
+            if (_isSessionFocused == value) return;
+            _isSessionFocused = value;
+            // Refreshes the flash, the caption and the timer behind it.
+            UpdateActivityIndicator();
+        }
+    }
+
+    private bool _isSessionFocused;
 
     [ObservableProperty]
     private string _displayTitle = "New Session";
@@ -221,7 +235,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     private bool IsAnimationEnabled(SessionActivity activity) => activity switch
     {
         SessionActivity.Busy => _options.AnimateTitleWhileBusy,
-        SessionActivity.AwaitingUser => _options.AnimateTitleWhileWaiting,
+        SessionActivity.AwaitingUser => IsWaitingAnimated,
         // The marker switch gates both forms, so turning it off stops the timer
         // rather than leaving it running against a prefix nothing will show.
         SessionActivity.Completed => _options.ShowCompletedIndicator && _options.AnimateTitleWhenComplete,
@@ -235,10 +249,17 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// </summary>
     private string StaticPrefix => Activity switch
     {
-        SessionActivity.AwaitingUser when !_options.AnimateTitleWhileWaiting => AwaitingStaticPrefix,
+        SessionActivity.AwaitingUser when !IsWaitingAnimated => AwaitingStaticPrefix,
         SessionActivity.Completed when _options.ShowCompletedIndicator => CompletedStaticPrefix,
         _ => ""
     };
+
+    /// <summary>
+    /// The waiting hand moves only while the user is elsewhere. While they are
+    /// answering in the session, the motion only distracts; the caption keeps
+    /// the static "? " so the tab still reads as waiting.
+    /// </summary>
+    private bool IsWaitingAnimated => _options.AnimateTitleWhileWaiting && !IsSessionFocused;
 
     /// <summary>
     /// Pushes Tools → Options → Appearance changes into an already-open session.
@@ -289,9 +310,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         _ => HasBackgroundTasks
     };
 
-    /// <summary>Whether the status bar should be pulsing. Bound by ChatSessionControl.xaml.</summary>
+    /// <summary>
+    /// Whether the status bar should be pulsing. Bound by ChatSessionControl.xaml.
+    /// The flash calls the user back to the session; while they are typing an
+    /// answer in it, the flash only distracts. It comes back when focus leaves
+    /// with the question still open.
+    /// </summary>
     public bool IsFlashing =>
-        (Activity == SessionActivity.AwaitingUser && _options.FlashStatusBarWhileWaiting)
+        (Activity == SessionActivity.AwaitingUser && _options.FlashStatusBarWhileWaiting && !IsSessionFocused)
         || (Activity == SessionActivity.Completed && _options.FlashStatusBarWhenComplete);
 
     partial void OnBusyStatusChanged(string value)

@@ -1699,6 +1699,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         if (!_activeItems.TryGetValue(item.Id, out var vm)) return;
 
+        vm.Title = item.Title;
         vm.ExpanderTitle = item.Title;
         MessageStatusUpdated?.Invoke(item.Id, vm.Status, item.Title);
 

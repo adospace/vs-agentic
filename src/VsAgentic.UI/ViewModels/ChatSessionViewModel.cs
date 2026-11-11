@@ -1654,7 +1654,10 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     private void OnStepUpdated(OutputItem item)
     {
-        if (SessionLineSteps.Contains(item.ToolName))
+        // A subagent's step adds its model to the header once the subagent
+        // answers; it streams no text of its own.
+        if (SessionLineSteps.Contains(item.ToolName)
+            || item.ToolName == "Agent" && string.IsNullOrEmpty(item.Delta))
         {
             Dispatch(() => RetitleNotice(item));
             return;
@@ -1689,7 +1692,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// <summary>
     /// A notice line says what it is in its title, and the title moves on
     /// while the line is open: the retry count, a compaction that finished.
-    /// The bar under the chat follows it.
+    /// A subagent's step does the same with its model and, at the end, its
+    /// tokens and time. The bar under the chat follows it.
     /// </summary>
     private void RetitleNotice(OutputItem item)
     {
@@ -1711,7 +1715,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         {
             if (_activeItems.TryGetValue(item.Id, out var vm))
             {
-                if (SessionLineSteps.Contains(item.ToolName))
+                if (SessionLineSteps.Contains(item.ToolName) || item.ToolName == "Agent")
                     RetitleNotice(item);
 
                 vm.Status = item.Status;

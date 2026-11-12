@@ -351,6 +351,8 @@ public partial class ChatSessionViewModel
         FastModeStatus = chatService.FastMode;
         IsFastModeOn = chatService.FastModeRequested;
 
+        SubscribeModelCost(chatService);
+
         ClaudeModelCatalog.ReportedChanged += OnReportedModelsChanged;
         // The list may have arrived between building ours and subscribing.
         if (!ReferenceEquals(_modelOptionsSource, ClaudeModelCatalog.Reported))

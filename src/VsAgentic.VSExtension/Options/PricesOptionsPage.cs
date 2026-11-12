@@ -89,7 +89,8 @@ internal sealed class PricesOptionsControl : ScrollViewer
 
         var grid = new Grid { Margin = new Thickness(0, 6, 0, 0) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(70) });
-        foreach (var _ in Columns) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(92) });
+        for (var c = 0; c < Columns.Length; c++)
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(c == Columns.Length - 1 ? 130 : 92) });
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         for (var c = 0; c < Columns.Length; c++)
             Place(grid, new TextBlock { Text = Columns[c], FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 6, 4), TextWrapping = TextWrapping.Wrap }, 0, c + 1);

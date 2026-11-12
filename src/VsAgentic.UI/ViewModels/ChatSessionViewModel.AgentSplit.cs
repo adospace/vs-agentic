@@ -245,10 +245,22 @@ public partial class ChatSessionViewModel
 
         _splitEstimate = estimate;
         // Before the chat's first reply there is no cost yet: it starts at 0.
-        _splitRun = (_usage.TotalTokens, _usage.CostUsd ?? 0m, parts.Count);
+        var usage = CurrentUsage();
+        _splitRun = (usage.TotalTokens, usage.CostUsd ?? 0m, parts.Count);
         _splitClock = System.Diagnostics.Stopwatch.StartNew();
         _splitAgentTokens = 0;
         SendCommand.Execute(null);
+    }
+
+    /// <summary>
+    /// The service's usage now. <see cref="Usage"/> follows it through the
+    /// dispatcher, and the cost arrives with the turn's last event, so at the
+    /// end of a turn <see cref="Usage"/> can still hold the cost from before.
+    /// </summary>
+    private SessionUsage CurrentUsage()
+    {
+        try { return _chatService?.GetUsage() ?? _usage; }
+        catch (Exception) { return _usage; }
     }
 
     /// <summary>A plan's run ended without a summary (stopped, failed).</summary>
@@ -306,8 +318,9 @@ public partial class ChatSessionViewModel
         if (_splitRun is { } run)
         {
             _splitRun = null;
-            var tokens = Math.Max(0, _usage.TotalTokens - run.Tokens);
-            var cost = _usage.CostUsd is decimal after ? after - run.Cost : (decimal?)null;
+            var usage = CurrentUsage();
+            var tokens = Math.Max(0, usage.TotalTokens - run.Tokens);
+            var cost = usage.CostUsd is decimal after ? after - run.Cost : (decimal?)null;
             var agents = _splitAgentTokens;
             _splitAgentTokens = 0;
             var seconds = _splitClock?.Elapsed.TotalSeconds ?? 0;

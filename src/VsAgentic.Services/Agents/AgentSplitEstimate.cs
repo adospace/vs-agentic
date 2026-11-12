@@ -89,7 +89,12 @@ public static class AgentSplitEstimator
     private const double SecondsPerStep = 4;
 
     // The main chat per part: the Agent call it writes and the report it reads.
-    private const long OrchestratorTokensPerPart = 4_000;
+    // Measured 12. 11. on four read-only parts: reports of 5–10k each, and
+    // the main chat read again what it wanted to trust.
+    private const long OrchestratorTokensPerPart = 8_000;
+
+    // A new chat is not empty: Claude Code's system prompt and tools.
+    private const long MainBaseContext = 25_000;
 
     /// <summary>Parts the planner gave no size get a size by role.</summary>
     public static (long Tokens, int Steps) DefaultSize(AgentSplitTask part)
@@ -116,7 +121,7 @@ public static class AgentSplitEstimator
         if (parts.Count == 0) return estimate;
 
         var main = prices.For(input.MainModel);
-        var context = Math.Max(0, input.ContextTokens);
+        var context = Math.Max(MainBaseContext, input.ContextTokens);
 
         // Alone: the main chat does every part, carrying its context each step.
         long work = 0;
@@ -143,10 +148,10 @@ public static class AgentSplitEstimator
             stageSeconds[p.Stage] = Math.Max(stageSeconds.TryGetValue(p.Stage, out var s) ? s : 0, figures.Seconds);
         }
 
-        // The main chat: one step per part to hand it out, one per stage to
-        // read the results, one for the summary.
+        // The main chat: per part a step to hand it out and one to check what
+        // came back, one per stage to read the results, one for the summary.
         var stages = stageSeconds.Count;
-        var orchestrator = Run(main, context, parts.Count * OrchestratorTokensPerPart, parts.Count + stages + 1, startCached: true);
+        var orchestrator = Run(main, context, parts.Count * OrchestratorTokensPerPart, 2 * parts.Count + stages + 1, startCached: true);
         agents.CostUsd += orchestrator.CostUsd;
         agents.Tokens += orchestrator.Tokens;
         agents.Seconds = orchestrator.Seconds + stageSeconds.Values.Sum();
@@ -188,9 +193,12 @@ public static class AgentSplitEstimator
         };
     }
 
+    // Tokens follow the cost correction: the turn's tokens are measured too,
+    // and what makes the cost off (more steps, longer reports) makes them off.
     private static void Scale(SplitFigures f, double cost, double time)
     {
         f.CostUsd *= (decimal)cost;
+        f.Tokens = (long)(f.Tokens * cost);
         f.Seconds *= time;
     }
 

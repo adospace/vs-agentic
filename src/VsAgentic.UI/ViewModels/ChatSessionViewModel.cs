@@ -1233,6 +1233,13 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             return;
         }
 
+        // "/split" asks for a plan; it is not a message for the CLI.
+        if (PendingAttachments.Count == 0 && TryRunSplitCommand(typed))
+        {
+            InputText = "";
+            return;
+        }
+
         InputText = "";
 
         var attachments = PendingAttachments.ToList();
@@ -1389,6 +1396,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             _sendCts = new CancellationTokenSource();
             _stopNoticeShown = false;
             IsBusy = true;
+            BeginSplitTracking(message);
         }
         var token = _sendCts!.Token;
 
@@ -1407,9 +1415,12 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             }
 
             OnExchangeCompleted();
+            if (_sendsInFlight == 1)
+                AfterTurnForSplit();
         }
         catch (OperationCanceledException)
         {
+            _splitRun = null;
             if (queued is { Started: false })
             {
                 ReturnToInput(queued);
@@ -1437,6 +1448,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
+            _splitRun = null;
             if (queued is { Started: false })
                 ReturnToInput(queued);
 
@@ -1718,6 +1730,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             {
                 if (SessionLineSteps.Contains(item.ToolName) || item.ToolName == "Agent")
                     RetitleNotice(item);
+                NoteFinishedStepForSplit(item);
 
                 vm.Status = item.Status;
                 vm.IsStreaming = false;

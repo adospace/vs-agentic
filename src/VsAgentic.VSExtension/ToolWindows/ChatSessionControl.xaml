@@ -483,6 +483,9 @@
         <DataTemplate DataType="{x:Type bvm:QuestionCardViewModel}">
             <bv:QuestionCardControl/>
         </DataTemplate>
+        <DataTemplate DataType="{x:Type bvm:SplitPlanBannerViewModel}">
+            <bv:SplitPlanBannerControl/>
+        </DataTemplate>
 
         <!-- Borderless icon button used inside the input status bar -->
         <Style x:Key="IconButtonStyle" TargetType="Button">
@@ -891,6 +894,19 @@
                                             ToolTip="Attach files to the next message.&#x0a;Images go inline; anything else is sent as a path.">
                                         <imaging:CrispImage Width="16" Height="16"
                                                             Moniker="{x:Static catalog:KnownMonikers.AddAttachment}"/>
+                                    </Button>
+
+                                    <!-- Split the task across agents: the text in the box,
+                                         or the last message when the box is empty. Same as
+                                         sending /split. -->
+                                    <Button x:Name="SplitAcrossAgentsButton"
+                                            Style="{StaticResource IconButtonStyle}"
+                                            Command="{Binding SplitAcrossAgentsCommand}"
+                                            Visibility="{Binding CanSplit, Converter={StaticResource BoolToVis}}"
+                                            ToolTip="Split across agents (/split)&#x0a;Claude plans the parts; you pick a model for each, then run them.&#x0a;Uses the text in the box, or your last message when the box is empty.">
+                                        <TextBlock Text="⚡"
+                                                   FontSize="13"
+                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
                                     </Button>
 
                                     <!-- What Claude may read from the debugger in this

@@ -30,11 +30,23 @@ public sealed class PricesOptionsPage : UIElementDialogPage
     private static VsAgenticOptionsPage? GeneralPage =>
         VsAgenticPackage.Instance?.GetGeneralOptionsPage();
 
+    // Loaded once per opening of the dialog: going to another page and back
+    // must keep what the user typed here.
+    private bool _loaded;
+
     protected override void OnActivate(CancelEventArgs e)
     {
         base.OnActivate(e);
         ThreadHelper.ThrowIfNotOnUIThread();
+        if (_loaded) return;
         ((PricesOptionsControl)Child).Load(GeneralPage);
+        _loaded = true;
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _loaded = false;
+        base.OnClosed(e);
     }
 
     protected override void OnApply(PageApplyEventArgs e)
@@ -131,9 +143,12 @@ internal sealed class PricesOptionsControl : ScrollViewer
         _forget.IsEnabled = calibration.Runs > 0;
         _runs.Text = calibration.Runs == 0
             ? "No plan has run yet."
-            : $"{calibration.Runs} {(calibration.Runs == 1 ? "run" : "runs")}. Measured cost is {calibration.CostFactor:0.##} × the estimate and time {calibration.TimeFactor:0.##} × the estimate (medians)."
+            : string.Format(CultureInfo.InvariantCulture,
+                  "{0} {1}. Measured cost is {2:0.##} × the estimate and time {3:0.##} × the estimate (medians).",
+                  calibration.Runs, calibration.Runs == 1 ? "run" : "runs", calibration.CostFactor, calibration.TimeFactor)
               + (calibration.MeasuredSaving is double s
-                  ? $" Against the estimate for working alone, splitting {(s >= 0 ? $"saved {s * 100:0} %" : $"cost {-s * 100:0} % more")}."
+                  ? string.Format(CultureInfo.InvariantCulture, " Against the estimate for working alone, splitting {0}.",
+                      s >= 0 ? $"saved {Math.Round(s * 100):0} %" : $"cost {Math.Round(-s * 100):0} % more")
                   : "");
     }
 
@@ -188,7 +203,12 @@ internal sealed class PricesOptionsControl : ScrollViewer
         return true;
     }
 
-    private static string Money(decimal value) => value.ToString("0.00##", CultureInfo.InvariantCulture);
+    // Every digit the list holds: a rounded value would be saved on OK.
+    private static string Money(decimal value)
+    {
+        var plain = ModelPriceList.Plain(value);
+        return plain.Contains(".") ? (plain.Length - plain.IndexOf('.') - 1 < 2 ? plain + "0" : plain) : plain + ".00";
+    }
 
     private static void Place(Grid grid, UIElement element, int row, int column)
     {

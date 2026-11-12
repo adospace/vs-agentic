@@ -1421,7 +1421,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         }
         catch (OperationCanceledException)
         {
-            _splitRun = null;
+            ForgetSplitRun();
             if (queued is { Started: false })
             {
                 ReturnToInput(queued);
@@ -1449,7 +1449,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
-            _splitRun = null;
+            ForgetSplitRun();
             if (queued is { Started: false })
                 ReturnToInput(queued);
 

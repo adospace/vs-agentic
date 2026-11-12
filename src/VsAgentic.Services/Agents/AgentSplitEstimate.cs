@@ -26,6 +26,25 @@ public sealed class SplitEstimate
     /// <summary>Earlier runs the figures were corrected by; 0 when none.</summary>
     public int CalibrationRuns { get; set; }
 
+    /// <summary>The corrections applied to the figures above; 1 when none.</summary>
+    public double CostFactor { get; set; } = 1;
+    public double TimeFactor { get; set; } = 1;
+
+    /// <summary>
+    /// What a run of this plan records: the figures before the correction,
+    /// so the next correction is measured against the model itself and not
+    /// against its own earlier correction.
+    /// </summary>
+    public SplitOutcome OutcomeFor(decimal actualCost, double actualSeconds) => new SplitOutcome
+    {
+        EstimatedCost = Agents.CostUsd / (decimal)CostFactor,
+        ActualCost = actualCost,
+        EstimatedAloneCost = Alone.CostUsd / (decimal)CostFactor,
+        EstimatedSeconds = Agents.Seconds / TimeFactor,
+        ActualSeconds = actualSeconds,
+        EstimatedAloneSeconds = Alone.Seconds / TimeFactor,
+    };
+
     /// <summary>The chat's size was not known, so "alone" leaves out re-reading it.</summary>
     public bool ContextUnknown { get; set; }
 }
@@ -139,6 +158,8 @@ public static class AgentSplitEstimator
         if (calibration is { Runs: > 0 })
         {
             estimate.CalibrationRuns = calibration.Runs;
+            estimate.CostFactor = calibration.CostFactor;
+            estimate.TimeFactor = calibration.TimeFactor;
             Scale(estimate.Alone, calibration.CostFactor, calibration.TimeFactor);
             Scale(estimate.Agents, calibration.CostFactor, calibration.TimeFactor);
             foreach (var part in estimate.Parts) Scale(part, calibration.CostFactor, calibration.TimeFactor);
@@ -180,8 +201,8 @@ public static class AgentSplitEstimator
 
     public static string Duration(double seconds)
     {
-        if (seconds < 60) return Math.Max(1, (int)Math.Round(seconds)) + " s";
         var total = (int)Math.Round(seconds);
+        if (total < 60) return Math.Max(1, total) + " s";
         var m = total / 60;
         var s = total % 60;
         return m < 10 && s != 0 ? $"{m} min {s} s" : $"{(int)Math.Round(seconds / 60)} min";
@@ -210,7 +231,7 @@ public static class AgentSplitEstimator
         sb.AppendLine();
 
         string verdict;
-        if (turnCost is decimal paid && paid > 0)
+        if (turnCost is decimal paid && paid > 0 && estimate.Alone.CostUsd > 0)
         {
             var saving = 1 - (double)(paid / estimate.Alone.CostUsd);
             verdict = saving >= 0.05
@@ -220,6 +241,10 @@ public static class AgentSplitEstimator
                     : "About the same as the estimate for working alone.";
             if (turnTokens > estimate.Alone.Tokens && saving > 0)
                 verdict += " More tokens in total, but most of them on cheaper models.";
+        }
+        else if (turnCost is decimal known && known > 0)
+        {
+            verdict = "The price list has no price for the main chat's model, so there is nothing to compare with.";
         }
         else
         {
@@ -232,7 +257,7 @@ public static class AgentSplitEstimator
     }
 
     public static string Tokens(long tokens) =>
-        tokens >= 1_000_000 ? (tokens / 1_000_000.0).ToString("0.0", CultureInfo.InvariantCulture) + "M"
+        tokens >= 999_500 ? (tokens / 1_000_000.0).ToString("0.0", CultureInfo.InvariantCulture) + "M"
         : tokens >= 1000 ? (tokens / 1000.0).ToString("0", CultureInfo.InvariantCulture) + "k"
         : tokens.ToString(CultureInfo.InvariantCulture);
 }
@@ -249,12 +274,12 @@ public sealed class SplitOutcome
 
     internal string Serialize() => string.Join("/", new[]
     {
-        EstimatedCost.ToString("0.####", CultureInfo.InvariantCulture),
-        ActualCost.ToString("0.####", CultureInfo.InvariantCulture),
-        EstimatedAloneCost.ToString("0.####", CultureInfo.InvariantCulture),
-        EstimatedSeconds.ToString("0", CultureInfo.InvariantCulture),
-        ActualSeconds.ToString("0", CultureInfo.InvariantCulture),
-        EstimatedAloneSeconds.ToString("0", CultureInfo.InvariantCulture),
+        EstimatedCost.ToString("0.########", CultureInfo.InvariantCulture),
+        ActualCost.ToString("0.########", CultureInfo.InvariantCulture),
+        EstimatedAloneCost.ToString("0.########", CultureInfo.InvariantCulture),
+        EstimatedSeconds.ToString("0.###", CultureInfo.InvariantCulture),
+        ActualSeconds.ToString("0.###", CultureInfo.InvariantCulture),
+        EstimatedAloneSeconds.ToString("0.###", CultureInfo.InvariantCulture),
     });
 
     internal static SplitOutcome? Parse(string text)
@@ -300,9 +325,22 @@ public sealed class SplitCalibration
     /// What splitting saved against working alone, as a share of the alone
     /// estimate (0.3 = 30 % cheaper); negative when it cost more. Null before
     /// the second run: one run says little.
+    ///
+    /// "Alone" is never measured, so each run's measured cost is set against
+    /// its raw alone estimate with today's correction. The correction is the
+    /// median of all runs, so a run that came out cheaper than the others
+    /// shows a larger saving, and a dearer one a smaller one: the spread is
+    /// measured, while the level still rests on the estimate.
     /// </summary>
-    public double? MeasuredSaving =>
-        Runs < 2 ? null : Median(_outcomes.Select(o => 1 - (double)(o.ActualCost / o.EstimatedAloneCost)));
+    public double? MeasuredSaving
+    {
+        get
+        {
+            if (Runs < 2) return null;
+            var factor = CostFactor;
+            return Median(_outcomes.Select(o => 1 - (double)o.ActualCost / ((double)o.EstimatedAloneCost * factor)));
+        }
+    }
 
     public SplitCalibration With(SplitOutcome outcome) => new SplitCalibration(_outcomes.Concat(new[] { outcome }));
 

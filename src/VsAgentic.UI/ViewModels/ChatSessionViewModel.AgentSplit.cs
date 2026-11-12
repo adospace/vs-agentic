@@ -47,7 +47,7 @@ public partial class ChatSessionViewModel
     private CancellationTokenSource? _planCts;
 
     // Set while a plan runs: the usage before it, for the summary after it.
-    private (long Tokens, decimal? Cost, int Parts)? _splitRun;
+    private (long Tokens, decimal Cost, int Parts)? _splitRun;
     private SplitEstimate? _splitEstimate;
     private System.Diagnostics.Stopwatch? _splitClock;
 
@@ -123,8 +123,9 @@ public partial class ChatSessionViewModel
             return;
         }
 
-        var card = new SplitPlanBannerViewModel(task!, SelectedModel?.DisplayName ?? "main model",
-            onRun: parts => RunSplitPlan(task!, parts),
+        SplitPlanBannerViewModel? card = null;
+        card = new SplitPlanBannerViewModel(task!, SelectedModel?.DisplayName ?? "main model",
+            onRun: parts => RunSplitPlan(task!, parts, card?.CurrentEstimate),
             onAlone: () =>
             {
                 CloseSplitPlan();
@@ -225,19 +226,38 @@ public partial class ChatSessionViewModel
         return AgentSplitEstimator.Estimate(parts, input, settings.Prices, settings.Calibration);
     }
 
-    private void RunSplitPlan(string task, IReadOnlyList<AgentSplitTask> parts)
+    /// <param name="estimate">The card's estimate for the models the user ran it with.</param>
+    private void RunSplitPlan(string task, IReadOnlyList<AgentSplitTask> parts, SplitEstimate? estimate)
     {
-        // The estimate for the models the user ran it with, before the card goes.
-        _splitEstimate = (ActiveBanner as SplitPlanBannerViewModel)?.CurrentEstimate;
+        // Queued behind a running reply, the plan's cost and time would take in
+        // the rest of that reply. The card stays, so the user can run it after.
+        if (IsBusy)
+        {
+            AddNotice("_Wait for the current reply to finish, then press Run with agents._", "split");
+            return;
+        }
+
         CloseSplitPlan();
         if (parts.Count == 0) return;
 
-        _splitRun = (_usage.TotalTokens, _usage.CostUsd, parts.Count);
+        InputText = AgentSplitText.RunMessage(task, parts);
+        if (!SendCommand.CanExecute(null)) return;
+
+        _splitEstimate = estimate;
+        // Before the chat's first reply there is no cost yet: it starts at 0.
+        _splitRun = (_usage.TotalTokens, _usage.CostUsd ?? 0m, parts.Count);
         _splitClock = System.Diagnostics.Stopwatch.StartNew();
         _splitAgentTokens = 0;
-        InputText = AgentSplitText.RunMessage(task, parts);
-        if (SendCommand.CanExecute(null))
-            SendCommand.Execute(null);
+        SendCommand.Execute(null);
+    }
+
+    /// <summary>A plan's run ended without a summary (stopped, failed).</summary>
+    private void ForgetSplitRun()
+    {
+        _splitRun = null;
+        _splitEstimate = null;
+        _splitClock = null;
+        _splitAgentTokens = 0;
     }
 
     // ── Signals, counted from the steps of the main conversation ─────────
@@ -287,7 +307,7 @@ public partial class ChatSessionViewModel
         {
             _splitRun = null;
             var tokens = Math.Max(0, _usage.TotalTokens - run.Tokens);
-            var cost = run.Cost is decimal before && _usage.CostUsd is decimal after ? after - before : (decimal?)null;
+            var cost = _usage.CostUsd is decimal after ? after - run.Cost : (decimal?)null;
             var agents = _splitAgentTokens;
             _splitAgentTokens = 0;
             var seconds = _splitClock?.Elapsed.TotalSeconds ?? 0;
@@ -301,18 +321,7 @@ public partial class ChatSessionViewModel
                 // The measured run corrects the next estimate and the suggestion.
                 if (cost is decimal paid && paid > 0 && seconds > 0 && estimate.Agents.CostUsd > 0 && estimate.Alone.CostUsd > 0)
                 {
-                    try
-                    {
-                        SplitSettings?.RecordOutcome(new SplitOutcome
-                        {
-                            EstimatedCost = estimate.Agents.CostUsd,
-                            ActualCost = paid,
-                            EstimatedAloneCost = estimate.Alone.CostUsd,
-                            EstimatedSeconds = estimate.Agents.Seconds,
-                            ActualSeconds = seconds,
-                            EstimatedAloneSeconds = estimate.Alone.Seconds,
-                        });
-                    }
+                    try { SplitSettings?.RecordOutcome(estimate.OutcomeFor(paid, seconds)); }
                     catch (Exception ex) { _logger?.LogWarning(ex, "[VM] Could not record the split run"); }
                 }
                 return;

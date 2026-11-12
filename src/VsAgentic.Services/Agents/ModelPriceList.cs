@@ -45,7 +45,9 @@ public sealed class ModelPriceList
     /// <summary>Where the default prices come from.</summary>
     public const string DefaultSource = "Anthropic API list prices, 12. 11. 2026 (Haiku up to 100K input tokens). Speeds are rough.";
 
-    // Cache writes are 1.25 × input (5-minute cache).
+    // Cache writes are 1.25 × input (5-minute cache). Cache reads differ by
+    // model: 0.1 × input for Haiku and Sonnet, but Opus 5.5 ($0.20, 0.05 ×)
+    // and Fable 5.1 ($0.25) have a deeper discount.
     public static readonly ModelPriceList Defaults = new ModelPriceList(new[]
     {
         new ModelPrice("haiku", 0.10m, 0.50m, 0.01m, 0.125m, 180),
@@ -87,12 +89,18 @@ public sealed class ModelPriceList
     public string Serialize() =>
         string.Join(";", All.Select(p => string.Join("/", new[]
         {
-            p.Input.ToString(CultureInfo.InvariantCulture),
-            p.Output.ToString(CultureInfo.InvariantCulture),
-            p.CacheRead.ToString(CultureInfo.InvariantCulture),
-            p.CacheWrite.ToString(CultureInfo.InvariantCulture),
+            Plain(p.Input),
+            Plain(p.Output),
+            Plain(p.CacheRead),
+            Plain(p.CacheWrite),
             p.OutputTokensPerSecond.ToString(CultureInfo.InvariantCulture),
         }).Insert(0, p.Family + "=")));
+
+    /// <summary>
+    /// A price without trailing zeros: decimal keeps the scale it was parsed
+    /// with, so 2.00 and 2 would otherwise be written differently.
+    /// </summary>
+    public static string Plain(decimal value) => value.ToString("0.############", CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Reads a stored list. A family that is missing or does not parse keeps

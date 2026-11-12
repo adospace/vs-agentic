@@ -32,11 +32,23 @@ public sealed class AgentsOptionsPage : UIElementDialogPage
     private static VsAgenticOptionsPage? GeneralPage =>
         VsAgenticPackage.Instance?.GetGeneralOptionsPage();
 
+    // Loaded once per opening of the dialog: going to another page and back
+    // must keep what the user changed here.
+    private bool _loaded;
+
     protected override void OnActivate(CancelEventArgs e)
     {
         base.OnActivate(e);
         ThreadHelper.ThrowIfNotOnUIThread();
+        if (_loaded) return;
         ((AgentsOptionsControl)Child).Load(GeneralPage, VsAgenticPackage.Instance?.GetOpenSolutionDirectory());
+        _loaded = true;
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _loaded = false;
+        base.OnClosed(e);
     }
 
     protected override void OnApply(PageApplyEventArgs e)
@@ -87,6 +99,7 @@ internal sealed class AgentsOptionsControl : ScrollViewer
 
     private readonly List<RoleRow> _rows = new List<RoleRow>();
     private List<string> _offFolders = new List<string>();
+    private List<string> _loadedOffFolders = new List<string>();
     private string? _projectFolder;
 
     public AgentsOptionsControl()
@@ -138,6 +151,7 @@ internal sealed class AgentsOptionsControl : ScrollViewer
         _suggest.IsChecked = general?.SuggestAgentSplit ?? true;
         _suggest.IsEnabled = general is not null;
         _offFolders = SplitFolders(general?.SplitSuggestionsOffProjects);
+        _loadedOffFolders = new List<string>(_offFolders);
         RefreshOffProjects();
 
         _openProject.IsEnabled = AgentRoleCatalog.ProjectAgentsFolder(projectFolder) is not null;
@@ -151,7 +165,16 @@ internal sealed class AgentsOptionsControl : ScrollViewer
         if (general is not null)
         {
             general.SuggestAgentSplit = _suggest.IsChecked == true;
-            general.SplitSuggestionsOffProjects = string.Join(";", _offFolders);
+            // Only the projects the user turned back on here are removed: a chat
+            // may have added one ("Never for this project") while the page was open.
+            var turnedOn = _loadedOffFolders
+                .Where(f => !_offFolders.Contains(f, StringComparer.OrdinalIgnoreCase))
+                .ToList();
+            general.SplitSuggestionsOffProjects = string.Join(";",
+                SplitFolders(general.SplitSuggestionsOffProjects)
+                    .Where(f => !turnedOn.Contains(f, StringComparer.OrdinalIgnoreCase)));
+            _loadedOffFolders = SplitFolders(general.SplitSuggestionsOffProjects);
+            _offFolders = new List<string>(_loadedOffFolders);
             general.SaveSettingsToStorage();
         }
 

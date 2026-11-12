@@ -239,15 +239,23 @@ public static class AgentSplitEstimator
         sb.AppendLine();
 
         string verdict;
-        if (turnCost is decimal paid && paid > 0 && estimate.Alone.CostUsd > 0)
+        if (turnCost is decimal paid && paid > 0 && estimate.Alone.CostUsd > 0 && estimate.Agents.CostUsd > 0)
         {
-            var saving = 1 - (double)(paid / estimate.Alone.CostUsd);
+            // The run shows how far off the estimate was; "alone" comes from
+            // the same model, so it gets the same correction before the two
+            // are compared. Otherwise a low estimate reads as a dear split.
+            var ratio = (double)(paid / estimate.Agents.CostUsd);
+            var alone = estimate.Alone.CostUsd * (decimal)ratio;
+            var saving = 1 - (double)(paid / alone);
+            var off = ratio >= 1.1 || ratio <= 0.9
+                ? string.Format(CultureInfo.InvariantCulture, "The run cost {0:0.0} × the estimate. Corrected the same way, working alone would have cost about {1}", ratio, Money(alone))
+                : $"The run cost about what was estimated. Working alone was estimated at {Money(alone)}";
             verdict = saving >= 0.05
-                ? $"About {Math.Round(saving * 100):0} % cheaper than the estimate for working alone."
+                ? $"{off}, so the split was about {Math.Round(saving * 100):0} % cheaper."
                 : saving <= -0.05
-                    ? $"About {Math.Round(-saving * 100):0} % more than the estimate for working alone."
-                    : "About the same as the estimate for working alone.";
-            if (turnTokens > estimate.Alone.Tokens && saving > 0)
+                    ? $"{off}, so the split cost about {Math.Round(-saving * 100):0} % more."
+                    : $"{off}, about the same as the split.";
+            if (turnTokens > estimate.Alone.Tokens * ratio && saving > 0)
                 verdict += " More tokens in total, but most of them on cheaper models.";
         }
         else if (turnCost is decimal known && known > 0)

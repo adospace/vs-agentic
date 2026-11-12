@@ -59,8 +59,9 @@ public interface IAgentSplitPlanner
 }
 
 /// <summary>
-/// Where the user's choices about split suggestions live: on or off for
-/// everything, and off for single projects ("Never for this project").
+/// Where the user's choices about splitting live: suggestions on or off for
+/// everything and off for single projects ("Never for this project"), the
+/// price list the estimate uses, and the earlier runs that correct it.
 /// </summary>
 public interface IAgentSplitSettings
 {

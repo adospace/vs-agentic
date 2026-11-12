@@ -1233,6 +1233,13 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             return;
         }
 
+        // "/split" asks for a plan; it is not a message for the CLI.
+        if (PendingAttachments.Count == 0 && TryRunSplitCommand(typed))
+        {
+            InputText = "";
+            return;
+        }
+
         InputText = "";
 
         var attachments = PendingAttachments.ToList();
@@ -1389,6 +1396,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             _sendCts = new CancellationTokenSource();
             _stopNoticeShown = false;
             IsBusy = true;
+            BeginSplitTracking(message);
         }
         var token = _sendCts!.Token;
 
@@ -1407,9 +1415,12 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             }
 
             OnExchangeCompleted();
+            if (_sendsInFlight == 1)
+                AfterTurnForSplit();
         }
         catch (OperationCanceledException)
         {
+            _splitRun = null;
             if (queued is { Started: false })
             {
                 ReturnToInput(queued);
@@ -1437,6 +1448,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
+            _splitRun = null;
             if (queued is { Started: false })
                 ReturnToInput(queued);
 
@@ -1654,7 +1666,10 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
 
     private void OnStepUpdated(OutputItem item)
     {
-        if (SessionLineSteps.Contains(item.ToolName))
+        // A subagent's step adds its model to the header once the subagent
+        // answers; it streams no text of its own.
+        if (SessionLineSteps.Contains(item.ToolName)
+            || item.ToolName == "Agent" && string.IsNullOrEmpty(item.Delta))
         {
             Dispatch(() => RetitleNotice(item));
             return;
@@ -1689,12 +1704,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// <summary>
     /// A notice line says what it is in its title, and the title moves on
     /// while the line is open: the retry count, a compaction that finished.
-    /// The bar under the chat follows it.
+    /// A subagent's step does the same with its model and, at the end, its
+    /// tokens and time. The bar under the chat follows it.
     /// </summary>
     private void RetitleNotice(OutputItem item)
     {
         if (!_activeItems.TryGetValue(item.Id, out var vm)) return;
 
+        vm.Title = item.Title;
         vm.ExpanderTitle = item.Title;
         MessageStatusUpdated?.Invoke(item.Id, vm.Status, item.Title);
 
@@ -1711,8 +1728,9 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         {
             if (_activeItems.TryGetValue(item.Id, out var vm))
             {
-                if (SessionLineSteps.Contains(item.ToolName))
+                if (SessionLineSteps.Contains(item.ToolName) || item.ToolName == "Agent")
                     RetitleNotice(item);
+                NoteFinishedStepForSplit(item);
 
                 vm.Status = item.Status;
                 vm.IsStreaming = false;

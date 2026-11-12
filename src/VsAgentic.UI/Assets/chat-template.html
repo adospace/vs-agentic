@@ -1679,6 +1679,21 @@ function updateStatus(id, status, expanderTitle) {
     if (expanderTitle) {
         var et = el.querySelector('.msg-expander-title');
         if (et) et.textContent = expanderTitle;
+        // An Agent step names its subagent in the header as well, and that
+        // header is what stays once the step is done. The title grows while
+        // the subagent runs: its model, then its tokens and time.
+        // The folded row names it by the same title, in the summary it shows
+        // once the turn is over.
+        if (el.dataset.tool === 'Agent') {
+            var name = el.querySelector(':scope > .toolstep-header .toolstep-name');
+            if (name) {
+                var before = name.textContent.replace(/^\[Agent\] /, '');
+                name.textContent = '[Agent] ' + expanderTitle;
+                var row = el.closest('.activity');
+                var at = row && row._tools ? row._tools.indexOf(before) : -1;
+                if (at >= 0) row._tools[at] = expanderTitle;
+            }
+        }
     }
     if (status !== 'Pending') removeMoveToBackground(id);
 

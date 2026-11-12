@@ -85,7 +85,7 @@ internal sealed class PricesOptionsControl : ScrollViewer
 
         var panel = new StackPanel { Margin = new Thickness(4) };
         panel.Children.Add(Heading("Model prices"));
-        panel.Children.Add(Note("US dollars per million tokens. The plan card for splitting a task across agents uses them to compare working alone with working with agents. Cache write is the 5-minute cache. The speed is only for the time estimate. Nothing is sent anywhere, and Claude Code bills by its own prices: change a value here when Anthropic changes a price."));
+        panel.Children.Add(Note("US dollars per million tokens. The plan card for splitting a task across agents uses them to compare working alone with working with agents. Cache write is the 1-hour cache, which Claude Code uses (2 × input). The speed is only for the time estimate. Nothing is sent anywhere, and Claude Code bills by its own prices: change a value here when Anthropic changes a price."));
 
         var grid = new Grid { Margin = new Thickness(0, 6, 0, 0) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(70) });

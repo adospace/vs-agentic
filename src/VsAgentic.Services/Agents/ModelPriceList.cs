@@ -27,7 +27,7 @@ public sealed class ModelPrice
     public decimal Output { get; }
     public decimal CacheRead { get; }
 
-    /// <summary>A write to the 5-minute cache.</summary>
+    /// <summary>A write to the 1-hour cache, which Claude Code uses.</summary>
     public decimal CacheWrite { get; }
 
     public int OutputTokensPerSecond { get; }
@@ -43,17 +43,19 @@ public sealed class ModelPriceList
     public static readonly IReadOnlyList<string> Families = new[] { "haiku", "sonnet", "opus", "fable" };
 
     /// <summary>Where the default prices come from.</summary>
-    public const string DefaultSource = "Anthropic API list prices, 12. 11. 2026 (Haiku up to 100K input tokens). Speeds are rough.";
+    public const string DefaultSource = "Measured from Claude Code 2.1.319 costs, 12. 11. 2026: Haiku 5.5 (up to 100K input tokens), Sonnet 5.5, Opus 5.5, Fable 5.1. Speeds are rough.";
 
-    // Cache writes are 1.25 × input (5-minute cache). Cache reads differ by
-    // model: 0.1 × input for Haiku and Sonnet, but Opus 5.5 ($0.20, 0.05 ×)
-    // and Fable 5.1 ($0.25) have a deeper discount.
+    // Measured from the cost Claude Code reports per model (modelUsage):
+    // a turn that only reads the cache gives the read price, a turn that
+    // writes it the write price. Claude Code writes to the 1-hour cache,
+    // 2 × input. Reads are 0.05 × input for Sonnet and Opus, 0.1 × for
+    // Haiku, 0.025 × for Fable.
     public static readonly ModelPriceList Defaults = new ModelPriceList(new[]
     {
-        new ModelPrice("haiku", 0.10m, 0.50m, 0.01m, 0.125m, 180),
-        new ModelPrice("sonnet", 2m, 10m, 0.20m, 2.5m, 90),
-        new ModelPrice("opus", 4m, 20m, 0.20m, 5m, 60),
-        new ModelPrice("fable", 10m, 50m, 0.25m, 12.5m, 45),
+        new ModelPrice("haiku", 0.10m, 0.50m, 0.01m, 0.20m, 180),
+        new ModelPrice("sonnet", 2m, 10m, 0.10m, 4m, 90),
+        new ModelPrice("opus", 4m, 20m, 0.20m, 8m, 60),
+        new ModelPrice("fable", 10m, 50m, 0.25m, 20m, 45),
     }, DefaultSource);
 
     private readonly Dictionary<string, ModelPrice> _byFamily;

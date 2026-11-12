@@ -81,6 +81,18 @@ internal sealed class PricesOptionsControl : ScrollViewer
     private readonly TextBlock _charged = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 4) };
     private readonly Button _useCharged = new Button { Content = "Use Claude Code's prices", Padding = new Thickness(8, 2, 8, 2), HorizontalAlignment = HorizontalAlignment.Left };
     private List<PriceMismatch> _mismatches = new List<PriceMismatch>();
+    private readonly Button _askAgain = new Button { Content = "Ask again in the chat", Padding = new Thickness(8, 2, 8, 2), Margin = new Thickness(8, 0, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
+    private readonly TextBlock _resetNote = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) };
+    private bool _forgetKept;
+
+    // "Keep my prices" is undone on OK, like every other change on the page.
+    private void ForgetKept(string? note)
+    {
+        if (!_askAgain.IsEnabled) return;
+        _forgetKept = true;
+        _askAgain.IsEnabled = false;
+        if (note is not null) _charged.Text += "\n" + note;
+    }
 
     public PricesOptionsControl()
     {
@@ -120,15 +132,28 @@ internal sealed class PricesOptionsControl : ScrollViewer
         panel.Children.Add(Note("After each reply, Claude Code reports what each model cost. VsAgentic compares that with this list. Fast mode, web searches and Haiku prompts above 100K tokens (which cost more) are left out."));
         panel.Children.Add(_charged);
         _useCharged.Click += (_, _) => UseCharged();
-        panel.Children.Add(_useCharged);
+        _askAgain.Click += (_, _) => ForgetKept("The chat asks again after the next reply, once you press OK.");
+        var chargedButtons = new StackPanel { Orientation = Orientation.Horizontal };
+        chargedButtons.Children.Add(_useCharged);
+        chargedButtons.Children.Add(_askAgain);
+        panel.Children.Add(chargedButtons);
 
         panel.Children.Add(Heading("Source"));
         panel.Children.Add(Note("Where the prices come from and when you checked them. Shown nowhere else; for you."));
         panel.Children.Add(_source);
 
         var reset = new Button { Content = "Reset to built-in prices", Padding = new Thickness(8, 2, 8, 2), Margin = new Thickness(0, 8, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
-        reset.Click += (_, _) => Show(ModelPriceList.Defaults);
+        // The cells change in place, which is easy to miss when they held the
+        // built-in prices already; the line under the button says what happened.
+        reset.Click += (_, _) =>
+        {
+            Show(ModelPriceList.Defaults);
+            _resetNote.Text = "Built-in prices filled in. Press OK to save them.";
+            // Starting over includes the differences kept with "Keep my prices".
+            ForgetKept(null);
+        };
         panel.Children.Add(reset);
+        panel.Children.Add(_resetNote);
 
         panel.Children.Add(Heading("Earlier runs"));
         panel.Children.Add(Note("After a plan runs, its measured cost and time correct the next estimate, and they decide how easily the chat suggests splitting a task. The last " + SplitCalibration.Keep + " runs count."));
@@ -147,6 +172,8 @@ internal sealed class PricesOptionsControl : ScrollViewer
     public void Load(VsAgenticOptionsPage? general)
     {
         _forgetRuns = false;
+        _forgetKept = false;
+        _resetNote.Text = "";
         IsEnabled = general is not null;
         var prices = ModelPriceList.Parse(general?.ModelPrices, general?.ModelPricesSource);
         Show(prices);
@@ -189,6 +216,8 @@ internal sealed class PricesOptionsControl : ScrollViewer
         // Only prices the replies gave one by one are offered; the others
         // are shown with their ratio until more replies arrive.
         _useCharged.IsEnabled = _mismatches.Any(m => m.EachPriceMeasured);
+        _askAgain.IsEnabled = kept.Count > 0;
+        _askAgain.Visibility = kept.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
 
         if (_mismatches.Count == 0)
         {
@@ -248,6 +277,7 @@ internal sealed class PricesOptionsControl : ScrollViewer
         }
 
         AgentSplitSettings.Store(general, new ModelPriceList(prices, _source.Text.Trim()));
+        if (_forgetKept) general.ModelPricesKept = "";
         if (_forgetRuns) general.SplitRuns = "";
         general.SaveSettingsToStorage();
         return true;

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -18,7 +19,8 @@ namespace VsAgentic.UI.ViewModels;
 // The main conversation stays the orchestrator; the parts go to subagents on
 // cheaper models. The ⚡ button and /split ask for a plan, the plan card lets
 // the user change a model per part, and "Run with agents" sends the plan to
-// the main conversation as an ordinary message.
+// the main conversation as an ordinary message. After a turn whose steps show
+// a clear saving, a strip above the message box suggests it.
 public partial class ChatSessionViewModel
 {
     /// <summary>Makes split plans. Set by the host; null hides the feature.</summary>
@@ -29,14 +31,44 @@ public partial class ChatSessionViewModel
     }
     private IAgentSplitPlanner? _splitPlanner;
 
+    /// <summary>Suggestions on or off, per project. Set by the host.</summary>
+    public IAgentSplitSettings? SplitSettings { get; set; }
+
     public bool CanSplit => _splitPlanner is not null;
+
+    /// <summary>The strip above the message box; null when hidden.</summary>
+    [ObservableProperty]
+    private SplitHintViewModel? _splitHint;
 
     // The last message the user sent: what a plan is made for.
     private string? _lastTask;
+    private readonly AgentSplitText.TurnSignals _turnSignals = new AgentSplitText.TurnSignals();
+    private bool _hintShownThisSession;
     private CancellationTokenSource? _planCts;
 
     // Set while a plan runs: the usage before it, for the summary after it.
     private (long Tokens, decimal? Cost, int Parts)? _splitRun;
+
+    /// <summary>
+    /// The solution's name when the folder holds one solution file, which is
+    /// what the user knows the project by ("VsAgentic", not "src");
+    /// otherwise the folder's name.
+    /// </summary>
+    private string ProjectName
+    {
+        get
+        {
+            var folder = (WorkingDirectory ?? "").TrimEnd('\\', '/');
+            try
+            {
+                var solutions = Directory.GetFiles(folder, "*.slnx").Concat(Directory.GetFiles(folder, "*.sln"))
+                    .Select(Path.GetFileNameWithoutExtension).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                if (solutions.Count == 1) return solutions[0]!;
+            }
+            catch (Exception) { /* no access: the folder name will do */ }
+            return Path.GetFileName(folder) is { Length: > 0 } n ? n : "this project";
+        }
+    }
 
     private static readonly Regex SplitCommandRe = new Regex(
         @"^/split(?:\s+([\s\S]+))?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -74,6 +106,7 @@ public partial class ChatSessionViewModel
     {
         var typedTask = fromInput || !string.IsNullOrWhiteSpace(task);
         task = string.IsNullOrWhiteSpace(task) ? _lastTask : task;
+        SplitHint = null;
 
         if (_splitPlanner is null) return;
         if (!IsTask(task))
@@ -184,7 +217,7 @@ public partial class ChatSessionViewModel
             SendCommand.Execute(null);
     }
 
-    // ── The task, and the summary after a plan ran ───────────────────────
+    // ── Signals, counted from the steps of the main conversation ─────────
 
     /// <summary>
     /// A message that asks for work, not "hi", "ok" or "thanks": the only
@@ -198,6 +231,7 @@ public partial class ChatSessionViewModel
     {
         // The plan's own message is not a new task, and neither is a greeting.
         if (_splitRun is null && IsTask(message)) _lastTask = message;
+        _turnSignals.SearchSteps = _turnSignals.EditSteps = _turnSignals.AgentSteps = _turnSignals.TotalSteps = 0;
     }
 
     // Tokens of the subagents of a running plan, read from the totals their
@@ -213,7 +247,17 @@ public partial class ChatSessionViewModel
         _splitAgentTokens += (long)(m.Groups[2].Value == "k" ? n * 1000 : n);
     }
 
-    /// <summary>After a turn: the summary of a plan that ran.</summary>
+    private void NoteStepForSplit(OutputItem item)
+    {
+        if (item.ParentId is not null) return;
+        if (item.ToolName is "AI" or "Thinking" || SessionLineSteps.Contains(item.ToolName)) return;
+        _turnSignals.TotalSteps++;
+        if (item.ToolName == "Agent") _turnSignals.AgentSteps++;
+        else if (AgentSplitText.IsSearchTool(item.ToolName)) _turnSignals.SearchSteps++;
+        else if (AgentSplitText.IsEditTool(item.ToolName)) _turnSignals.EditSteps++;
+    }
+
+    /// <summary>After a turn: the summary of a plan that ran, or a suggestion.</summary>
     private void AfterTurnForSplit()
     {
         if (_splitRun is { } run)
@@ -231,6 +275,30 @@ public partial class ChatSessionViewModel
             AddNotice(line, "split-done");
             return;
         }
+
+        if (_hintShownThisSession || SplitHint is not null || ActiveBanner is not null || _splitPlanner is null) return;
+        if (SplitSettings is { } settings && (!settings.SuggestionsEnabled || settings.IsOffFor(WorkingDirectory))) return;
+
+        var reason = AgentSplitText.SuggestionReason(_lastTask ?? "", _turnSignals, SelectedModel?.Alias ?? SelectedModel?.DisplayName);
+        if (reason is null) return;
+
+        _hintShownThisSession = true;
+        SplitHint = SplitHintViewModel.Suggest(reason,
+            showPlan: () => StartSplitPlan(null),
+            dismiss: () => SplitHint = null,
+            never: TurnOffSuggestions);
+    }
+
+    private void TurnOffSuggestions()
+    {
+        SplitSettings?.TurnOffFor(WorkingDirectory);
+        SplitHint = SplitHintViewModel.TurnedOff(ProjectName,
+            dismiss: () => SplitHint = null,
+            undo: () =>
+            {
+                SplitSettings?.TurnOnFor(WorkingDirectory);
+                SplitHint = null;
+            });
     }
 
     private static string FormatSplitTokens(long tokens) =>

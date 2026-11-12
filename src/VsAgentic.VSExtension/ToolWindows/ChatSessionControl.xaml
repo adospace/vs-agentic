@@ -1453,6 +1453,83 @@
             </Grid>
         </Border>
 
+        <!-- Suggests splitting the last task across agents, or, after "Never
+             for this project", says how to get the suggestions back. -->
+        <Border DockPanel.Dock="Bottom"
+                LayoutTransform="{StaticResource ChromeZoom}"
+                Margin="6,4,6,0"
+                Padding="8,4,4,4"
+                CornerRadius="4"
+                BorderThickness="1"
+                DataContext="{Binding SplitHint}"
+                BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBorderKey}}"
+                Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}">
+<Border.Resources>
+                        <Style x:Key="HintLinkStyle" TargetType="Button">
+                            <Setter Property="Focusable" Value="False"/>
+                            <Setter Property="Cursor" Value="Hand"/>
+                            <Setter Property="FontSize" Value="12"/>
+                            <Setter Property="Margin" Value="0,0,14,0"/>
+                            <Setter Property="Foreground" Value="{DynamicResource {x:Static vs:VsBrushes.ControlLinkTextKey}}"/>
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="Button">
+                                        <TextBlock x:Name="Label" Text="{TemplateBinding Content}"
+                                                   TextDecorations="Underline" Background="Transparent"
+                                                   Foreground="{TemplateBinding Foreground}"/>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Label" Property="Foreground"
+                                                        Value="{DynamicResource {x:Static vs:VsBrushes.ControlLinkTextHoverKey}}"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </Border.Resources>
+                        <Border.Style>
+                <Style TargetType="Border">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding}" Value="{x:Null}">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Left" Text="⚡" Margin="0,0,8,0" VerticalAlignment="Top" FontSize="13"
+                           Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                <Button DockPanel.Dock="Right"
+                        Style="{StaticResource IconButtonStyle}"
+                        VerticalAlignment="Top"
+                        Command="{Binding DismissCommand}"
+                        ToolTip="Not now">
+                    <imaging:CrispImage Width="12" Height="12" Moniker="{x:Static catalog:KnownMonikers.Close}"/>
+                </Button>
+                <StackPanel>
+                    <TextBlock Text="{Binding Text}" FontSize="12" TextWrapping="Wrap"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                    <TextBlock Text="{Binding Detail}" FontSize="11" TextWrapping="Wrap" Margin="0,1,0,2"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                    <!-- Buttons drawn as links, not Hyperlinks: they take no
+                         focus, so the message box keeps it. A Hyperlink is a
+                         content element, and focus moving onto one crashed the
+                         box's focus handler. -->
+                    <StackPanel Orientation="Horizontal"
+                                Visibility="{Binding IsSuggestion, Converter={StaticResource BoolToVis}}">
+                        <Button Style="{StaticResource HintLinkStyle}" Content="Show plan" Command="{Binding ShowPlanCommand}"/>
+                        <Button Style="{StaticResource HintLinkStyle}" Content="Not now" Command="{Binding DismissCommand}"/>
+                        <Button Style="{StaticResource HintLinkStyle}" Content="Never for this project" Command="{Binding NeverCommand}"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal"
+                                Visibility="{Binding IsConfirmation, Converter={StaticResource BoolToVis}}">
+                        <Button Style="{StaticResource HintLinkStyle}" Content="Undo" Command="{Binding UndoCommand}"/>
+                    </StackPanel>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
         <!-- Messages sent while Claude works. They wait in the CLI until the
              running turn reaches its next step and reads them; then they move
              into the chat. The cross takes one back into the input box. -->

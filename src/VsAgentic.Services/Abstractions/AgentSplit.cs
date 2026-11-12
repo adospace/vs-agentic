@@ -51,3 +51,15 @@ public interface IAgentSplitPlanner
     /// </param>
     Task<AgentSplitPlan> PlanAsync(string task, string? model, bool withChatHistory, CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// Where the user's choices about split suggestions live: on or off for
+/// everything, and off for single projects ("Never for this project").
+/// </summary>
+public interface IAgentSplitSettings
+{
+    bool SuggestionsEnabled { get; }
+    bool IsOffFor(string projectFolder);
+    void TurnOffFor(string projectFolder);
+    void TurnOnFor(string projectFolder);
+}

@@ -1396,6 +1396,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             _sendCts = new CancellationTokenSource();
             _stopNoticeShown = false;
             IsBusy = true;
+            SplitHint = null;
             BeginSplitTracking(message);
         }
         var token = _sendCts!.Token;
@@ -1619,6 +1620,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             _activeItems[item.Id] = vm;
             Items.Add(vm);
             NoteSubagentStep(item);
+            NoteStepForSplit(item);
             MessageAdded?.Invoke(item.Id, type, new ChatMessageData
             {
                 Id = item.Id,

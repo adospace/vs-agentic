@@ -270,16 +270,23 @@ public static class ModelPriceCheck
             .Where(j => prices[j] > 0 && total > 0 && rows.Sum(r => r.X[j] * prices[j]) / total >= 0.02)
             .ToArray();
 
-        var solved = Solve(rows, prices, scaled, active, ratio);
-        if (solved is not null && active.Length < 4)
+        // The prices not measured either keep theirs (only some prices
+        // changed) or follow the ratio (all changed alike). Each guess is
+        // solved; one that does not give the turns back exactly is wrong.
+        var keep = Solve(rows, prices, prices, active, ratio);
+        var follow = active.Length < 4 ? Solve(rows, prices, scaled, active, ratio) : null;
+        double[]? solved;
+        if (keep is null || follow is null)
         {
-            var factors = active.Select(j => solved[j] / prices[j]).ToArray();
-            if (factors.Max() / factors.Min() - 1 > Tolerance)
-            {
-                // Only some prices changed: the ones not measured keep theirs.
-                var again = Solve(rows, prices, prices, active, ratio);
-                if (again is not null) solved = again;
-            }
+            solved = keep ?? follow;
+        }
+        else
+        {
+            // Both fit: the turns hardly use the prices not measured. They
+            // follow the measured ones only when two or more of those agree;
+            // one measured price says nothing about the others.
+            var factors = active.Select(j => follow[j] / prices[j]).ToArray();
+            solved = factors.Length >= 2 && factors.Max() / factors.Min() - 1 <= Tolerance ? follow : keep;
         }
         if (solved is not null)
         {
@@ -291,7 +298,7 @@ public static class ModelPriceCheck
 
     // Unknowns are multipliers of the current prices, so they are all near 1
     // and the equations stay well scaled. Null when the turns do not settle
-    // them or the answer does not reproduce every turn to 1 %.
+    // them or the answer does not reproduce every turn to 0.1 %.
     private static double[]? Solve(List<(double[] X, double Y)> rows, double[] prices, double[] scaled, int[] active, double ratio)
     {
         var k = active.Length;
@@ -330,7 +337,9 @@ public static class ModelPriceCheck
         {
             if (y <= 0) continue;
             var fit = Enumerable.Range(0, 4).Sum(j => x[j] * result[j]);
-            if (Math.Abs(fit - y) / y > 0.01) return null;
+            // Claude Code's cost is exact, so the right prices give each turn
+            // back to rounding; 1 % let a wrong write price through.
+            if (Math.Abs(fit - y) / y > 0.001) return null;
         }
         return result;
     }

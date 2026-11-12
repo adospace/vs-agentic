@@ -150,7 +150,7 @@ internal sealed class PricesOptionsControl : ScrollViewer
         IsEnabled = general is not null;
         var prices = ModelPriceList.Parse(general?.ModelPrices, general?.ModelPricesSource);
         Show(prices);
-        ShowCharged(prices, PriceSamples.Parse(general?.ModelPriceSamples));
+        ShowCharged(prices, PriceSamples.Parse(general?.ModelPriceSamples), ModelPriceCheck.ParseKept(general?.ModelPricesKept));
 
         var calibration = SplitCalibration.Parse(general?.SplitRuns);
         _forget.IsEnabled = calibration.Runs > 0;
@@ -179,7 +179,7 @@ internal sealed class PricesOptionsControl : ScrollViewer
         _source.Text = prices.Source;
     }
 
-    private void ShowCharged(ModelPriceList prices, PriceSamples samples)
+    private void ShowCharged(ModelPriceList prices, PriceSamples samples, IReadOnlyDictionary<string, double> kept)
     {
         _mismatches = ModelPriceList.Families
             .Select(f => ModelPriceCheck.Check(prices, samples, f))
@@ -199,7 +199,8 @@ internal sealed class PricesOptionsControl : ScrollViewer
             return;
         }
 
-        _charged.Text = string.Join("\n", _mismatches.Select(PriceText.Describe));
+        _charged.Text = string.Join("\n", _mismatches.Select(m => PriceText.Describe(m)
+            + (ModelPriceCheck.IsKept(m, kept) ? " You chose \"Keep my prices\", so the chat does not ask while the difference stays about the same." : "")));
     }
 
     // Fills the cells; OK saves them, as with any other change on the page.

@@ -37,6 +37,9 @@ public partial class ChatSessionViewModel
         if (SplitSettings is not { } settings) return;
         try
         {
+            foreach (var s in samples)
+                _logger?.LogInformation("[VM] Cost of the reply: {Model} in {In} out {Out} read {Read} write1h {W1} write5m {W5} ${Cost} ({Basis}), largest prompt {Prompt}",
+                    s.Model, s.InputTokens, s.OutputTokens, s.CacheReadTokens, s.CacheWrite1hTokens, s.CacheWrite5mTokens, s.CostUsd, s.CostBasis, s.LargestPrompt);
             settings.RecordCosts(samples);
             UpdatePriceHint();
         }
@@ -52,6 +55,12 @@ public partial class ChatSessionViewModel
         if (SplitSettings is not { } settings || _splitPlanner is null) return;
         var prices = settings.Prices;
         var samples = settings.PriceSamples;
+        foreach (var f in ModelPriceList.Families)
+        {
+            if (ModelPriceCheck.Check(prices, samples, f) is not { } d) continue;
+            _logger?.LogInformation("[VM] Prices: {Family} {Model} charged {Ratio:0.###} x the list over {Turns} replies; each price measured {Each}, kept {Kept}, closed {Closed}",
+                f, d.Model, d.Ratio, d.Turns, d.EachPriceMeasured, settings.IsKept(d), _priceHintClosed.Contains(f));
+        }
         var mismatch = ModelPriceList.Families
             .Select(f => ModelPriceCheck.Check(prices, samples, f))
             // Offered only once the replies give each price: one reply gives

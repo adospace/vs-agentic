@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
 using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.Agents;
 using VsAgentic.Services.Configuration;
 
 namespace VsAgentic.Services.ClaudeCli;
@@ -142,6 +143,13 @@ public sealed class CliProcessInfo
     public string? Version { get; private set; }
     public IReadOnlyList<CliModelInfo> Models { get; private set; } = Array.Empty<CliModelInfo>();
     public IReadOnlyList<CliCommandInfo> Commands { get; private set; } = Array.Empty<CliCommandInfo>();
+
+    /// <summary>
+    /// The subagents the session can start: built-in ones and those from the
+    /// user's and the project's files, without saying which is which.
+    /// </summary>
+    public IReadOnlyList<ReportedAgent> Agents { get; private set; } = Array.Empty<ReportedAgent>();
+
     public string? OutputStyle { get; private set; }
     public string? PermissionMode { get; private set; }
 
@@ -185,6 +193,16 @@ public sealed class CliProcessInfo
         }
 
         info.Commands = ReadCommands(response);
+
+        if (response.TryGetProperty("agents", out var agents) && agents.ValueKind == JsonValueKind.Array)
+        {
+            info.Agents = agents.EnumerateArray()
+                .Where(a => a.ValueKind == JsonValueKind.Object)
+                .Select(a => (name: ReadString(a, "name"), a))
+                .Where(x => !string.IsNullOrEmpty(x.name))
+                .Select(x => new ReportedAgent(x.name!, ReadString(x.a, "description"), ReadString(x.a, "model")))
+                .ToList();
+        }
 
         return info;
     }

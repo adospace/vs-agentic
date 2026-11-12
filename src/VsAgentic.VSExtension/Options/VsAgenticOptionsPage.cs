@@ -71,6 +71,17 @@ public class VsAgenticOptionsPage : DialogPage
     [DefaultValue(true)]
     public bool CheckForCliUpdates { get; set; } = true;
 
+    // Shown and changed on the Agents page (AgentsOptionsPage), stored here so
+    // that page keeps nothing of its own in the registry.
+    [Browsable(false)]
+    [DefaultValue(true)]
+    public bool SuggestAgentSplit { get; set; } = true;
+
+    /// <summary>Folders where the user chose "Never for this project", separated by semicolons.</summary>
+    [Browsable(false)]
+    [DefaultValue("")]
+    public string SplitSuggestionsOffProjects { get; set; } = "";
+
     [Category("Usage meters")]
     [DisplayName("Plan")]
     [Description("Subscription the 5-hour and weekly estimates under the chat input are sized against. Once Claude Code reports your plan's real limits, after the first reply, those replace the estimates. Display only — nothing here is sent to the CLI. Choose Unlimited to hide those readings.")]

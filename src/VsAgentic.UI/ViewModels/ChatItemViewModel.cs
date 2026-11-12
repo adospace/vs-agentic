@@ -11,7 +11,9 @@ public partial class ChatItemViewModel : ObservableObject
 {
     public ChatItemType Type { get; init; }
     public string? ToolName { get; init; }
-    public string Title { get; init; } = "";
+    // Set again when a step renames itself while it runs (see RetitleNotice),
+    // so the saved session keeps the last title.
+    public string Title { get; set; } = "";
 
     [ObservableProperty]
     private string _content = "";

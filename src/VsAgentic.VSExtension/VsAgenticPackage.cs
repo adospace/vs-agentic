@@ -423,6 +423,10 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         vm.IdeContext = provider.GetService<IdeContextRegistry>();
         vm.DebuggerAccess = optionsPage?.DebuggerAccess ?? DebuggerAccessLevel.Off;
         vm.DebuggerModeSource = _debuggerState;
+        vm.SplitPlanner = new VsAgentic.Services.ClaudeCli.ClaudeCliAgentSplitPlanner(optionsAccessor, chatService,
+            loggerFactory?.CreateLogger("VsAgentic.Split") ?? (Microsoft.Extensions.Logging.ILogger)Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+        if (optionsPage is not null)
+            vm.SplitSettings = new AgentSplitSettings(optionsPage);
 
         // The status bar pickers only change this session; persisting the choice so
         // the next one starts the same way is the host's side of the deal.

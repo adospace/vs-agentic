@@ -71,6 +71,18 @@ public class VsAgenticOptionsPage : DialogPage
     [DefaultValue(true)]
     public bool CheckForCliUpdates { get; set; } = true;
 
+    [Category("Agents")]
+    [DisplayName("Suggest splitting tasks across agents")]
+    [Description("After a turn whose steps show a clear saving (many searches on an expensive model, many edits, a message that lists several parts), a line above the message box suggests splitting the task across subagents on cheaper models. At most once per chat. The ⚡ button and /split work either way.")]
+    [DefaultValue(true)]
+    public bool SuggestAgentSplit { get; set; } = true;
+
+    [Category("Agents")]
+    [DisplayName("Projects without split suggestions")]
+    [Description("Folders where you chose \"Never for this project\", separated by semicolons. Delete a folder from the list to get the suggestions back there.")]
+    [DefaultValue("")]
+    public string SplitSuggestionsOffProjects { get; set; } = "";
+
     [Category("Usage meters")]
     [DisplayName("Plan")]
     [Description("Subscription the 5-hour and weekly estimates under the chat input are sized against. Once Claude Code reports your plan's real limits, after the first reply, those replace the estimates. Display only — nothing here is sent to the CLI. Choose Unlimited to hide those readings.")]

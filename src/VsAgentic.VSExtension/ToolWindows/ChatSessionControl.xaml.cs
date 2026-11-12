@@ -989,7 +989,14 @@ public partial class ChatSessionControl : UserControl
         while (node != null)
         {
             if (ReferenceEquals(node, root)) return true;
-            node = VisualTreeHelper.GetParent(node) ?? LogicalTreeHelper.GetParent(node);
+            // VisualTreeHelper throws on content elements (a Hyperlink, a Run):
+            // they are not visuals. Focus can land on one, so walk those up
+            // through the content or logical tree instead.
+            node = node is Visual or System.Windows.Media.Media3D.Visual3D
+                ? VisualTreeHelper.GetParent(node) ?? LogicalTreeHelper.GetParent(node)
+                : node is ContentElement ce
+                    ? ContentOperations.GetParent(ce) ?? LogicalTreeHelper.GetParent(node)
+                    : LogicalTreeHelper.GetParent(node);
         }
         return false;
     }

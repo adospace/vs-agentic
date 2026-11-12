@@ -92,6 +92,16 @@ public class VsAgenticOptionsPage : DialogPage
     [DefaultValue("")]
     public string ModelPricesSource { get; set; } = "";
 
+    /// <summary>The last turns' cost per model, as Claude Code charged it (PriceSamples).</summary>
+    [Browsable(false)]
+    [DefaultValue("")]
+    public string ModelPriceSamples { get; set; } = "";
+
+    /// <summary>Differences from the price list the user chose to keep ("Keep my prices").</summary>
+    [Browsable(false)]
+    [DefaultValue("")]
+    public string ModelPricesKept { get; set; } = "";
+
     /// <summary>The last split plans that ran, estimate against measured (SplitCalibration).</summary>
     [Browsable(false)]
     [DefaultValue("")]

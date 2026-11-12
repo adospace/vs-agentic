@@ -40,8 +40,13 @@ namespace VsAgentic.Services.ClaudeCli;
 ///    part of the natural tool execution rather than via a side-channel
 ///    tool_result write.
 /// </summary>
-public sealed class ClaudeCliChatService : IChatService, IDisposable
+public sealed class ClaudeCliChatService : IChatService, IModelCostSource, IDisposable
 {
+    // What each model cost per turn, for the price list's check (E67).
+    private readonly ModelCostReader _modelCost = new ModelCostReader();
+
+    public event Action<IReadOnlyList<ModelCostSample>>? ModelCostMeasured;
+
     private readonly VsAgenticOptions _options;
     private readonly IOutputListener _outputListener;
     private readonly ClaudeCliProcessHost _host;
@@ -1558,6 +1563,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
         if (init.SessionId is not null)
         {
+            // No id before: a new conversation, not a resumed one, so its
+            // cost per model starts at 0 and every turn of it is seen.
+            if (_cliSessionId is null) _modelCost.Begin(init.SessionId);
             _cliSessionId = init.SessionId;
             _logger.LogDebug("[ClaudeCli] Session started: {SessionId}", _cliSessionId);
         }
@@ -2246,6 +2254,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // Before the turn check: every result closes the CLI's turn, and the
         // tokens were spent whoever started it.
         AccountTurnUsage(evt);
+        ReportModelCost(evt);
 
         var isError = evt.TryGetProperty("is_error", out var ie) && ie.ValueKind == JsonValueKind.True;
 
@@ -2878,6 +2887,10 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         var context = input + output + cacheRead + cacheCreate;
         if (context <= 0) return;
 
+        // Before the repeat check: the largest prompt is the same however often
+        // the message is read.
+        _modelCost.NotePrompt(CliProcessInfo.ReadString(message, "model"), input + cacheRead + cacheCreate);
+
         var messageId = message.TryGetProperty("id", out var idProp) && idProp.ValueKind == JsonValueKind.String
             ? idProp.GetString()
             : null;
@@ -2915,6 +2928,25 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         }
 
         RecordUsage(input, output, cacheRead, cacheCreate);
+    }
+
+    /// <summary>
+    /// Reports what each model cost in the turn (<see cref="ModelCostMeasured"/>).
+    /// Before the turn check, like the usage: a turn the CLI started itself
+    /// was billed too.
+    /// </summary>
+    private void ReportModelCost(JsonElement evt)
+    {
+        IReadOnlyList<ModelCostSample> samples;
+        try { samples = _modelCost.Read(evt); }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[ClaudeCli] Could not read the cost per model");
+            return;
+        }
+        if (samples.Count == 0) return;
+        try { ModelCostMeasured?.Invoke(samples); }
+        catch (Exception ex) { _logger.LogError(ex, "[ClaudeCli] ModelCostMeasured handler threw"); }
     }
 
     /// <summary>
@@ -3457,6 +3489,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     {
         _cliSessionId = null;
         _cumulativeCostUsd = 0;
+        _modelCost.Reset();
 
         lock (_usageLock)
         {

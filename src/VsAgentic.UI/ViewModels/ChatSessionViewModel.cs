@@ -1932,6 +1932,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 _chatService.UnsolicitedTurnCompleted -= OnUnsolicitedTurnCompleted;
                 _chatService.AppliedEffortChanged -= OnChatServiceAppliedEffortChanged;
                 _chatService.FastModeChanged -= OnChatServiceFastModeChanged;
+                UnsubscribeModelCost(_chatService);
                 _chatService.BackgroundTasksChanged -= OnChatServiceBackgroundTasksChanged;
                 _chatService.MessageStarted -= OnChatServiceMessageStarted;
                 _chatService.PermissionModeChanged -= OnChatServicePermissionModeChanged;

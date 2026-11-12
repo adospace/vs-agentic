@@ -78,6 +78,10 @@ internal sealed class PricesOptionsControl : ScrollViewer
     private readonly Button _forget = new Button { Content = "Forget earlier runs", Padding = new Thickness(8, 2, 8, 2), HorizontalAlignment = HorizontalAlignment.Left };
     private bool _forgetRuns;
 
+    private readonly TextBlock _charged = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 4) };
+    private readonly Button _useCharged = new Button { Content = "Use Claude Code's prices", Padding = new Thickness(8, 2, 8, 2), HorizontalAlignment = HorizontalAlignment.Left };
+    private List<PriceMismatch> _mismatches = new List<PriceMismatch>();
+
     public PricesOptionsControl()
     {
         VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
@@ -85,7 +89,7 @@ internal sealed class PricesOptionsControl : ScrollViewer
 
         var panel = new StackPanel { Margin = new Thickness(4) };
         panel.Children.Add(Heading("Model prices"));
-        panel.Children.Add(Note("US dollars per million tokens. The plan card for splitting a task across agents uses them to compare working alone with working with agents. Cache write is the 1-hour cache, which Claude Code uses (2 × input). The speed is only for the time estimate. Nothing is sent anywhere, and Claude Code bills by its own prices: change a value here when Anthropic changes a price."));
+        panel.Children.Add(Note("US dollars per million tokens. The plan card for splitting a task across agents uses them to compare working alone with working with agents. Cache write is the 1-hour cache, which Claude Code uses (2 × input). The speed is only for the time estimate. Nothing is sent anywhere, and Claude Code bills by its own prices. When they differ from this list, the chat and this page say so; the list changes only when you accept."));
 
         var grid = new Grid { Margin = new Thickness(0, 6, 0, 0) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(70) });
@@ -111,6 +115,12 @@ internal sealed class PricesOptionsControl : ScrollViewer
             row++;
         }
         panel.Children.Add(grid);
+
+        panel.Children.Add(Heading("What Claude Code charged"));
+        panel.Children.Add(Note("After each reply, Claude Code reports what each model cost. VsAgentic compares that with this list. Fast mode, web searches and Haiku prompts above 100K tokens (which cost more) are left out."));
+        panel.Children.Add(_charged);
+        _useCharged.Click += (_, _) => UseCharged();
+        panel.Children.Add(_useCharged);
 
         panel.Children.Add(Heading("Source"));
         panel.Children.Add(Note("Where the prices come from and when you checked them. Shown nowhere else; for you."));
@@ -138,7 +148,9 @@ internal sealed class PricesOptionsControl : ScrollViewer
     {
         _forgetRuns = false;
         IsEnabled = general is not null;
-        Show(ModelPriceList.Parse(general?.ModelPrices, general?.ModelPricesSource));
+        var prices = ModelPriceList.Parse(general?.ModelPrices, general?.ModelPricesSource);
+        Show(prices);
+        ShowCharged(prices, PriceSamples.Parse(general?.ModelPriceSamples));
 
         var calibration = SplitCalibration.Parse(general?.SplitRuns);
         _forget.IsEnabled = calibration.Runs > 0;
@@ -165,6 +177,43 @@ internal sealed class PricesOptionsControl : ScrollViewer
             b[4].Text = p.OutputTokensPerSecond.ToString(CultureInfo.InvariantCulture);
         }
         _source.Text = prices.Source;
+    }
+
+    private void ShowCharged(ModelPriceList prices, PriceSamples samples)
+    {
+        _mismatches = ModelPriceList.Families
+            .Select(f => ModelPriceCheck.Check(prices, samples, f))
+            .Where(m => m is not null)
+            .Select(m => m!)
+            .ToList();
+        _useCharged.IsEnabled = _mismatches.Count > 0;
+
+        if (_mismatches.Count == 0)
+        {
+            var measured = ModelPriceList.Families.Where(f => samples.For(f).Any()).Select(Capitalize).ToList();
+            _charged.Text = measured.Count == 0
+                ? "No reply measured yet."
+                : $"This list gives what Claude Code charged in the last replies ({string.Join(", ", measured)}).";
+            return;
+        }
+
+        _charged.Text = string.Join("\n", _mismatches.Select(PriceText.Describe));
+    }
+
+    // Fills the cells; OK saves them, as with any other change on the page.
+    private void UseCharged()
+    {
+        foreach (var m in _mismatches)
+        {
+            var b = _cells[m.Family];
+            b[0].Text = Money(m.Measured.Input);
+            b[1].Text = Money(m.Measured.Output);
+            b[2].Text = Money(m.Measured.CacheRead);
+            b[3].Text = Money(m.Measured.CacheWrite);
+        }
+        _source.Text = PriceText.SourceAfter(_source.Text, _mismatches, DateTime.Now);
+        _charged.Text = "Filled in from what Claude Code charged. Press OK to keep them.";
+        _useCharged.IsEnabled = false;
     }
 
     /// <summary>Stores the list. False, with a message, when a value is not a number.</summary>
@@ -194,11 +243,7 @@ internal sealed class PricesOptionsControl : ScrollViewer
             prices.Add(new ModelPrice(family, values[0], values[1], values[2], values[3], speed));
         }
 
-        var list = new ModelPriceList(prices, _source.Text.Trim());
-        // The built-in list is stored as empty, so a later release can update it.
-        var same = list.Serialize() == ModelPriceList.Defaults.Serialize();
-        general.ModelPrices = same ? "" : list.Serialize();
-        general.ModelPricesSource = same && list.Source == ModelPriceList.DefaultSource ? "" : list.Source;
+        AgentSplitSettings.Store(general, new ModelPriceList(prices, _source.Text.Trim()));
         if (_forgetRuns) general.SplitRuns = "";
         general.SaveSettingsToStorage();
         return true;

@@ -77,4 +77,19 @@ public interface IAgentSplitSettings
     Agents.SplitCalibration Calibration { get; }
 
     void RecordOutcome(Agents.SplitOutcome outcome);
+
+    /// <summary>The last turns per model family, to check <see cref="Prices"/> against (E67).</summary>
+    Agents.PriceSamples PriceSamples { get; }
+
+    /// <summary>Keeps a turn's cost per model; turns the list cannot be compared with are left out.</summary>
+    void RecordCosts(IReadOnlyList<ModelCostSample> samples);
+
+    /// <summary>Whether the user chose "Keep my prices" for a difference of this size.</summary>
+    bool IsKept(Agents.PriceMismatch mismatch);
+
+    /// <summary>"Keep my prices": the chat does not ask again until the difference changes.</summary>
+    void Keep(Agents.PriceMismatch mismatch);
+
+    /// <summary>Replaces the price list, as OK on the Prices page does.</summary>
+    void SavePrices(Agents.ModelPriceList prices);
 }

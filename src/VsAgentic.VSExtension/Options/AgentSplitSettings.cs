@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using VsAgentic.Services.Abstractions;
@@ -27,6 +28,66 @@ internal sealed class AgentSplitSettings : IAgentSplitSettings
     public void RecordOutcome(SplitOutcome outcome)
     {
         _page.SplitRuns = Calibration.With(outcome).Serialize();
+        try { _page.SaveSettingsToStorage(); } catch { /* kept for this run even if saving fails */ }
+    }
+
+    public PriceSamples PriceSamples => PriceSamples.Parse(_page.ModelPriceSamples);
+
+    public void RecordCosts(IReadOnlyList<ModelCostSample> samples)
+    {
+        var before = _page.ModelPriceSamples;
+        var after = PriceSamples.With(samples);
+        _page.ModelPriceSamples = after.Serialize();
+        // Saved only while the list and Claude Code disagree: then the Prices
+        // page needs the turns after a restart. A list that agrees costs no
+        // write to the registry after every turn.
+        if (_page.ModelPriceSamples == before) return;
+        var prices = Prices;
+        if (ModelPriceList.Families.Any(f => ModelPriceCheck.Check(prices, after, f) is { } m && !IsKept(m)))
+            Save();
+    }
+
+    public bool IsKept(PriceMismatch mismatch) =>
+        ModelPriceCheck.IsKept(mismatch, ModelPriceCheck.ParseKept(_page.ModelPricesKept));
+
+    public void Keep(PriceMismatch mismatch)
+    {
+        var kept = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        foreach (var k in ModelPriceCheck.ParseKept(_page.ModelPricesKept)) kept[k.Key] = k.Value;
+        kept[mismatch.Family] = mismatch.Ratio;
+        _page.ModelPricesKept = ModelPriceCheck.SerializeKept(kept);
+        Save();
+    }
+
+    public void SavePrices(ModelPriceList prices)
+    {
+        Store(_page, prices);
+        Save();
+    }
+
+    /// <summary>
+    /// Puts a price list on the page. The built-in list is stored as empty,
+    /// so a later release can update it. A kept difference was against the
+    /// old prices of its family and goes when they change.
+    /// </summary>
+    internal static void Store(VsAgenticOptionsPage page, ModelPriceList prices)
+    {
+        var old = ModelPriceList.Parse(page.ModelPrices, page.ModelPricesSource);
+        var same = prices.Serialize() == ModelPriceList.Defaults.Serialize();
+        page.ModelPrices = same ? "" : prices.Serialize();
+        page.ModelPricesSource = same && prices.Source == ModelPriceList.DefaultSource ? "" : prices.Source;
+
+        var kept = ModelPriceCheck.ParseKept(page.ModelPricesKept)
+            .Where(k => SamePrices(old.For(k.Key), prices.For(k.Key)))
+            .ToDictionary(k => k.Key, k => k.Value, StringComparer.OrdinalIgnoreCase);
+        page.ModelPricesKept = ModelPriceCheck.SerializeKept(kept);
+    }
+
+    private static bool SamePrices(ModelPrice a, ModelPrice b) =>
+        a.Input == b.Input && a.Output == b.Output && a.CacheRead == b.CacheRead && a.CacheWrite == b.CacheWrite;
+
+    private void Save()
+    {
         try { _page.SaveSettingsToStorage(); } catch { /* kept for this run even if saving fails */ }
     }
 

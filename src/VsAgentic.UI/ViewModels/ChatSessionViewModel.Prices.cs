@@ -54,7 +54,10 @@ public partial class ChatSessionViewModel
         var samples = settings.PriceSamples;
         var mismatch = ModelPriceList.Families
             .Select(f => ModelPriceCheck.Check(prices, samples, f))
-            .Where(m => m is not null && !settings.IsKept(m) && !_priceHintClosed.Contains(m.Family))
+            // Offered only once the replies give each price: one reply gives
+            // only the ratio, and scaling every price by it changed input and
+            // output too when only the cache prices differed (manual test 12. 11.).
+            .Where(m => m is not null && m.EachPriceMeasured && !settings.IsKept(m) && !_priceHintClosed.Contains(m.Family))
             .OrderByDescending(m => Math.Abs(Math.Log(m!.Ratio)))
             .FirstOrDefault();
         // A confirmation stays, with its Undo, until a difference in another
@@ -84,7 +87,7 @@ public partial class ChatSessionViewModel
         if (SplitSettings is not { } settings) return;
         var before = settings.Prices;
         // Checked again: another chat may have taken the prices meanwhile.
-        if (ModelPriceCheck.Check(before, settings.PriceSamples, family) is not { } mismatch)
+        if (ModelPriceCheck.Check(before, settings.PriceSamples, family) is not { EachPriceMeasured: true } mismatch)
         {
             PriceHint = null;
             return;

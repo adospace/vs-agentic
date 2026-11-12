@@ -186,7 +186,9 @@ internal sealed class PricesOptionsControl : ScrollViewer
             .Where(m => m is not null)
             .Select(m => m!)
             .ToList();
-        _useCharged.IsEnabled = _mismatches.Count > 0;
+        // Only prices the replies gave one by one are offered; the others
+        // are shown with their ratio until more replies arrive.
+        _useCharged.IsEnabled = _mismatches.Any(m => m.EachPriceMeasured);
 
         if (_mismatches.Count == 0)
         {
@@ -203,6 +205,7 @@ internal sealed class PricesOptionsControl : ScrollViewer
     // Fills the cells; OK saves them, as with any other change on the page.
     private void UseCharged()
     {
+        _mismatches = _mismatches.Where(m => m.EachPriceMeasured).ToList();
         foreach (var m in _mismatches)
         {
             var b = _cells[m.Family];

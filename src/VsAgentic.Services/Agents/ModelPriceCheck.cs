@@ -112,7 +112,7 @@ public static class PriceText
             Family(m.Family), ModelPriceCheck.FormatRatio(m.Ratio), m.Model, m.Turns, m.Turns == 1 ? "reply" : "replies",
             m.LastTurn.ToString("d. M. yyyy", CultureInfo.InvariantCulture));
         if (m.Managed) text += " These are your organization's prices.";
-        if (!m.EachPriceMeasured) text += " The replies do not tell the prices apart, so each price would be scaled by the same factor.";
+        if (!m.EachPriceMeasured) text += " These replies do not tell the prices apart yet; a few more replies will.";
         return text;
     }
 
@@ -144,9 +144,9 @@ public static class PriceText
     {
         var measured = MeasuredSource(mismatches, when);
         var old = (oldSource ?? "").Trim();
-        return old.Length == 0 || old.StartsWith("Measured from what Claude Code charged", StringComparison.Ordinal)
-            ? measured
-            : measured + " Other models: " + old;
+        if (old.Length == 0 || old.StartsWith("Measured from what Claude Code charged", StringComparison.Ordinal))
+            return measured;
+        return measured + " Other models: " + (old == ModelPriceList.DefaultSource ? "built-in prices." : old);
     }
 
     public static string Family(string family) =>

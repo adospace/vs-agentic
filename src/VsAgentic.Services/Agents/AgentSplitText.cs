@@ -101,7 +101,16 @@ public static class AgentSplitText
     /// <param name="task">The user's message that started the turn.</param>
     /// <param name="signals">What the main conversation did in the turn.</param>
     /// <param name="modelAlias">The main conversation's model, as shown in the picker.</param>
-    public static string? SuggestionReason(string task, TurnSignals signals, string? modelAlias)
+    public static string? SuggestionReason(string task, TurnSignals signals, string? modelAlias) =>
+        SuggestionReason(task, signals, modelAlias, measuredSaving: null);
+
+    /// <param name="measuredSaving">
+    /// What earlier splits saved against the estimate for working alone
+    /// (<see cref="SplitCalibration.MeasuredSaving"/>), or null before there
+    /// are enough of them. Where splitting has not paid off, the signs have to
+    /// be stronger; where it has, weaker ones do.
+    /// </param>
+    public static string? SuggestionReason(string task, TurnSignals signals, string? modelAlias, double? measuredSaving)
     {
         // Already split, or too little happened to tell.
         if (signals.AgentSteps > 0 || signals.TotalSteps < 4) return null;
@@ -110,17 +119,27 @@ public static class AgentSplitText
         var parts = CountParts(task);
         var reasons = new List<string>();
 
-        if (expensive && signals.SearchSteps >= 8)
+        var poor = measuredSaving is double low && low < 0.10;
+        var good = measuredSaving is double high && high >= 0.30;
+        var searchLimit = poor ? 16 : good ? 6 : 8;
+        var editLimit = poor ? 12 : good ? 4 : 6;
+        var partLimit = poor ? 4 : 3;
+
+        if (expensive && signals.SearchSteps >= searchLimit)
             reasons.Add($"{ModelName(modelAlias)} made {signals.SearchSteps} search and read calls that a cheaper model can do");
-        if (signals.EditSteps >= 6)
+        if (signals.EditSteps >= editLimit)
             reasons.Add($"{signals.EditSteps} edits that could run in parallel");
-        if (parts >= 3)
+        if (parts >= partLimit)
             reasons.Add($"your message lists {parts} separate parts");
 
         if (reasons.Count == 0) return null;
-        // One strong sign is not enough on a cheap model: splitting has a cost of its own.
-        if (!expensive && reasons.Count < 2) return null;
-        return Capitalize(string.Join("; ", reasons)) + ".";
+        // One strong sign is not enough on a cheap model, nor where earlier
+        // splits saved little: splitting has a cost of its own.
+        if ((!expensive || poor) && reasons.Count < 2) return null;
+        var text = Capitalize(string.Join("; ", reasons)) + ".";
+        if (measuredSaving is double saving && saving > 0)
+            text += $" Your earlier splits cost about {Math.Round(saving * 100):0} % less than the estimate for working alone.";
+        return text;
     }
 
     private static readonly Regex InlineNumberRe = new Regex(@"(?<!\S)(\d{1,2})[.)]\s+\S", RegexOptions.CultureInvariant);

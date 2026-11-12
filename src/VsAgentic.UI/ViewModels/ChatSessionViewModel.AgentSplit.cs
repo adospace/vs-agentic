@@ -48,6 +48,8 @@ public partial class ChatSessionViewModel
 
     // Set while a plan runs: the usage before it, for the summary after it.
     private (long Tokens, decimal? Cost, int Parts)? _splitRun;
+    private SplitEstimate? _splitEstimate;
+    private System.Diagnostics.Stopwatch? _splitClock;
 
     /// <summary>
     /// The solution's name when the folder holds one solution file, which is
@@ -136,7 +138,8 @@ public partial class ChatSessionViewModel
                 CloseSplitPlan();
                 // The task came out of the message box; it goes back there.
                 if (typedTask && string.IsNullOrWhiteSpace(InputText)) InputText = task!;
-            });
+            },
+            estimate: EstimateSplit);
         ActiveBanner = card;
 
         // A long chat is planned from the task alone: a copy of the chat reads
@@ -205,12 +208,32 @@ public partial class ChatSessionViewModel
         UpdateActivityIndicator();
     }
 
+    /// <summary>
+    /// The card's estimate for the models chosen now. Null without a price
+    /// list (no host settings), which hides the comparison.
+    /// </summary>
+    private SplitEstimate? EstimateSplit(IReadOnlyList<AgentSplitTask> parts)
+    {
+        if (SplitSettings is not { } settings) return null;
+        var context = _usage.ContextTokens;
+        var input = new SplitEstimateInput
+        {
+            MainModel = SelectedModel?.Alias ?? SelectedModel?.DisplayName,
+            ContextTokens = context,
+            ContextUnknown = context <= 0 && Items.Any(i => i.Type == ChatItemType.User),
+        };
+        return AgentSplitEstimator.Estimate(parts, input, settings.Prices, settings.Calibration);
+    }
+
     private void RunSplitPlan(string task, IReadOnlyList<AgentSplitTask> parts)
     {
+        // The estimate for the models the user ran it with, before the card goes.
+        _splitEstimate = (ActiveBanner as SplitPlanBannerViewModel)?.CurrentEstimate;
         CloseSplitPlan();
         if (parts.Count == 0) return;
 
         _splitRun = (_usage.TotalTokens, _usage.CostUsd, parts.Count);
+        _splitClock = System.Diagnostics.Stopwatch.StartNew();
         _splitAgentTokens = 0;
         InputText = AgentSplitText.RunMessage(task, parts);
         if (SendCommand.CanExecute(null))
@@ -267,6 +290,34 @@ public partial class ChatSessionViewModel
             var cost = run.Cost is decimal before && _usage.CostUsd is decimal after ? after - before : (decimal?)null;
             var agents = _splitAgentTokens;
             _splitAgentTokens = 0;
+            var seconds = _splitClock?.Elapsed.TotalSeconds ?? 0;
+            _splitClock = null;
+            var estimate = _splitEstimate;
+            _splitEstimate = null;
+
+            if (estimate is not null)
+            {
+                AddNotice(AgentSplitEstimator.Summary(run.Parts, agents, tokens, cost, seconds, estimate), "split-done");
+                // The measured run corrects the next estimate and the suggestion.
+                if (cost is decimal paid && paid > 0 && seconds > 0 && estimate.Agents.CostUsd > 0 && estimate.Alone.CostUsd > 0)
+                {
+                    try
+                    {
+                        SplitSettings?.RecordOutcome(new SplitOutcome
+                        {
+                            EstimatedCost = estimate.Agents.CostUsd,
+                            ActualCost = paid,
+                            EstimatedAloneCost = estimate.Alone.CostUsd,
+                            EstimatedSeconds = estimate.Agents.Seconds,
+                            ActualSeconds = seconds,
+                            EstimatedAloneSeconds = estimate.Alone.Seconds,
+                        });
+                    }
+                    catch (Exception ex) { _logger?.LogWarning(ex, "[VM] Could not record the split run"); }
+                }
+                return;
+            }
+
             var line = $"_Done with {run.Parts} {(run.Parts == 1 ? "agent" : "agents")}.";
             if (agents > 0) line += $" The agents used {FormatSplitTokens(agents)} tokens.";
             line += $" The whole turn used {FormatSplitTokens(tokens)}";
@@ -279,7 +330,8 @@ public partial class ChatSessionViewModel
         if (_hintShownThisSession || SplitHint is not null || ActiveBanner is not null || _splitPlanner is null) return;
         if (SplitSettings is { } settings && (!settings.SuggestionsEnabled || settings.IsOffFor(WorkingDirectory))) return;
 
-        var reason = AgentSplitText.SuggestionReason(_lastTask ?? "", _turnSignals, SelectedModel?.Alias ?? SelectedModel?.DisplayName);
+        var reason = AgentSplitText.SuggestionReason(_lastTask ?? "", _turnSignals, SelectedModel?.Alias ?? SelectedModel?.DisplayName,
+            SplitSettings?.Calibration.MeasuredSaving);
         if (reason is null) return;
 
         _hintShownThisSession = true;

@@ -82,6 +82,21 @@ public class VsAgenticOptionsPage : DialogPage
     [DefaultValue("")]
     public string SplitSuggestionsOffProjects { get; set; } = "";
 
+    // Shown and changed on the Prices page (PricesOptionsPage). Empty means
+    // the built-in list (ModelPriceList.Defaults).
+    [Browsable(false)]
+    [DefaultValue("")]
+    public string ModelPrices { get; set; } = "";
+
+    [Browsable(false)]
+    [DefaultValue("")]
+    public string ModelPricesSource { get; set; } = "";
+
+    /// <summary>The last split plans that ran, estimate against measured (SplitCalibration).</summary>
+    [Browsable(false)]
+    [DefaultValue("")]
+    public string SplitRuns { get; set; } = "";
+
     [Category("Usage meters")]
     [DisplayName("Plan")]
     [Description("Subscription the 5-hour and weekly estimates under the chat input are sized against. Once Claude Code reports your plan's real limits, after the first reply, those replace the estimates. Display only — nothing here is sent to the CLI. Choose Unlimited to hide those readings.")]

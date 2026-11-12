@@ -26,10 +26,11 @@ public sealed class ClaudeCliAgentSplitPlanner : IAgentSplitPlanner
         "{\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"worthSplitting\",\"reason\",\"tasks\"]," +
         "\"properties\":{\"worthSplitting\":{\"type\":\"boolean\"},\"reason\":{\"type\":\"string\"}," +
         "\"tasks\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"additionalProperties\":false," +
-        "\"required\":[\"role\",\"agentType\",\"task\",\"stage\",\"writes\"]," +
+        "\"required\":[\"role\",\"agentType\",\"task\",\"stage\",\"writes\",\"estimatedTokens\",\"estimatedToolCalls\"]," +
         "\"properties\":{\"role\":{\"type\":\"string\"},\"agentType\":{\"type\":\"string\"}," +
         "\"task\":{\"type\":\"string\"}," +
-        "\"stage\":{\"type\":\"integer\"},\"writes\":{\"type\":\"boolean\"}}}}}}";
+        "\"stage\":{\"type\":\"integer\"},\"writes\":{\"type\":\"boolean\"}," +
+        "\"estimatedTokens\":{\"type\":\"integer\"},\"estimatedToolCalls\":{\"type\":\"integer\"}}}}}}";
 
     private const string Instructions =
         "Plan how to split the task below across subagents. Do not do the work and do not use tools; only plan.\n" +
@@ -47,6 +48,9 @@ public sealed class ClaudeCliAgentSplitPlanner : IAgentSplitPlanner
         "Write each part's task so the subagent can do it without seeing this conversation.\n" +
         "Set worthSplitting to false when one agent would do it about as fast and cheap, and say why in reason.\n" +
         "Always list the parts anyway, even when worthSplitting is false: the user asked for a split and decides.\n" +
+        "For each part, estimate the size of its work, for a cost estimate shown to the user:\n" +
+        "- estimatedTokens: the files, logs and command output the part reads plus what it writes, in tokens (100 lines of code are about 1500 tokens).\n" +
+        "- estimatedToolCalls: how many tool calls the part makes (reads, searches, edits, commands).\n" +
         "Keep reason to two sentences.\n\n<task>\n";
 
     private readonly VsAgenticOptions _options;
@@ -168,6 +172,8 @@ public sealed class ClaudeCliAgentSplitPlanner : IAgentSplitPlanner
                         Task = text!.Trim(),
                         Stage = t.TryGetProperty("stage", out var s) && s.ValueKind == JsonValueKind.Number && s.TryGetInt32(out var stage) && stage > 0 ? stage : 1,
                         Writes = t.TryGetProperty("writes", out var wr) && wr.ValueKind == JsonValueKind.True,
+                        EstimatedTokens = t.TryGetProperty("estimatedTokens", out var et) && et.ValueKind == JsonValueKind.Number && et.TryGetInt64(out var tokens) && tokens > 0 ? tokens : 0,
+                        EstimatedSteps = t.TryGetProperty("estimatedToolCalls", out var es) && es.ValueKind == JsonValueKind.Number && es.TryGetInt32(out var calls) && calls > 0 ? calls : 0,
                     };
                     // The model comes from a fixed rule per role, not from the plan.
                     part.Model = Agents.AgentSplitText.ModelFor(part.Role, part.AgentType, part.Writes);

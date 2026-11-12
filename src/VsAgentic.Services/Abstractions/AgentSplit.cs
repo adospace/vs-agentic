@@ -23,6 +23,12 @@ public sealed class AgentSplitTask
 
     /// <summary>Whether the part changes files.</summary>
     public bool Writes { get; set; }
+
+    /// <summary>The planner's guess of what the part reads and writes, in tokens; 0 when it gave none.</summary>
+    public long EstimatedTokens { get; set; }
+
+    /// <summary>The planner's guess of the part's tool calls; 0 when it gave none.</summary>
+    public int EstimatedSteps { get; set; }
 }
 
 /// <summary>How the main conversation proposes to split a task.</summary>
@@ -62,4 +68,12 @@ public interface IAgentSplitSettings
     bool IsOffFor(string projectFolder);
     void TurnOffFor(string projectFolder);
     void TurnOnFor(string projectFolder);
+
+    /// <summary>The price list from Tools › Options › VsAgentic › Prices.</summary>
+    Agents.ModelPriceList Prices { get; }
+
+    /// <summary>The last plans that ran, estimate against measured.</summary>
+    Agents.SplitCalibration Calibration { get; }
+
+    void RecordOutcome(Agents.SplitOutcome outcome);
 }

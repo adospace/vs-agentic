@@ -6,6 +6,7 @@ using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.Agents;
 
 namespace VsAgentic.UI.ViewModels.Banners;
 
@@ -19,6 +20,8 @@ public partial class SplitTaskRowViewModel : ObservableObject
         Task = task.Task;
         Stage = task.Stage;
         Writes = task.Writes;
+        EstimatedTokens = task.EstimatedTokens;
+        EstimatedSteps = task.EstimatedSteps;
         _selectedModel = SplitPlanBannerViewModel.Models.Contains(task.Model) ? task.Model : "sonnet";
     }
 
@@ -27,8 +30,22 @@ public partial class SplitTaskRowViewModel : ObservableObject
     public string Task { get; }
     public int Stage { get; }
     public bool Writes { get; }
+    public long EstimatedTokens { get; }
+    public int EstimatedSteps { get; }
 
     public string Details => $"{AgentType} · stage {Stage} · {(Writes ? "changes files" : "read-only")}";
+
+    /// <summary>"~34k tokens · ~$0.05" for this part on its model; null without a price list.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasEstimate))]
+    private string? _estimateText;
+
+    public bool HasEstimate => EstimateText is not null;
+
+    /// <summary>Called when the model changes, so the card can estimate again.</summary>
+    internal Action? ModelChanged { get; set; }
+
+    partial void OnSelectedModelChanged(string value) => ModelChanged?.Invoke();
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsHaiku), nameof(IsSonnet), nameof(IsOpus), nameof(Warning), nameof(HasWarning))]
@@ -45,7 +62,8 @@ public partial class SplitTaskRowViewModel : ObservableObject
 
     public AgentSplitTask ToTask() => new AgentSplitTask
     {
-        Role = Role, AgentType = AgentType, Model = SelectedModel, Task = Task, Stage = Stage, Writes = Writes
+        Role = Role, AgentType = AgentType, Model = SelectedModel, Task = Task, Stage = Stage, Writes = Writes,
+        EstimatedTokens = EstimatedTokens, EstimatedSteps = EstimatedSteps,
     };
 }
 
@@ -85,6 +103,7 @@ public partial class SplitPlanBannerViewModel : ObservableObject, IBannerViewMod
     {
         HistoryNote = null;
         Rows.Clear();
+        Recalculate();
         Reason = null;
         Footnote = null;
         ErrorText = null;
@@ -96,16 +115,82 @@ public partial class SplitPlanBannerViewModel : ObservableObject, IBannerViewMod
     [RelayCommand]
     private void PlanWithHistory() => _onPlanWithHistory?.Invoke();
 
-    partial void OnIsPlanningChanged(bool value) => OnPropertyChanged(nameof(HasHistoryNote));
+    partial void OnIsPlanningChanged(bool value)
+    {
+        OnPropertyChanged(nameof(HasHistoryNote));
+        OnPropertyChanged(nameof(HasEstimate));
+    }
 
     public SplitPlanBannerViewModel(string task, string orchestratorName,
-        Action<IReadOnlyList<AgentSplitTask>> onRun, Action onAlone, Action onCancel)
+        Action<IReadOnlyList<AgentSplitTask>> onRun, Action onAlone, Action onCancel,
+        Func<IReadOnlyList<AgentSplitTask>, SplitEstimate?>? estimate = null)
     {
         TaskText = task;
         OrchestratorText = $"orchestrator · {orchestratorName} · plans, hands out the parts, checks the results";
         _onRun = onRun;
         _onAlone = onAlone;
         _onCancel = onCancel;
+        _estimate = estimate;
+    }
+
+    // ── Estimate: alone against agents ───────────────────────────────────
+
+    private readonly Func<IReadOnlyList<AgentSplitTask>, SplitEstimate?>? _estimate;
+
+    /// <summary>The estimate for the models chosen now; what the summary compares with after the run.</summary>
+    public SplitEstimate? CurrentEstimate { get; private set; }
+
+    // The longer bar fills this many pixels.
+    private const double BarLength = 160;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasEstimate))]
+    private string? _aloneText;
+
+    [ObservableProperty]
+    private string? _agentsText;
+
+    [ObservableProperty]
+    private double _aloneBar;
+
+    [ObservableProperty]
+    private double _agentsBar;
+
+    [ObservableProperty]
+    private string? _estimateNote;
+
+    public bool HasEstimate => AloneText is not null && !IsPlanning;
+
+    /// <summary>Estimates again, for the models the rows have now.</summary>
+    private void Recalculate()
+    {
+        var parts = Rows.Select(r => r.ToTask()).ToList();
+        var e = parts.Count > 0 ? _estimate?.Invoke(parts) : null;
+        CurrentEstimate = e;
+        if (e is null)
+        {
+            AloneText = AgentsText = EstimateNote = null;
+            foreach (var r in Rows) r.EstimateText = null;
+            return;
+        }
+
+        for (var i = 0; i < Rows.Count && i < e.Parts.Count; i++)
+            Rows[i].EstimateText = $"~{AgentSplitEstimator.Tokens(e.Parts[i].Tokens)} tokens · ~{AgentSplitEstimator.Money(e.Parts[i].CostUsd)}";
+
+        AloneText = $"~{AgentSplitEstimator.Money(e.Alone.CostUsd)} · ~{AgentSplitEstimator.Duration(e.Alone.Seconds)}";
+        AgentsText = $"~{AgentSplitEstimator.Money(e.Agents.CostUsd)} · ~{AgentSplitEstimator.Duration(e.Agents.Seconds)}";
+        var max = Math.Max(e.Alone.CostUsd, e.Agents.CostUsd);
+        AloneBar = max > 0 ? Math.Max(2, (double)(e.Alone.CostUsd / max) * BarLength) : 2;
+        AgentsBar = max > 0 ? Math.Max(2, (double)(e.Agents.CostUsd / max) * BarLength) : 2;
+
+        var note = "Estimate from the size Claude gave each part, this chat's context and the price list in Tools › Options › VsAgentic › Prices. "
+                 + $"Agents include ~{AgentSplitEstimator.RereadShare * 100:0} % for what they read again.";
+        if (e.ContextUnknown)
+            note += " This chat's size is not known until its next reply, so \"alone\" leaves out re-reading it and may be low.";
+        note += e.CalibrationRuns > 0
+            ? $" Corrected by {e.CalibrationRuns} earlier {(e.CalibrationRuns == 1 ? "run" : "runs")}."
+            : " No earlier runs to correct it by yet.";
+        EstimateNote = note;
     }
 
     /// <summary>Claude thinks splitting pays off; "Run with agents" is the main button.</summary>
@@ -149,7 +234,7 @@ public partial class SplitPlanBannerViewModel : ObservableObject, IBannerViewMod
     {
         Rows.Clear();
         foreach (var t in plan.Tasks.OrderBy(t => t.Stage))
-            Rows.Add(new SplitTaskRowViewModel(t));
+            Rows.Add(new SplitTaskRowViewModel(t) { ModelChanged = Recalculate });
 
         var stages = plan.Tasks.Select(t => t.Stage).Distinct().Count();
         var shape = $"{plan.Tasks.Count} {(plan.Tasks.Count == 1 ? "part" : "parts")} in {stages} {(stages == 1 ? "stage" : "stages")}";
@@ -164,6 +249,7 @@ public partial class SplitPlanBannerViewModel : ObservableObject, IBannerViewMod
             ? "Making this plan on Sonnet cost $" + c.ToString("0.00", CultureInfo.InvariantCulture) + ". Change any model before you run it."
             : "Change any model before you run it.";
         IsPlanning = false;
+        Recalculate();
         OnPropertyChanged(nameof(PreferAlone)); OnPropertyChanged(nameof(PreferAgents));
     }
 

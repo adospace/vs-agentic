@@ -2,12 +2,14 @@ using System;
 using System.IO;
 using System.Linq;
 using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.Agents;
 
 namespace VsAgentic.VSExtension.Options;
 
 /// <summary>
 /// The split-suggestion choices, kept on the options page so the user can
-/// see and undo them in Tools › Options › VsAgentic › Agents.
+/// see and undo them in Tools › Options › VsAgentic › Agents, and the price
+/// list and earlier runs the split estimate uses.
 /// </summary>
 internal sealed class AgentSplitSettings : IAgentSplitSettings
 {
@@ -16,6 +18,17 @@ internal sealed class AgentSplitSettings : IAgentSplitSettings
     public AgentSplitSettings(VsAgenticOptionsPage page) => _page = page;
 
     public bool SuggestionsEnabled => _page.SuggestAgentSplit;
+
+    // Read each time: the user may change the prices while a chat is open.
+    public ModelPriceList Prices => ModelPriceList.Parse(_page.ModelPrices, _page.ModelPricesSource);
+
+    public SplitCalibration Calibration => SplitCalibration.Parse(_page.SplitRuns);
+
+    public void RecordOutcome(SplitOutcome outcome)
+    {
+        _page.SplitRuns = Calibration.With(outcome).Serialize();
+        try { _page.SaveSettingsToStorage(); } catch { /* kept for this run even if saving fails */ }
+    }
 
     public bool IsOffFor(string projectFolder) =>
         Folders().Contains(Normalize(projectFolder), StringComparer.OrdinalIgnoreCase);

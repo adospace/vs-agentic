@@ -33,6 +33,7 @@ namespace VsAgentic.VSExtension;
 [ProvideAutoLoad(UIContextGuids80.SolutionExists, PackageAutoLoadFlags.BackgroundLoad)]
 [ProvideOptionPage(typeof(VsAgenticOptionsPage), "VsAgentic", "General", 0, 0, true)]
 [ProvideOptionPage(typeof(AgentsOptionsPage), "VsAgentic", "Agents", 0, 0, true)]
+[ProvideOptionPage(typeof(PricesOptionsPage), "VsAgentic", "Prices", 0, 0, true)]
 [ProvideToolWindow(typeof(SessionListToolWindow), Style = VsDockStyle.Tabbed, Window = EnvDTE.Constants.vsWindowKindSolutionExplorer)]
 [ProvideToolWindow(typeof(ChatSessionToolWindow), Style = VsDockStyle.MDI, MultiInstances = true, Transient = true)]
 [Guid("c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f")]

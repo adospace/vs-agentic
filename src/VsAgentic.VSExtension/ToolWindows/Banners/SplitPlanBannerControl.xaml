@@ -88,6 +88,11 @@
                                                 <TextBlock Text="{Binding Details}"
                                                            FontSize="10" TextWrapping="Wrap"
                                                            Foreground="{DynamicResource {x:Static vs:VsBrushes.CommandBarTextInactiveKey}}"/>
+                                                <TextBlock Text="{Binding EstimateText}"
+                                                           FontSize="10" TextWrapping="Wrap"
+                                                           Visibility="{Binding HasEstimate, Converter={StaticResource BoolToVis}}"
+                                                           ToolTip="Estimate for this part on the model chosen here"
+                                                           Foreground="{DynamicResource {x:Static vs:VsBrushes.CommandBarTextInactiveKey}}"/>
                                             </StackPanel>
                                             <!-- The model of this part. Three buttons in one panel form one group. -->
                                             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top" Margin="0,0,10,0">
@@ -121,6 +126,37 @@
                         </ScrollViewer>
                     </StackPanel>
                 </Border>
+
+                <!-- Alone against agents: cost and time, the bars to scale by
+                     cost. Estimated again when a model changes. -->
+                <Grid Margin="12,4,12,2"
+                      Visibility="{Binding HasEstimate, Converter={StaticResource BoolToVis}}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="56"/>
+                        <ColumnDefinition Width="168"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Alone" FontSize="12" VerticalAlignment="Center"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"/>
+                    <Border Grid.Row="0" Grid.Column="1" Height="8" HorizontalAlignment="Left" Width="{Binding AloneBar}" CornerRadius="2"
+                            Background="{DynamicResource {x:Static vs:VsBrushes.CommandBarTextInactiveKey}}"/>
+                    <TextBlock Grid.Row="0" Grid.Column="2" Text="{Binding AloneText}" FontSize="12" Margin="4,1,0,1"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"/>
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Agents" FontSize="12" VerticalAlignment="Center"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"/>
+                    <Border Grid.Row="1" Grid.Column="1" Height="8" HorizontalAlignment="Left" Width="{Binding AgentsBar}" CornerRadius="2"
+                            Background="{DynamicResource {x:Static vs:VsBrushes.HighlightKey}}"/>
+                    <TextBlock Grid.Row="1" Grid.Column="2" Text="{Binding AgentsText}" FontSize="12" Margin="4,1,0,1"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"/>
+                    <TextBlock Grid.Row="2" Grid.ColumnSpan="3" Text="{Binding EstimateNote}" FontSize="11" Margin="0,4,0,0"
+                               TextWrapping="Wrap"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.CommandBarTextInactiveKey}}"/>
+                </Grid>
 
                 <!-- Made from the task alone, because the chat is long. The
                      button plans again in a copy of the chat. -->

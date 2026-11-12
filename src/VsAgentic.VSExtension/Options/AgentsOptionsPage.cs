@@ -17,7 +17,7 @@ namespace VsAgentic.VSExtension.Options;
 /// (subagent files) the main chat can hand work to.
 ///
 /// The page stores nothing of its own. The suggestion settings stay on the
-/// General page, where E65 put them, so no one loses a choice already made;
+/// General page, where they were first, so no one loses a choice already made;
 /// the roles live in the CLI's own <c>agents\*.md</c> files. Nothing is
 /// written until OK or Apply, except by the two buttons that say so.
 /// </summary>

@@ -71,15 +71,14 @@ public class VsAgenticOptionsPage : DialogPage
     [DefaultValue(true)]
     public bool CheckForCliUpdates { get; set; } = true;
 
-    [Category("Agents")]
-    [DisplayName("Suggest splitting tasks across agents")]
-    [Description("After a turn whose steps show a clear saving (many searches on an expensive model, many edits, a message that lists several parts), a line above the message box suggests splitting the task across subagents on cheaper models. At most once per chat. The ⚡ button and /split work either way.")]
+    // Shown and changed on the Agents page (AgentsOptionsPage), stored here so
+    // that page keeps nothing of its own in the registry.
+    [Browsable(false)]
     [DefaultValue(true)]
     public bool SuggestAgentSplit { get; set; } = true;
 
-    [Category("Agents")]
-    [DisplayName("Projects without split suggestions")]
-    [Description("Folders where you chose \"Never for this project\", separated by semicolons. Delete a folder from the list to get the suggestions back there.")]
+    /// <summary>Folders where the user chose "Never for this project", separated by semicolons.</summary>
+    [Browsable(false)]
     [DefaultValue("")]
     public string SplitSuggestionsOffProjects { get; set; } = "";
 

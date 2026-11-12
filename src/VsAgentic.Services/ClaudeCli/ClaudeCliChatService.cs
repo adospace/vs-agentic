@@ -594,6 +594,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
         SetReportedCommands(info.Commands);
 
+        // For the role list in Options, which has no process of its own to ask.
+        Agents.AgentRoleCatalog.SetReported(_options.WorkingDirectory, info.Agents);
+
         if (info.FastMode is { } fast)
             SetFastModeStatus(fast);
 

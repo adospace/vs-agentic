@@ -32,6 +32,8 @@ namespace VsAgentic.VSExtension;
 [ProvideAutoLoad(UIContextGuids80.NoSolution, PackageAutoLoadFlags.BackgroundLoad)]
 [ProvideAutoLoad(UIContextGuids80.SolutionExists, PackageAutoLoadFlags.BackgroundLoad)]
 [ProvideOptionPage(typeof(VsAgenticOptionsPage), "VsAgentic", "General", 0, 0, true)]
+[ProvideOptionPage(typeof(AgentsOptionsPage), "VsAgentic", "Agents", 0, 0, true)]
+[ProvideOptionPage(typeof(PricesOptionsPage), "VsAgentic", "Prices", 0, 0, true)]
 [ProvideToolWindow(typeof(SessionListToolWindow), Style = VsDockStyle.Tabbed, Window = EnvDTE.Constants.vsWindowKindSolutionExplorer)]
 [ProvideToolWindow(typeof(ChatSessionToolWindow), Style = VsDockStyle.MDI, MultiInstances = true, Transient = true)]
 [Guid("c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f")]
@@ -41,6 +43,19 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
     // Exposed so tool windows can bind when VS restores them
     internal static SessionListViewModel? SessionListVM => _instance?._sessionListViewModel;
+
+    /// <summary>Null until the package has initialized.</summary>
+    internal static VsAgenticPackage? Instance => _instance;
+
+    internal VsAgenticOptionsPage? GetGeneralOptionsPage() =>
+        (VsAgenticOptionsPage?)GetDialogPage(typeof(VsAgenticOptionsPage));
+
+    /// <summary>
+    /// The folder of the open solution: a chat's working directory. Null
+    /// without a solution, where chats run in the user profile and have no
+    /// project roles. UI thread.
+    /// </summary>
+    internal string? GetOpenSolutionDirectory() => GetSolutionDirectory();
 
     private SessionListViewModel? _sessionListViewModel;
     private ISessionStore? _sessionStore;
@@ -423,6 +438,10 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         vm.IdeContext = provider.GetService<IdeContextRegistry>();
         vm.DebuggerAccess = optionsPage?.DebuggerAccess ?? DebuggerAccessLevel.Off;
         vm.DebuggerModeSource = _debuggerState;
+        vm.SplitPlanner = new VsAgentic.Services.ClaudeCli.ClaudeCliAgentSplitPlanner(optionsAccessor, chatService,
+            loggerFactory?.CreateLogger("VsAgentic.Split") ?? (Microsoft.Extensions.Logging.ILogger)Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+        if (optionsPage is not null)
+            vm.SplitSettings = new AgentSplitSettings(optionsPage);
 
         // The status bar pickers only change this session; persisting the choice so
         // the next one starts the same way is the host's side of the deal.

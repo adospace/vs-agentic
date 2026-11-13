@@ -594,6 +594,9 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
 
         SetReportedCommands(info.Commands);
 
+        // For the role list in Options, which has no process of its own to ask.
+        Agents.AgentRoleCatalog.SetReported(_options.WorkingDirectory, info.Agents);
+
         if (info.FastMode is { } fast)
             SetFastModeStatus(fast);
 
@@ -1796,6 +1799,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         {
             if (!evt.TryGetProperty("message", out var subMsg)) return;
             AccountUsage(subMsg, fromSubagent: true);
+            NoteSubagentModel(subagent, subMsg);
             if (subMsg.TryGetProperty("content", out var subContent) && subContent.ValueKind == JsonValueKind.Array)
                 await HandleContentBlocksAsync(subagent, subContent).ConfigureAwait(false);
             return;
@@ -1990,10 +1994,16 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             ? ideTool.Title
             : $"Using {toolName}";
         string? toolBody = null;
+        SubagentLabel? agentLabel = null;
         if (block.TryGetProperty("input", out var input))
         {
             if (toolName == "Agent" && input.TryGetProperty("description", out var descProp))
                 toolTitle = descProp.GetString() ?? toolTitle;
+            if (toolName == "Agent")
+            {
+                agentLabel = new SubagentLabel(toolTitle, CliProcessInfo.ReadString(input, "subagent_type"));
+                toolTitle = agentLabel.ToString();
+            }
             toolBody = FormatToolInput(toolName, input);
         }
 
@@ -2015,10 +2025,12 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             // any other Agent step started in the same message. Its own
             // tool_result closes it.
             turn.OpenAgentSteps[toolId] = item;
+            if (agentLabel is not null)
+                turn.AgentLabels[toolId] = agentLabel;
 
             // Registered before the CLI starts the subagent, so its first
             // message already finds where it goes.
-            _subagents[toolId] = new StepStream(toolId);
+            _subagents[toolId] = new StepStream(toolId) { AgentStep = item, AgentLabel = agentLabel };
         }
         else
         {
@@ -2033,17 +2045,62 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
     /// That arrives when the subagent hands back, or at once for a subagent
     /// sent to the background.
     /// </summary>
-    private bool CloseAgentStep(StepStream stream, JsonElement block)
+    private bool CloseAgentStep(StepStream stream, JsonElement block, JsonElement? toolUseResult = null)
     {
         var toolUseId = block.TryGetProperty("tool_use_id", out var tp) ? tp.GetString() : null;
         if (toolUseId is null || !stream.OpenAgentSteps.TryGetValue(toolUseId, out var item)) return false;
 
         stream.OpenAgentSteps.Remove(toolUseId);
+        if (stream.AgentLabels.TryGetValue(toolUseId, out var label))
+        {
+            stream.AgentLabels.Remove(toolUseId);
+            if (toolUseResult is { } result)
+            {
+                label.NoteResult(result);
+                item.Title = label.ToString();
+            }
+        }
+
         var isError = block.TryGetProperty("is_error", out var ep) && ep.ValueKind == JsonValueKind.True;
         item.Status = isError ? OutputItemStatus.Error : OutputItemStatus.Success;
         item.Delta = null;
         _outputListener.OnStepCompleted(item);
         return true;
+    }
+
+    /// <summary>
+    /// Adds the model to the header of a subagent's step, from the first
+    /// message that names one. The Agent call does not say which model runs:
+    /// a custom agent sets its own, and the main conversation can pass one.
+    /// </summary>
+    private void NoteSubagentModel(StepStream subagent, JsonElement message)
+    {
+        var item = subagent.AgentStep;
+        var label = subagent.AgentLabel;
+        if (item is null || label is null || item.Status != OutputItemStatus.Pending) return;
+        if (!label.NoteModel(CliProcessInfo.ReadString(message, "model"))) return;
+
+        item.Title = label.ToString();
+        _outputListener.OnStepUpdated(item);
+    }
+
+    /// <summary>
+    /// The <c>tool_use_result</c> of a user event, when the event carries one
+    /// tool result only. The field sits on the event, not on the result block,
+    /// so with more than one result it is not clear whose it is.
+    /// </summary>
+    private static JsonElement? SingleToolUseResult(JsonElement evt, JsonElement contentArr)
+    {
+        if (!evt.TryGetProperty("tool_use_result", out var result) || result.ValueKind != JsonValueKind.Object)
+            return null;
+
+        var results = 0;
+        foreach (var block in contentArr.EnumerateArray())
+        {
+            if (block.TryGetProperty("type", out var bt) && bt.GetString() == "tool_result")
+                results++;
+        }
+        return results == 1 ? result : null;
     }
 
     /// <summary>
@@ -2071,12 +2128,13 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (contentArr.ValueKind != JsonValueKind.Array) return;
 
         AttachResourceLinks(turn, evt, contentArr);
+        var toolUseResult = SingleToolUseResult(evt, contentArr);
 
         foreach (var block in contentArr.EnumerateArray())
         {
             if (!block.TryGetProperty("type", out var bt)) continue;
             if (bt.GetString() != "tool_result") continue;
-            if (CloseAgentStep(turn, block)) continue;
+            if (CloseAgentStep(turn, block, toolUseResult)) continue;
             if (!block.TryGetProperty("is_error", out var ep)) continue;
             if (ep.ValueKind != JsonValueKind.True) continue;
 
@@ -2102,11 +2160,12 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         if (!evt.TryGetProperty("message", out var msg)) return;
         if (!msg.TryGetProperty("content", out var contentArr)) return;
         if (contentArr.ValueKind != JsonValueKind.Array) return;
+        var toolUseResult = SingleToolUseResult(evt, contentArr);
 
         foreach (var block in contentArr.EnumerateArray())
         {
             if (!block.TryGetProperty("type", out var bt) || bt.GetString() != "tool_result") continue;
-            if (CloseAgentStep(subagent, block)) continue;
+            if (CloseAgentStep(subagent, block, toolUseResult)) continue;
             var toolUseId = block.TryGetProperty("tool_use_id", out var tp) ? tp.GetString() : null;
             if (subagent.ToolItem == null || toolUseId != subagent.ToolItem.Id) continue;
 
@@ -2418,6 +2477,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             _outputListener.OnStepCompleted(item);
         }
         turn.OpenAgentSteps.Clear();
+        turn.AgentLabels.Clear();
     }
 
     private void EmitFatalError(string body) => EmitError("CLI Error", body);
@@ -3576,6 +3636,16 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // Agent steps waiting for their tool_result, by tool_use id. More
         // than one when the model starts several subagents at once.
         public Dictionary<string, OutputItem> OpenAgentSteps { get; } = new Dictionary<string, OutputItem>(StringComparer.Ordinal);
+
+        // The headers of those steps, by the same id. Kept here and not on
+        // the subagent's own stream: the CLI can end the task, and so drop
+        // that stream, before the tool_result with the totals arrives.
+        public Dictionary<string, SubagentLabel> AgentLabels { get; } = new Dictionary<string, SubagentLabel>(StringComparer.Ordinal);
+
+        // For a subagent's stream: the step it runs under and that step's
+        // header, which its first message completes with the model.
+        public OutputItem? AgentStep;
+        public SubagentLabel? AgentLabel;
 
         // tool_use ids whose tool_result should be skipped (e.g. AskUserQuestion,
         // which we hide from the UI step list).

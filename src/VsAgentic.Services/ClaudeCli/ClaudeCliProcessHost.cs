@@ -203,7 +203,18 @@ public sealed class ClaudeCliProcessHost : IDisposable
                 t => CompleteRun(channelForThisRun, process, stderrTask, stderrTail, runToken),
                 TaskScheduler.Default);
         };
-        process.Start();
+        try
+        {
+            process.Start();
+        }
+        catch
+        {
+            // A process that never started has no HasExited to ask, so leaving
+            // it in place would make IsRunning throw and the next message fail
+            // the same way, even after Claude CLI Path is fixed.
+            TearDownLocked();
+            throw;
+        }
 
         // Assign to a Win32 Job Object so the child is killed if the IDE
         // crashes or is force-terminated without a chance to run cleanup.

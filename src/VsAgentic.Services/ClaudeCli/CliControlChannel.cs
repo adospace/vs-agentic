@@ -48,30 +48,114 @@ internal readonly struct ControlReply
 /// One instance per process. Ending one process must not fail the requests
 /// already sent to the next, and the old dispatcher can finish after the new
 /// process has started.
+///
+/// While a SessionStart or Setup hook runs, the CLI answers no control
+/// request: it reads the next line only when the hook has ended (CLI 2.1.310,
+/// hook of 20 s, <c>initialize</c> answered after 21 s). The dispatcher
+/// reports these hooks with <see cref="HookStarted"/> and
+/// <see cref="HookEnded"/>, and the timeout of a request does not run while
+/// one is open. It starts again, in full, when the last one ends. The CLI's
+/// own SDK does the same since 0.3.304.
 /// </summary>
 internal sealed class CliControlChannel
 {
     /// <summary>The error text of a request that got no answer.</summary>
     public const string NoResponse = "no response";
 
+    /// <summary>
+    /// The error text of a request that got no answer because start-up hooks
+    /// ran for longer than <see cref="MaxHookWait"/>.
+    /// </summary>
+    public const string HookWaitExceeded = "start-up hooks did not finish";
+
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// How much hook time a request waits out before its own timeout runs
+    /// regardless. The CLI's SDK allows the same 10 minutes. A hook that runs
+    /// longer is broken, and so is the process that waits for it.
+    /// </summary>
+    public static readonly TimeSpan MaxHookWait = TimeSpan.FromMinutes(10);
 
     // Shared by all instances, so a late answer from an old process can
     // never match a request sent to the new one.
     private static int s_seq;
 
     private readonly Func<string, ValueTask> _writeLine;
+    private readonly TimeSpan _maxHookWait;
     private readonly Dictionary<string, TaskCompletionSource<ControlReply>> _pending =
         new Dictionary<string, TaskCompletionSource<ControlReply>>(StringComparer.Ordinal);
 
+    // The start-up hooks that run, by hook id, and a task that completes on
+    // the next change to the set. Guarded by _hooks.
+    private readonly HashSet<string> _hooks = new HashSet<string>(StringComparer.Ordinal);
+    private TaskCompletionSource<bool> _hooksChanged = NewSignal();
+
     public CliControlChannel(Func<string, ValueTask> writeLine)
+        : this(writeLine, MaxHookWait)
+    {
+    }
+
+    internal CliControlChannel(Func<string, ValueTask> writeLine, TimeSpan maxHookWait)
     {
         _writeLine = writeLine;
+        _maxHookWait = maxHookWait;
+    }
+
+    private static TaskCompletionSource<bool> NewSignal() =>
+        new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Whether a start-up hook runs, so the CLI answers nothing until it ends.</summary>
+    public bool HooksRunning
+    {
+        get { lock (_hooks) return _hooks.Count > 0; }
+    }
+
+    /// <summary>
+    /// Whether the process has sent its first <c>system/init</c>. Hooks after
+    /// it are not start-up hooks: a SessionStart hook also runs after a
+    /// compaction, in the middle of a turn.
+    /// </summary>
+    public bool StartupEnded { get; private set; }
+
+    /// <summary>
+    /// The first <c>system/init</c> has arrived. A start-up hook that has not
+    /// reported its end by then (an async hook, say) no longer holds up the
+    /// CLI, so it stops counting: a request's timeout starts again in full.
+    /// </summary>
+    public void EndStartup()
+    {
+        StartupEnded = true;
+        ChangeHooks(() =>
+        {
+            if (_hooks.Count == 0) return false;
+            _hooks.Clear();
+            return true;
+        });
+    }
+
+    /// <summary>A SessionStart or Setup hook has started.</summary>
+    public void HookStarted(string hookId) => ChangeHooks(() => _hooks.Add(hookId));
+
+    /// <summary>A SessionStart or Setup hook has ended, however it went.</summary>
+    public void HookEnded(string hookId) => ChangeHooks(() => _hooks.Remove(hookId));
+
+    private void ChangeHooks(Func<bool> change)
+    {
+        TaskCompletionSource<bool> changed;
+        lock (_hooks)
+        {
+            if (!change()) return;
+            changed = _hooksChanged;
+            _hooksChanged = NewSignal();
+        }
+        changed.TrySetResult(true);
     }
 
     /// <summary>
     /// Writes one control request and waits for its answer. No answer within
-    /// <paramref name="timeout"/> counts as a failure.
+    /// <paramref name="timeout"/> counts as a failure. Time in which a
+    /// start-up hook runs does not count, up to <see cref="MaxHookWait"/>.
     ///
     /// Never await this from the dispatcher loop: the dispatcher is what
     /// delivers the answer.
@@ -85,9 +169,7 @@ internal sealed class CliControlChannel
         try
         {
             await _writeLine(buildLine(requestId)).ConfigureAwait(false);
-
-            var done = await Task.WhenAny(pending.Task, Task.Delay(timeout ?? DefaultTimeout)).ConfigureAwait(false);
-            return done == pending.Task ? pending.Task.Result : ControlReply.Failed(NoResponse);
+            return await WaitForReplyAsync(pending.Task, timeout ?? DefaultTimeout).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -96,6 +178,47 @@ internal sealed class CliControlChannel
         finally
         {
             lock (_pending) { _pending.Remove(requestId); }
+        }
+    }
+
+    /// <summary>
+    /// Waits for the answer. While no hook runs, the timeout runs; a hook that
+    /// starts stops it, and the end of the last hook starts it again in full.
+    /// Hook time beyond the allowance counts as time without a hook.
+    /// </summary>
+    private async Task<ControlReply> WaitForReplyAsync(Task<ControlReply> reply, TimeSpan timeout)
+    {
+        var hookTime = TimeSpan.Zero;
+        var hookWaitExceeded = false;
+        while (true)
+        {
+            bool hooksRunning;
+            Task changed;
+            lock (_hooks)
+            {
+                hooksRunning = _hooks.Count > 0;
+                changed = _hooksChanged.Task;
+            }
+
+            if (hooksRunning && hookTime < _maxHookWait)
+            {
+                var started = DateTime.UtcNow;
+                var done = await Task.WhenAny(reply, changed, Task.Delay(_maxHookWait - hookTime)).ConfigureAwait(false);
+                if (done == reply) return reply.Result;
+                hookTime += DateTime.UtcNow - started;
+                continue;
+            }
+
+            // From here a hook that ends or starts again changes nothing: the
+            // allowance is spent, and the timeout runs to the end.
+            if (hooksRunning) hookWaitExceeded = true;
+            var wait = hookWaitExceeded
+                ? Task.Delay(timeout)
+                : Task.WhenAny(changed, Task.Delay(timeout));
+            var first = await Task.WhenAny(reply, wait).ConfigureAwait(false);
+            if (first == reply) return reply.Result;
+            if (hookWaitExceeded || !changed.IsCompleted)
+                return ControlReply.Failed(hookWaitExceeded ? HookWaitExceeded : NoResponse);
         }
     }
 

@@ -35,6 +35,15 @@ public class VsAgenticOptions
     public ClaudeEffort Effort { get; set; } = ClaudeEffort.Default;
 
     /// <summary>
+    /// Ask the API for a summary of Claude's thinking, passed as
+    /// <c>--thinking-display summarized</c>, or <c>omitted</c> when off. Without
+    /// the flag a stream-json session sets nothing and the API default applies,
+    /// which leaves the thinking blocks empty. The user's own
+    /// <c>showThinkingSummaries</c> setting does not apply in <c>-p</c>.
+    /// </summary>
+    public bool ShowThinkingSummaries { get; set; } = true;
+
+    /// <summary>
     /// Also load the user-scope MCP servers from the CLI's global config
     /// (<c>~/.claude.json</c>). They are copied into our <c>--mcp-config</c>
     /// next to our permission server; <c>--strict-mcp-config</c> stays, so a

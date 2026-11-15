@@ -203,7 +203,18 @@ public sealed class ClaudeCliProcessHost : IDisposable
                 t => CompleteRun(channelForThisRun, process, stderrTask, stderrTail, runToken),
                 TaskScheduler.Default);
         };
-        process.Start();
+        try
+        {
+            process.Start();
+        }
+        catch
+        {
+            // A process that never started has no HasExited to ask, so leaving
+            // it in place would make IsRunning throw and the next message fail
+            // the same way, even after Claude CLI Path is fixed.
+            TearDownLocked();
+            throw;
+        }
 
         // Assign to a Win32 Job Object so the child is killed if the IDE
         // crashes or is force-terminated without a chance to run cleanup.
@@ -291,6 +302,15 @@ public sealed class ClaudeCliProcessHost : IDisposable
             sb.Append(" --effort ");
             sb.Append(_options.Effort.ToCliValue());
         }
+
+        // Without this flag a stream-json session leaves the display to the
+        // API, whose default sends thinking blocks with no text, so the
+        // Thinking step almost never appeared. The user's showThinkingSummaries
+        // setting is read only by an interactive CLI. "omitted" is sent
+        // explicitly so that off means off for every model. CLI 2.1.150
+        // already accepts the flag.
+        sb.Append(" --thinking-display ");
+        sb.Append(_options.ShowThinkingSummaries ? "summarized" : "omitted");
 
         // Wire the MCP permission tool so the CLI asks us before running gated tools.
         // --strict-mcp-config limits the session to the servers in our config

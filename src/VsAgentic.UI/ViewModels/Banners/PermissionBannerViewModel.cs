@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows.Threading;
@@ -45,6 +47,27 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
     [ObservableProperty]
     private string _alternativeText = "";
 
+    // The CLI takes rules back on an allow response and stops asking for
+    // anything they match, so "for this session" is not modelled here: the
+    // rules are handed over and the CLI's own rule engine does the matching.
+    private readonly IReadOnlyList<PermissionRule> _sessionRules;
+
+    /// <summary>Whether this request can be turned into rules at all.</summary>
+    public bool CanAllowForSession => _sessionRules.Count > 0;
+
+    /// <summary>
+    /// Names every rule about to be granted, e.g. <c>Bash(cd:*) Bash(git push:*)</c>.
+    /// This reads on the banner itself, next to the command: a compound command
+    /// can carry several rules, and what a click grants has to be visible
+    /// without hovering anything.
+    /// </summary>
+    public string SessionRulesText => string.Join("   ", _sessionRules.Select(r => r.Display));
+
+    /// <summary>Says how long the rules last, which the line on the banner does not.</summary>
+    public string AllowForSessionTooltip =>
+        "The CLI stops asking for calls these rules match. They live in the CLI "
+        + "process, so they are gone when it restarts and nothing is written to disk.";
+
     private readonly Func<Task<string?>>? _viewDiff;
 
     /// <summary>True for a file edit whose change can be shown before Allow.</summary>
@@ -70,6 +93,7 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
         _onResolved = onResolved;
         _viewDiff = viewDiff;
         BodyText = FormatBody(request);
+        _sessionRules = PermissionRuleBuilder.Build(request.ToolName, request.Input);
     }
 
     /// <summary>Opens the file as it is now against the file with the edit
@@ -97,8 +121,8 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
     // answer again: the next banner in the queue would be taken down unread.
     private bool _resolved;
 
-    /// <summary>True for a moment after the banner comes up from the queue,
-    /// while the buttons stay disabled. See <see cref="HoldInput"/>.</summary>
+    /// <summary>True for a moment after the banner comes up from the queue or
+    /// right after another prompt was answered, while the buttons stay disabled. See <see cref="HoldInput"/>.</summary>
     [ObservableProperty]
     private bool _isInputHeld;
 
@@ -122,9 +146,11 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
         timer.Start();
     }
 
-    private bool CanDecide() => !_resolved && !IsInputHeld;
+    /// <summary>True until the banner is answered, except while its input is
+    /// held. Every command that answers the banner checks this.</summary>
+    protected bool CanDecide() => !_resolved && !IsInputHeld;
 
-    private void Resolve(PermissionDecision decision)
+    protected void Resolve(PermissionDecision decision)
     {
         if (!CanDecide()) return;
         _resolved = true;
@@ -133,9 +159,12 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
         _onResolved(decision);
     }
 
-    private void NotifyDecisionCommands()
+    /// <summary>Refreshes the commands that check <see cref="CanDecide"/>.
+    /// A subclass with its own answer commands adds them here.</summary>
+    protected virtual void NotifyDecisionCommands()
     {
         AllowCommand.NotifyCanExecuteChanged();
+        AllowForSessionCommand.NotifyCanExecuteChanged();
         DenyCommand.NotifyCanExecuteChanged();
         OtherCommand.NotifyCanExecuteChanged();
         SubmitCommand.NotifyCanExecuteChanged();
@@ -150,13 +179,18 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
     partial void OnAlternativeTextChanged(string value) => SubmitCommand.NotifyCanExecuteChanged();
 
     [RelayCommand(CanExecute = nameof(CanDecide))]
-    private void Allow()
-    {
-        var inputJson = _request.Input.ValueKind == JsonValueKind.Undefined
+    private void Allow() => Resolve(PermissionDecision.Allow(InputJson()));
+
+    /// <summary>Allow, and stop asking for calls of this shape until the CLI
+    /// process exits.</summary>
+    [RelayCommand(CanExecute = nameof(CanDecide))]
+    private void AllowForSession() =>
+        Resolve(PermissionDecision.AllowForSession(InputJson(), _sessionRules));
+
+    private string InputJson() =>
+        _request.Input.ValueKind == JsonValueKind.Undefined
             ? "{}"
             : _request.Input.GetRawText();
-        Resolve(PermissionDecision.Allow(inputJson));
-    }
 
     [RelayCommand(CanExecute = nameof(CanDecide))]
     private void Deny()

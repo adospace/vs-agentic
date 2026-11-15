@@ -104,9 +104,11 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
         timer.Start();
     }
 
-    private bool CanDecide() => !_resolved && !IsInputHeld;
+    /// <summary>True until the banner is answered, except while its input is
+    /// held. Every command that answers the banner checks this.</summary>
+    protected bool CanDecide() => !_resolved && !IsInputHeld;
 
-    private void Resolve(PermissionDecision decision)
+    protected void Resolve(PermissionDecision decision)
     {
         if (!CanDecide()) return;
         _resolved = true;
@@ -114,7 +116,9 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
         _onResolved(decision);
     }
 
-    private void NotifyDecisionCommands()
+    /// <summary>Refreshes the commands that check <see cref="CanDecide"/>.
+    /// A subclass with its own answer commands adds them here.</summary>
+    protected virtual void NotifyDecisionCommands()
     {
         AllowCommand.NotifyCanExecuteChanged();
         AllowForSessionCommand.NotifyCanExecuteChanged();

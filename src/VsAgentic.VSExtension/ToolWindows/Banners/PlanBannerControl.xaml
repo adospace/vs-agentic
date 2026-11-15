@@ -1,0 +1,70 @@
+<UserControl x:Class="VsAgentic.VSExtension.ToolWindows.Banners.PlanBannerControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vs="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0">
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/VsAgentic.VSExtension;component/ToolWindows/SharedStyles.xaml"/>
+                <ResourceDictionary Source="/VsAgentic.VSExtension;component/ToolWindows/Banners/BannerStyles.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <!-- The plan is the card in the transcript above; the banner only asks
+         what to do with it. -->
+    <Border Style="{StaticResource BannerCardBorderStyle}">
+        <StackPanel>
+            <TextBlock Text="Claude has a plan. Start working on it?"
+                       FontWeight="SemiBold"
+                       FontSize="13"
+                       Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                       Margin="12,10,12,8"
+                       TextWrapping="Wrap"/>
+
+            <!-- Wraps in a narrow chat window instead of cutting off a button. -->
+            <WrapPanel Margin="6,0,12,10"
+                       Visibility="{Binding IsChoosing, Converter={StaticResource BoolToVis}}">
+                <Button Content="Yes, accept edits"
+                        Style="{StaticResource PrimaryButtonStyle}"
+                        Command="{Binding StartAcceptingEditsCommand}"
+                        ToolTip="Start, and let Claude edit files without asking"/>
+                <Button Content="Yes, ask before edits"
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        Command="{Binding StartAskingBeforeEditsCommand}"
+                        ToolTip="Start, and ask before each file edit"/>
+                <Button Content="Keep planning"
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        Command="{Binding KeepPlanningCommand}"
+                        ToolTip="Tell Claude what to change in the plan"/>
+            </WrapPanel>
+
+            <!-- Keep planning: what to change. Empty is allowed; Claude then
+                 asks. -->
+            <StackPanel Margin="12,0,12,10"
+                        Visibility="{Binding IsGivingFeedback, Converter={StaticResource BoolToVis}}">
+                <TextBox Style="{StaticResource BannerInputTextBoxStyle}"
+                         Text="{Binding FeedbackText, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="What should Claude change in the plan?"/>
+
+                <StackPanel Orientation="Horizontal"
+                            HorizontalAlignment="Right"
+                            Margin="0,6,0,0">
+                    <Button Content="Send feedback"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            Command="{Binding SendFeedbackCommand}"/>
+                    <Button Style="{StaticResource ChevronButtonStyle}"
+                            Command="{Binding BackToChoicesCommand}"
+                            ToolTip="Back"
+                            Margin="6,0,0,0">
+                        <TextBlock Text="&#xE112;"
+                                   FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                   FontSize="12"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+                    </Button>
+                </StackPanel>
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</UserControl>

@@ -46,6 +46,13 @@ public sealed class PermissionDecision
     public string? Message { get; }
 
     /// <summary>
+    /// Permission mode the CLI switches to as it allows the call, e.g.
+    /// <c>acceptEdits</c> when the user approves a plan and lets Claude edit
+    /// without asking. Null leaves the mode to the CLI.
+    /// </summary>
+    public string? Mode { get; }
+
+    /// <summary>
     /// Rules the CLI should add for the rest of its session, so it stops asking
     /// for calls they match. Empty for a one-off allow. They live in the CLI
     /// process only, so they are gone once that process exits.
@@ -56,16 +63,22 @@ public sealed class PermissionDecision
         PermissionBehavior behavior,
         string? updatedInputJson,
         string? message,
-        IReadOnlyList<PermissionRule>? sessionRules = null)
+        IReadOnlyList<PermissionRule>? sessionRules = null,
+        string? mode = null)
     {
         Behavior = behavior;
         UpdatedInputJson = updatedInputJson;
         Message = message;
         SessionRules = sessionRules ?? Array.Empty<PermissionRule>();
+        Mode = mode;
     }
 
     public static PermissionDecision Allow(string updatedInputJson)
         => new PermissionDecision(PermissionBehavior.Allow, updatedInputJson, null);
+
+    /// <summary>Allow the call, and switch the session to <paramref name="mode"/>.</summary>
+    public static PermissionDecision AllowAndSetMode(string updatedInputJson, string mode)
+        => new PermissionDecision(PermissionBehavior.Allow, updatedInputJson, null, mode: mode);
 
     /// <summary>
     /// Allow this call and stop asking for anything matching <paramref name="rules"/>

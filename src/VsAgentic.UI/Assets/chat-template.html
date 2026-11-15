@@ -977,7 +977,10 @@ function isSessionLine(type, data) {
 // An IDE tool's step goes by its title ("Reading the Error List"), not by
 // mcp__vsagentic__…; null for other steps. Steps saved before IDE tools kept
 // their title still read "Used …", and keep the name.
+// A step VsAgentic reports itself (ClaudeCli: "Settings file ignored", "CLI
+// Error" …) goes by its title too; the name tells the user nothing.
 function ideToolTitle(data) {
+    if (data.ToolName === 'ClaudeCli') return data.Title || null;
     if (typeof data.ToolName !== 'string' || data.ToolName.indexOf('mcp__vsagentic__') !== 0) return null;
     if (!data.Title || /^Us(ed|ing) /.test(data.Title)) return null;
     return data.Title;

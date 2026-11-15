@@ -54,6 +54,12 @@ public class VsAgenticOptionsPage : DialogPage
     public ClaudeEffort Effort { get; set; } = ClaudeEffort.Default;
 
     [Category("Claude CLI")]
+    [DisplayName("Show thinking summaries")]
+    [Description("True (default): the chat shows a Thinking step with a short summary of what Claude thought before it answered. Anthropic writes the summary; it is not the full thinking. False: the step does not appear. Claude thinks the same either way, and the setting does not change what you pay. The showThinkingSummaries setting in your Claude Code settings applies only in a terminal, not here. Applies to sessions started after the change.")]
+    [DefaultValue(true)]
+    public bool ShowThinkingSummaries { get; set; } = true;
+
+    [Category("Claude CLI")]
     [DisplayName("Use my user MCP servers")]
     [Description("False (default): the CLI loads only VsAgentic's own MCP server, which asks you before gated tools run. True: the CLI also loads the MCP servers you added with the user scope (claude mcp add --scope user), which Claude Code keeps in ~/.claude.json. Servers in a project's .mcp.json, servers added with the local scope, plugin servers and claude.ai connectors are not loaded, so opening a repository never starts a server it defines. Servers that do not connect are listed in the chat. Applies to sessions started after the change.")]
     [DefaultValue(false)]

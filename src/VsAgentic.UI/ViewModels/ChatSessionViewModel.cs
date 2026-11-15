@@ -27,6 +27,11 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     // Subagents running in parallel ask at the same time. UI thread only.
     private readonly List<IBannerViewModel> _waitingPrompts = new();
 
+    // Runs from the last answer to a prompt. The CLI often asks the next
+    // question only after the answered tool has run, so a new prompt can come
+    // up under the pointer a few milliseconds after the click. UI thread only.
+    private System.Diagnostics.Stopwatch? _sinceLastAnswer;
+
     // Which Agent step each subagent step ran under, and the Agent steps'
     // titles, so a permission prompt can say which subagent asks. Kept after
     // the steps finish: a background subagent asks long after its Agent step
@@ -149,9 +154,23 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// Whether the user is looking at this session right now. Maintained by
     /// the host, which is the only thing that can see focus; a turn that ends
     /// while this is true never arms the Completed indicator, because there is
-    /// nobody to call back to a window they are already in.
+    /// nobody to call back to a window they are already in. For the same
+    /// reason neither the status bar nor the caption moves for a question while
+    /// this is true.
     /// </summary>
-    public bool IsSessionFocused { get; set; }
+    public bool IsSessionFocused
+    {
+        get => _isSessionFocused;
+        set
+        {
+            if (_isSessionFocused == value) return;
+            _isSessionFocused = value;
+            // Refreshes the flash, the caption and the timer behind it.
+            UpdateActivityIndicator();
+        }
+    }
+
+    private bool _isSessionFocused;
 
     [ObservableProperty]
     private string _displayTitle = "New Session";
@@ -221,7 +240,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     private bool IsAnimationEnabled(SessionActivity activity) => activity switch
     {
         SessionActivity.Busy => _options.AnimateTitleWhileBusy,
-        SessionActivity.AwaitingUser => _options.AnimateTitleWhileWaiting,
+        SessionActivity.AwaitingUser => IsWaitingAnimated,
         // The marker switch gates both forms, so turning it off stops the timer
         // rather than leaving it running against a prefix nothing will show.
         SessionActivity.Completed => _options.ShowCompletedIndicator && _options.AnimateTitleWhenComplete,
@@ -235,10 +254,17 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     /// </summary>
     private string StaticPrefix => Activity switch
     {
-        SessionActivity.AwaitingUser when !_options.AnimateTitleWhileWaiting => AwaitingStaticPrefix,
+        SessionActivity.AwaitingUser when !IsWaitingAnimated => AwaitingStaticPrefix,
         SessionActivity.Completed when _options.ShowCompletedIndicator => CompletedStaticPrefix,
         _ => ""
     };
+
+    /// <summary>
+    /// The waiting hand moves only while the user is elsewhere. While they are
+    /// answering in the session, the motion only distracts; the caption keeps
+    /// the static "? " so the tab still reads as waiting.
+    /// </summary>
+    private bool IsWaitingAnimated => _options.AnimateTitleWhileWaiting && !IsSessionFocused;
 
     /// <summary>
     /// Pushes Tools → Options → Appearance changes into an already-open session.
@@ -289,9 +315,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         _ => HasBackgroundTasks
     };
 
-    /// <summary>Whether the status bar should be pulsing. Bound by ChatSessionControl.xaml.</summary>
+    /// <summary>
+    /// Whether the status bar should be pulsing. Bound by ChatSessionControl.xaml.
+    /// The flash calls the user back to the session; while they are typing an
+    /// answer in it, the flash only distracts. It comes back when focus leaves
+    /// with the question still open.
+    /// </summary>
     public bool IsFlashing =>
-        (Activity == SessionActivity.AwaitingUser && _options.FlashStatusBarWhileWaiting)
+        (Activity == SessionActivity.AwaitingUser && _options.FlashStatusBarWhileWaiting && !IsSessionFocused)
         || (Activity == SessionActivity.Completed && _options.FlashStatusBarWhenComplete);
 
     partial void OnBusyStatusChanged(string value)
@@ -926,6 +957,10 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             _waitingPrompts.Add(prompt);
             return;
         }
+        // A prompt that arrives just after an answer comes up where the user
+        // just clicked, the same as one from the queue.
+        if (prompt is IQueuedPrompt fresh && _sinceLastAnswer?.Elapsed < PromptHold)
+            fresh.HoldInput(PromptHold);
         ActiveBanner = prompt;
     }
 
@@ -939,19 +974,21 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         var next = _waitingPrompts[0];
         _waitingPrompts.RemoveAt(0);
         // It comes up where the user just clicked or pressed Enter.
-        if (next is IQueuedPrompt queued) queued.HoldInput(QueuedPromptHold);
+        if (next is IQueuedPrompt queued) queued.HoldInput(PromptHold);
         ActiveBanner = next;
     }
 
     // Long enough for the second click of a double-click or a held Enter,
-    // short enough not to be noticed.
-    private static readonly TimeSpan QueuedPromptHold = TimeSpan.FromMilliseconds(400);
+    // short enough not to be noticed. Also how soon after an answer a new
+    // prompt counts as coming up under the same click.
+    private static readonly TimeSpan PromptHold = TimeSpan.FromMilliseconds(400);
 
     /// <summary>After a prompt is answered: the next one comes up only if the
     /// answered one is still on screen. A Stop or a withdrawal may have taken
     /// it down already. Must run on the UI thread.</summary>
     private void ShowNextPromptAfter(IBannerViewModel? answered)
     {
+        _sinceLastAnswer = System.Diagnostics.Stopwatch.StartNew();
         if (answered is not null && ReferenceEquals(ActiveBanner, answered))
             ShowNextPrompt();
     }

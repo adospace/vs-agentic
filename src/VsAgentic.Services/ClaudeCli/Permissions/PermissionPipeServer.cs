@@ -456,7 +456,7 @@ internal sealed class PermissionPipeServer : IDisposable
             sb.Append(JsonSerializer.Serialize(id));
             sb.Append(",\"behavior\":\"allow\",\"updatedInput\":");
             sb.Append(decision.UpdatedInputJson ?? "{}");
-            AppendMode(sb, decision);
+            AppendUpdatedPermissions(sb, decision);
             sb.Append("}");
             return sb.ToString();
         }
@@ -473,20 +473,56 @@ internal sealed class PermissionPipeServer : IDisposable
     }
 
     /// <summary>
-    /// Appends the mode switch the CLI reads off an allow response. With
-    /// destination <c>session</c> it changes the running session only and
-    /// writes nothing to disk. Measured on CLI 2.1.316 for <c>ExitPlanMode</c>:
-    /// the CLI switches before it runs the call and reports the new mode in
-    /// <c>system/status</c>, so the mode picker follows. The helper process
-    /// forwards every field of this object except <c>id</c>.
+    /// Appends the <c>updatedPermissions</c> array the CLI reads off an allow
+    /// response: a mode switch (plan approval), session rules (Allow for this
+    /// session), or both. Every entry has destination <c>session</c>, so it
+    /// changes the running CLI process only and writes nothing to disk.
+    ///
+    /// Mode: measured on CLI 2.1.316 for <c>ExitPlanMode</c>, the CLI switches
+    /// before it runs the call and reports the new mode in
+    /// <c>system/status</c>, so the mode picker follows.
+    ///
+    /// The helper process forwards every field of this object except <c>id</c>,
+    /// so nothing extra is needed there.
     /// </summary>
-    private static void AppendMode(StringBuilder sb, PermissionDecision decision)
+    private static void AppendUpdatedPermissions(StringBuilder sb, PermissionDecision decision)
     {
-        if (decision.Mode is null) return;
+        var hasMode = decision.Mode is not null;
+        var hasRules = decision.SessionRules.Count > 0;
+        if (!hasMode && !hasRules) return;
 
-        sb.Append(",\"updatedPermissions\":[{\"type\":\"setMode\",\"mode\":");
-        sb.Append(JsonSerializer.Serialize(decision.Mode));
-        sb.Append(",\"destination\":\"session\"}]");
+        sb.Append(",\"updatedPermissions\":[");
+
+        if (hasMode)
+        {
+            sb.Append("{\"type\":\"setMode\",\"mode\":");
+            sb.Append(JsonSerializer.Serialize(decision.Mode));
+            sb.Append(",\"destination\":\"session\"}");
+        }
+
+        if (hasRules)
+        {
+            if (hasMode) sb.Append(',');
+            sb.Append("{\"type\":\"addRules\",\"behavior\":\"allow\",\"destination\":\"session\",\"rules\":[");
+
+            for (var i = 0; i < decision.SessionRules.Count; i++)
+            {
+                if (i > 0) sb.Append(',');
+                var rule = decision.SessionRules[i];
+                sb.Append("{\"toolName\":");
+                sb.Append(JsonSerializer.Serialize(rule.ToolName));
+                if (rule.RuleContent is not null)
+                {
+                    sb.Append(",\"ruleContent\":");
+                    sb.Append(JsonSerializer.Serialize(rule.RuleContent));
+                }
+                sb.Append('}');
+            }
+
+            sb.Append("]}");
+        }
+
+        sb.Append(']');
     }
 
     public void Dispose()

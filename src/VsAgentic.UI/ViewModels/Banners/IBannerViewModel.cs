@@ -17,6 +17,6 @@ public interface IBannerViewModel
 public interface IQueuedPrompt : IBannerViewModel
 {
     /// <summary>Keeps the prompt from being answered for a moment after it
-    /// comes up from the queue.</summary>
+    /// comes up from the queue, or right after another prompt was answered.</summary>
     void HoldInput(System.TimeSpan time);
 }

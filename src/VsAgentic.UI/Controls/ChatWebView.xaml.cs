@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text.Json;
 using System.Windows;
@@ -18,21 +19,23 @@ namespace VsAgentic.UI.Controls;
 public partial class ChatWebView : UserControl
 {
     /// <summary>
-    /// Raised when the user clicks a file path link in rendered content.
-    /// The string argument is the raw path (possibly with :line suffix).
+    /// Raised when the user clicks a file path link in rendered content, or
+    /// picks an item from its right-click menu. The string argument is the raw
+    /// path (possibly with :line suffix).
     /// </summary>
-    public static event Action<string>? FileOpenRequested;
+    public static event Action<string, FileLinkAction>? FileLinkRequested;
 
     /// <summary>
     /// Set by the host once its DI container is up. The control is created by
     /// XAML, so there is nothing to inject into — static, like
-    /// <see cref="FileOpenRequested"/>. Defaults to a no-op logger.
+    /// <see cref="FileLinkRequested"/>. Defaults to a no-op logger.
     /// </summary>
     public static ILogger Logger { get; set; } = NullLogger.Instance;
 
     /// <summary>
     /// How long a user data folder survives once its owner can no longer be
-    /// confirmed. See <see cref="IsTooOld"/>.
+    /// confirmed. See <see cref="IsTooOld"/> and
+    /// <see cref="PurgeLegacySharedFolder"/>.
     /// </summary>
     private const int StaleFolderMaxAgeDays = 7;
 
@@ -44,6 +47,34 @@ public partial class ChatWebView : UserControl
     /// single level that the chat and the chrome around it share.
     /// </summary>
     public event Action<int>? ZoomChangeRequested;
+
+    /// <summary>
+    /// Raised when the user presses "Run in background" on a running step.
+    /// The argument is the step id.
+    /// </summary>
+    public event Action<string>? MoveToBackgroundRequested;
+
+    /// <summary>
+    /// Raised when the user presses "Diff" on a step that changed a file.
+    /// The argument is the step id.
+    /// </summary>
+    public event Action<string>? DiffRequested;
+
+    /// <summary>
+    /// Raised when the user presses a pointer button anywhere in the rendered
+    /// chat. The transcript is a browser child window, so a click in it is not
+    /// a WPF mouse event and need not move WPF focus either — without this
+    /// relay, reading the chat and clicking about in it would leave the host
+    /// believing the session had never been looked at.
+    /// </summary>
+    public event Action? Clicked;
+
+    /// <summary>
+    /// Raised when the rendered chat gains or loses focus. WPF cannot answer
+    /// that for a browser child window, and the host needs it to tell a
+    /// session the user is sitting in from one they have walked away from.
+    /// </summary>
+    public event Action<bool>? ContentFocusChanged;
 
     private bool _isWebViewReady;
     private double _zoomFactor = ZoomLevels.Default;
@@ -83,6 +114,7 @@ public partial class ChatWebView : UserControl
         {
             var env = await CreateEnvironmentAsync();
             await WebView.EnsureCoreWebView2Async(env);
+            MapImageHost();
             WebView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             WebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
             WebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
@@ -133,10 +165,71 @@ public partial class ChatWebView : UserControl
         // predecessor that crashed with the same id, stale lock file included.
         // The time is a UTC file time: StartTime is Kind=Local, so ticks taken
         // either side of a DST shift would not compare equal.
-        using var process = Process.GetCurrentProcess();
-        var processFolder = $"{baseFolder}.p{process.Id}.t{process.StartTime.ToFileTimeUtc():x16}";
+        var processFolder = ProcessScopedFolder(baseFolder);
         PurgeStaleProcessFolders(baseFolder);
+        PurgeLegacySharedFolder(baseFolder);
         return await CoreWebView2Environment.CreateAsync(null, processFolder);
+    }
+
+    /// <summary>
+    /// Names a folder after the running process, as
+    /// "{baseFolder}.p{id}.t{startTicks:x16}" — the form
+    /// <see cref="PurgeStaleProcessFolders"/> reads back.
+    /// </summary>
+    private static string ProcessScopedFolder(string baseFolder)
+    {
+        using var process = Process.GetCurrentProcess();
+        return $"{baseFolder}.p{process.Id}.t{process.StartTime.ToFileTimeUtc():x16}";
+    }
+
+    /// <summary>
+    /// Deletes the single shared user data folder every host used before the
+    /// move to process-scoped ones. It carries no owner in its name, so
+    /// <see cref="PurgeStaleProcessFolders"/> cannot see it and it would
+    /// otherwise stay on disk for good — a full browser profile, tens of
+    /// megabytes, on the machine of everyone who upgrades.
+    /// </summary>
+    private static void PurgeLegacySharedFolder(string baseFolder)
+    {
+        try
+        {
+            if (!Directory.Exists(baseFolder)) return;
+
+            // A host from an older build may still be running against this
+            // folder, and its name holds no process id to ask about. Age is
+            // what is left, under the same seven days as the process-scoped
+            // folders — but the age of the profile, not of the folder. A
+            // folder's own last write time only moves when its direct entries
+            // change, and the profile is written deeper than that: a folder
+            // last used in August can read March at the top.
+            var profileState = Path.Combine(baseFolder, "EBWebView", "Local State");
+            if (!File.Exists(profileState))
+            {
+                // Nothing here dates the profile, so nothing here says the
+                // folder is unused. Keeping it costs a folder that is not the
+                // one this cleanup is about; deleting it is a claim that was
+                // never checked.
+                Logger.LogDebug(
+                    "[ChatWebView] Leaving the shared WebView2 folder '{Folder}': it has no EBWebView\\Local State to date it.",
+                    baseFolder);
+                return;
+            }
+
+            if (DateTime.UtcNow - File.GetLastWriteTimeUtc(profileState)
+                <= TimeSpan.FromDays(StaleFolderMaxAgeDays))
+            {
+                return;
+            }
+
+            Directory.Delete(baseFolder, recursive: true);
+            Logger.LogDebug(
+                "[ChatWebView] Reclaimed the shared WebView2 folder '{Folder}' left by builds before per-process folders.",
+                baseFolder);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "[ChatWebView] Could not delete the shared WebView2 folder '{Folder}'.", baseFolder);
+        }
     }
 
     /// <summary>
@@ -252,6 +345,127 @@ public partial class ChatWebView : UserControl
         }
     }
 
+    // Images are served to the WebView over a virtual host instead of being
+    // inlined as data URIs. A single screenshot runs to a megabyte or more, and
+    // ExecuteScriptAsync takes the whole script as one string — pushing that
+    // much base64 through it kills the WebView2 browser process outright, which
+    // blanks the pane with no exception on our side.
+    private const string ImageHost = "vsagentic-images";
+    private string? _imageFolder;
+
+    private void MapImageHost()
+    {
+        try
+        {
+            // A render cache, not storage: the session folder keeps the copies
+            // that matter. Scoped to this control rather than to the process,
+            // because every chat window has a control of its own — with one
+            // folder per process, a second window opening would clear the files
+            // the first is still serving. A fresh folder per control means there
+            // is never anything to clear.
+            //
+            // The control folders sit under a process folder named as for the
+            // user data folder, so the same purge reclaims what hosts that are
+            // no longer running left behind.
+            var baseFolder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "VsAgentic", "WebView2Images");
+            PurgeStaleProcessFolders(baseFolder);
+
+            _imageFolder = Path.Combine(ProcessScopedFolder(baseFolder), Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(_imageFolder);
+
+            // DenyCors, not Deny: the page comes from NavigateToString, so its
+            // origin is not the virtual host and every <img> pointing at it is a
+            // cross-origin request. Deny blocks those outright and the thumbnail
+            // renders as a broken image. DenyCors lets subresources load while
+            // still refusing fetch/XHR against the folder.
+            WebView.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                ImageHost, _imageFolder, CoreWebView2HostResourceAccessKind.DenyCors);
+        }
+        catch (Exception ex)
+        {
+            // Images then go to the page inline as data URIs, and a large one
+            // can take the browser process down with it — see ImageHost.
+            _imageFolder = null;
+            Logger.LogError(ex, "[ChatWebView] Image host mapping failed; images will be sent inline.");
+        }
+    }
+
+    /// <summary>
+    /// Writes any data-URI images in the message to the mapped folder and
+    /// rewrites them to short virtual-host URLs, so the script that carries the
+    /// message stays small. Messages without images are returned unchanged.
+    /// </summary>
+    private ChatMessageData MaterializeImages(ChatMessageData data)
+    {
+        if (data.Images is not { Count: > 0 } || _imageFolder is null) return data;
+
+        var urls = new List<string>(data.Images.Count);
+        foreach (var image in data.Images)
+        {
+            urls.Add(WriteImage(image) ?? image);
+        }
+
+        return new ChatMessageData
+        {
+            Id = data.Id,
+            Type = data.Type,
+            Content = data.Content,
+            ToolName = data.ToolName,
+            Title = data.Title,
+            Status = data.Status,
+            ExpanderTitle = data.ExpanderTitle,
+            BodyMode = data.BodyMode,
+            Body = data.Body,
+            IsStreaming = data.IsStreaming,
+            ParentId = data.ParentId,
+            Images = urls
+        };
+    }
+
+    private string? WriteImage(string dataUri)
+    {
+        try
+        {
+            // data:<media type>;base64,<payload>
+            var comma = dataUri.IndexOf(',');
+            if (!dataUri.StartsWith("data:", StringComparison.Ordinal) || comma < 0)
+                return null;
+
+            var mediaType = dataUri.Substring(5, dataUri.IndexOf(';') - 5);
+            var bytes = Convert.FromBase64String(dataUri.Substring(comma + 1));
+
+            var extension = mediaType switch
+            {
+                "image/png" => ".png",
+                "image/jpeg" => ".jpg",
+                "image/gif" => ".gif",
+                "image/webp" => ".webp",
+                _ => ".bin",
+            };
+
+            // Content-addressed, so the same image reused across messages is
+            // written once.
+            string name;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                name = BitConverter.ToString(sha.ComputeHash(bytes), 0, 8).Replace("-", "") + extension;
+            }
+
+            var path = Path.Combine(_imageFolder!, name);
+            if (!File.Exists(path))
+                File.WriteAllBytes(path, bytes);
+
+            return $"https://{ImageHost}/{name}";
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "[ChatWebView] Could not write an image to the image host folder; sending it inline.");
+            return null;
+        }
+    }
+
     private static string LoadHtmlTemplate()
     {
         var assembly = Assembly.GetExecutingAssembly();
@@ -312,15 +526,42 @@ public partial class ChatWebView : UserControl
             var root = doc.RootElement;
             var type = root.GetProperty("type").GetString();
 
-            if (type == "openFile")
+            if (type == "fileLink")
             {
                 var path = root.GetProperty("path").GetString();
-                if (!string.IsNullOrEmpty(path))
-                    FileOpenRequested?.Invoke(path!);
+                var action = root.GetProperty("action").GetString() switch
+                {
+                    "open" => FileLinkAction.Open,
+                    "copyPath" => FileLinkAction.CopyPath,
+                    "showInExplorer" => FileLinkAction.ShowInExplorer,
+                    _ => (FileLinkAction?)null,
+                };
+                if (!string.IsNullOrEmpty(path) && action.HasValue)
+                    FileLinkRequested?.Invoke(path!, action.Value);
             }
             else if (type == "zoom")
             {
                 ZoomChangeRequested?.Invoke(root.GetProperty("step").GetInt32());
+            }
+            else if (type == "moveToBackground")
+            {
+                var id = root.GetProperty("id").GetString();
+                if (!string.IsNullOrEmpty(id))
+                    MoveToBackgroundRequested?.Invoke(id!);
+            }
+            else if (type == "diff")
+            {
+                var id = root.GetProperty("id").GetString();
+                if (!string.IsNullOrEmpty(id))
+                    DiffRequested?.Invoke(id!);
+            }
+            else if (type == "click")
+            {
+                Clicked?.Invoke();
+            }
+            else if (type == "focus")
+            {
+                ContentFocusChanged?.Invoke(root.GetProperty("hasFocus").GetBoolean());
             }
         }
         catch
@@ -333,9 +574,12 @@ public partial class ChatWebView : UserControl
 
     public Task AddMessageAsync(string id, ChatItemType type, ChatMessageData data)
     {
-        var dataJson = JsonSerializer.Serialize(data);
-        return ExecuteOrQueueAsync(
-            $"addMessage({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(type.ToString())}, {dataJson})");
+        // The script is built when it runs, not when it is queued: the image
+        // host folder only exists after EnsureCoreWebView2Async, and a message
+        // that arrives before then would otherwise be materialized against a
+        // null folder and carry its images inline. See ExecuteOrQueueAsync.
+        return ExecuteOrQueueAsync(() =>
+            $"addMessage({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(type.ToString())}, {JsonSerializer.Serialize(MaterializeImages(data))})");
     }
 
     public Task UpdateContentAsync(string id, string content)
@@ -348,6 +592,32 @@ public partial class ChatWebView : UserControl
     {
         return ExecuteOrQueueAsync(
             $"updateStatus({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(status.ToString())}, {JsonSerializer.Serialize(expanderTitle)})");
+    }
+
+    public Task SetBackgroundStateAsync(string id, BackgroundStepState state, string? summary)
+    {
+        return ExecuteOrQueueAsync(
+            $"setBackgroundState({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(state.ToString())}, {JsonSerializer.Serialize(summary)})");
+    }
+
+    /// <summary>
+    /// Offers "Run in background" on a step that is still running. The page
+    /// takes the button away when the step completes or moves.
+    /// </summary>
+    public Task SetCanMoveToBackgroundAsync(string id)
+    {
+        return ExecuteOrQueueAsync(
+            $"setCanMoveToBackground({JsonSerializer.Serialize(id)})");
+    }
+
+    /// <summary>
+    /// Offers a diff on a step that changed a file, or shows
+    /// <paramref name="summary"/> instead when there is no diff to show.
+    /// </summary>
+    public Task SetFileChangeAsync(string id, string? summary)
+    {
+        return ExecuteOrQueueAsync(
+            $"setFileChange({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(summary)})");
     }
 
     public Task SetBodyAsync(string id, string body, OutputBodyMode bodyMode)
@@ -367,10 +637,45 @@ public partial class ChatWebView : UserControl
         return ExecuteOrQueueAsync("clearAll()");
     }
 
+    /// <summary>
+    /// Closes the folded run of steps the chat is currently collecting into.
+    /// Called when the turn ends, so a run the model finished on stops
+    /// presenting itself as still in flight.
+    /// </summary>
+    public Task EndActivityAsync()
+    {
+        return ExecuteOrQueueAsync("endActivity()");
+    }
+
     public Task LoadMessagesAsync(IEnumerable<ChatMessageData> messages)
     {
-        var json = JsonSerializer.Serialize(messages);
-        return ExecuteOrQueueAsync($"loadMessages({json})");
+        // Restoring a session normally wins the race against WebView2 startup,
+        // so this is the call that would have gone out inline. The list is taken
+        // now, the images are written when the script runs.
+        var snapshot = messages.ToList();
+        return ExecuteOrQueueAsync(() =>
+            $"loadMessages({JsonSerializer.Serialize(snapshot.Select(MaterializeImages))})");
+    }
+
+    /// <summary>
+    /// Opens the find bar over the chat and gives it the keyboard focus. The
+    /// page opens it on its own when Ctrl+F is pressed inside it; this is for
+    /// the key pressed anywhere else in the window.
+    /// </summary>
+    public Task OpenFindAsync()
+    {
+        WebView.Focus();
+        return ExecuteOrQueueAsync("openFind()");
+    }
+
+    /// <summary>
+    /// Moves to the next match (+1) or the previous one (-1), or opens the find
+    /// bar when it is closed. For F3 and Shift+F3 pressed outside the page.
+    /// </summary>
+    public Task FindNextAsync(int direction)
+    {
+        WebView.Focus();
+        return ExecuteOrQueueAsync($"findNext({(direction < 0 ? -1 : 1)})");
     }
 
     public Task SetThemeColorsAsync(Dictionary<string, string> colors)
@@ -379,18 +684,28 @@ public partial class ChatWebView : UserControl
         return ExecuteOrQueueAsync($"setThemeColors({json})");
     }
 
-    private Task ExecuteOrQueueAsync(string script)
+    private Task ExecuteOrQueueAsync(string script) => ExecuteOrQueueAsync(() => script);
+
+    /// <summary>
+    /// Runs the script now, or builds and runs it once the page is up. The
+    /// factory is called at that later point, so anything the script needs from
+    /// the initialized WebView — the image host folder above all — is in place
+    /// by the time it is read.
+    /// </summary>
+    private Task ExecuteOrQueueAsync(Func<string> script)
     {
         if (_isWebViewReady)
         {
-            return ExecuteScriptSafeAsync(script);
+            return ExecuteScriptSafeAsync(script());
         }
 
         var tcs = new TaskCompletionSource<bool>();
         _pendingOps.Enqueue(async () =>
         {
-            await ExecuteScriptSafeAsync(script);
-            tcs.SetResult(true);
+            // The caller awaits this task, and building the script can now throw
+            // where before it could not, so completion is in a finally.
+            try { await ExecuteScriptSafeAsync(script()); }
+            finally { tcs.TrySetResult(true); }
         });
         return tcs.Task;
     }

@@ -5,6 +5,7 @@
     <UserControl.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/VsAgentic.VSExtension;component/ToolWindows/SharedStyles.xaml"/>
                 <ResourceDictionary Source="/VsAgentic.VSExtension;component/ToolWindows/Banners/BannerStyles.xaml"/>
             </ResourceDictionary.MergedDictionaries>
 
@@ -105,94 +106,126 @@
                        MaxHeight="160"
                        TextWrapping="Wrap"/>
 
-            <!-- Initial state: Allow / Allow for this session / Deny / Other...
-                 in a single row. The session button is hidden when the request
-                 gives nothing stable to build a rule from.
-                 Clicking Allow or Deny dispatches immediately; Other...
-                 swaps the row out for the alternative-input row below. -->
-            <StackPanel Orientation="Horizontal"
-                        HorizontalAlignment="Left"
-                        Margin="6,2,12,10"
-                        Visibility="{Binding IsInitialMode, Converter={StaticResource BoolToVis}}">
-                <Button Content="Allow"
-                        Style="{StaticResource PrimaryButtonStyle}"
-                        Command="{Binding AllowCommand}"/>
-                <!-- Split button. The main half keeps the session allow a single
-                     click; the chevron opens the longer-lived and broader
-                     choices, which are rarer and more consequential. One outer
-                     border and a divider make the two halves read as one
-                     control, drawn like SecondaryButtonStyle. -->
-                <Border x:Name="SessionSplit"
-                        Margin="6,0,0,0"
-                        BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
-                        BorderThickness="1"
-                        CornerRadius="4"
-                        SnapsToDevicePixels="True"
-                        Visibility="{Binding CanAllowForSession, Converter={StaticResource BoolToVis}}">
-                    <StackPanel Orientation="Horizontal">
-                        <Button Content="Allow for this session"
-                                Style="{StaticResource SplitHalfButtonStyle}"
-                                Tag="Left"
-                                Command="{Binding AllowForSessionCommand}"
-                                ToolTip="{Binding AllowForSessionTooltip}"/>
-                        <Border Width="1"
-                                Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"/>
-                        <Button Style="{StaticResource SplitHalfButtonStyle}"
-                                Tag="Right"
-                                Padding="8,5,8,5"
-                                ToolTip="More ways to allow"
-                                Click="MoreAllowButton_Click">
-                            <TextBlock Text="&#xE70D;"
-                                       FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
-                                       FontSize="10"
-                                       VerticalAlignment="Center"/>
-                        </Button>
-                    </StackPanel>
-                </Border>
+            <!-- Initial state: the rules the session button would add, then
+                 Allow / Allow for this session / Deny / Other... / View diff in a single
+                 row. The session button and the line above it are hidden
+                 together when the request gives nothing stable to build a rule
+                 from. Clicking Allow or Deny dispatches immediately; Other...
+                 swaps the block out for the alternative-input row below. -->
+            <StackPanel Visibility="{Binding IsInitialMode, Converter={StaticResource BoolToVis}}">
 
-                <Button Content="Deny"
-                        Style="{StaticResource DangerButtonStyle}"
-                        Command="{Binding DenyCommand}"/>
-                <Button Content="Other..."
-                        Style="{StaticResource SecondaryButtonStyle}"
-                        Command="{Binding OtherCommand}"/>
+                <!-- On the banner, not only in the tooltip: a compound command
+                     grants a rule per segment, and what the click covers has to
+                     be readable next to the command it came from. -->
+                <TextBlock Margin="12,0,12,8"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                           Opacity="0.75"
+                           Visibility="{Binding CanAllowForSession, Converter={StaticResource BoolToVis}}">
+                    <Run Text="Allow for this session and Always allow add "/><Run Text="{Binding SessionRulesText, Mode=OneWay}"
+                                                                   FontFamily="Consolas, Cascadia Mono, Menlo"/>
+                </TextBlock>
 
-                <Popup x:Name="MoreAllowPopup"
-                       PlacementTarget="{Binding ElementName=SessionSplit}"
-                       Placement="Bottom"
-                       StaysOpen="False"
-                       AllowsTransparency="True"
-                       PopupAnimation="Fade">
-                    <Border Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
+                <StackPanel Orientation="Horizontal"
+                            HorizontalAlignment="Left"
+                            Margin="6,2,12,10">
+                    <Button Content="Allow"
+                            Style="{StaticResource PrimaryButtonStyle}"
+                            Command="{Binding AllowCommand}"/>
+                    <!-- Split button. The main half keeps the session allow a single
+                         click; the chevron opens the longer-lived and broader
+                         choices, which are rarer and more consequential. One outer
+                         border and a divider make the two halves read as one
+                         control, drawn like SecondaryButtonStyle. -->
+                    <Border x:Name="SessionSplit"
+                            Margin="6,0,0,0"
                             BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
                             BorderThickness="1"
                             CornerRadius="4"
-                            Padding="4"
-                            Margin="0,4,0,0">
-                        <!-- Each label names both axes, which commands and for how
-                             long. The tooltip spells out the rules granted. -->
-                        <StackPanel MinWidth="220">
-                            <Button Content="Always allow"
-                                    Style="{StaticResource MenuChoiceButtonStyle}"
-                                    ToolTip="{Binding AllowAlwaysTooltip}"
-                                    Click="MoreAllowChoice_Click"
-                                    Command="{Binding AllowAlwaysCommand}"/>
-                            <Button Content="Allow similar for this session"
-                                    Style="{StaticResource MenuChoiceButtonStyle}"
-                                    ToolTip="{Binding AllowSimilarForSessionTooltip}"
-                                    Visibility="{Binding CanAllowSimilar, Converter={StaticResource BoolToVis}}"
-                                    Click="MoreAllowChoice_Click"
-                                    Command="{Binding AllowSimilarForSessionCommand}"/>
-                            <Button Content="Always allow similar"
-                                    Style="{StaticResource MenuChoiceButtonStyle}"
-                                    ToolTip="{Binding AllowSimilarAlwaysTooltip}"
-                                    Visibility="{Binding CanAllowSimilar, Converter={StaticResource BoolToVis}}"
-                                    Click="MoreAllowChoice_Click"
-                                    Command="{Binding AllowSimilarAlwaysCommand}"/>
+                            SnapsToDevicePixels="True"
+                            Visibility="{Binding CanAllowForSession, Converter={StaticResource BoolToVis}}">
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="Allow for this session"
+                                    Style="{StaticResource SplitHalfButtonStyle}"
+                                    Tag="Left"
+                                    Command="{Binding AllowForSessionCommand}"
+                                    ToolTip="{Binding AllowForSessionTooltip}"/>
+                            <Border Width="1"
+                                    Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"/>
+                            <Button Style="{StaticResource SplitHalfButtonStyle}"
+                                    Tag="Right"
+                                    Padding="8,5,8,5"
+                                    ToolTip="More ways to allow"
+                                    Click="MoreAllowButton_Click">
+                                <TextBlock Text="&#xE70D;"
+                                           FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                                           FontSize="10"
+                                           VerticalAlignment="Center"/>
+                            </Button>
                         </StackPanel>
                     </Border>
-                </Popup>
+                    <Button Content="Deny"
+                            Style="{StaticResource DangerButtonStyle}"
+                            Command="{Binding DenyCommand}"/>
+                    <Button Content="Other..."
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Command="{Binding OtherCommand}"/>
+                    <!-- A file edit: compare the file with the edit applied
+                         before deciding. The banner stays open. -->
+                    <Button Content="View diff"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Command="{Binding ViewDiffCommand}"
+                            ToolTip="Compare the file as it is now with the file after this change"
+                            Visibility="{Binding CanViewDiff, Converter={StaticResource BoolToVis}}"/>
+
+                    <Popup x:Name="MoreAllowPopup"
+                           PlacementTarget="{Binding ElementName=SessionSplit}"
+                           Placement="Bottom"
+                           StaysOpen="False"
+                           AllowsTransparency="True"
+                           PopupAnimation="Fade">
+                        <Border Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
+                                BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Padding="4"
+                                Margin="0,4,0,0">
+                            <!-- Each label names both axes, which commands and for how
+                                 long. The tooltip spells out the rules granted. -->
+                            <StackPanel MinWidth="220">
+                                <Button Content="Always allow"
+                                        Style="{StaticResource MenuChoiceButtonStyle}"
+                                        ToolTip="{Binding AllowAlwaysTooltip}"
+                                        Click="MoreAllowChoice_Click"
+                                        Command="{Binding AllowAlwaysCommand}"/>
+                                <Button Content="Allow similar for this session"
+                                        Style="{StaticResource MenuChoiceButtonStyle}"
+                                        ToolTip="{Binding AllowSimilarForSessionTooltip}"
+                                        Visibility="{Binding CanAllowSimilar, Converter={StaticResource BoolToVis}}"
+                                        Click="MoreAllowChoice_Click"
+                                        Command="{Binding AllowSimilarForSessionCommand}"/>
+                                <Button Content="Always allow similar"
+                                        Style="{StaticResource MenuChoiceButtonStyle}"
+                                        ToolTip="{Binding AllowSimilarAlwaysTooltip}"
+                                        Visibility="{Binding CanAllowSimilar, Converter={StaticResource BoolToVis}}"
+                                        Click="MoreAllowChoice_Click"
+                                        Command="{Binding AllowSimilarAlwaysCommand}"/>
+                            </StackPanel>
+                        </Border>
+                    </Popup>
+                </StackPanel>
             </StackPanel>
+
+            <!-- Why View diff opened nothing: the edit no longer matches the
+                 file, or the file is too large. -->
+            <TextBlock Text="{Binding DiffNotice}"
+                       Visibility="{Binding HasDiffNotice, Converter={StaticResource BoolToVis}}"
+                       FontSize="12"
+                       Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                       Opacity="0.8"
+                       Margin="12,0,12,10"
+                       TextWrapping="Wrap"/>
 
             <!-- Other... state: textbox for alternative instructions, Submit
                  sends them as a wrapped deny, the small icon button to the

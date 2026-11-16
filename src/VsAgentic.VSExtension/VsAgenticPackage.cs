@@ -12,10 +12,15 @@ using VsAgentic.UI.Controls;
 using VsAgentic.UI.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.VisualStudio.ComponentModelHost;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
+using Microsoft.VisualStudio.Shell.TableManager;
 using Serilog;
 using VsAgentic.Services.Configuration;
+using VsAgentic.Services.IdeContext;
+using VsAgentic.VSExtension.Editor;
+using VsAgentic.VSExtension.IdeContext;
 using VsAgentic.VSExtension.Options;
 using VsAgentic.VSExtension.ToolWindows;
 using Task = System.Threading.Tasks.Task;
@@ -46,6 +51,18 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     private uint _solutionEventsCookie;
     private Action<double>? _persistZoom;
     private DispatcherTimer? _zoomSaveTimer;
+    private EditorContextTracker? _editorContext;
+
+    // Shared by every chat: each one's MCP server offers these providers' tools.
+    private readonly List<IIdeContextProvider> _ideContextProviders = new();
+    private DebuggerStateTracker? _debuggerState;
+    private ErrorListReader? _errorList;
+
+    // For "Add to VsAgentic Chat": the open chat windows, the one the user was
+    // in last, and an editor context waiting for a window still being opened.
+    private readonly Dictionary<string, ChatSessionToolWindow> _chatWindows = new();
+    private string? _lastActiveSessionId;
+    private EditorContext? _pendingEditorContext;
 
     public static bool IsLoaded => _instance is not null;
 
@@ -66,6 +83,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         _sessionStore = new JsonSessionStore();
 
         _sessionListViewModel = new SessionListViewModel();
+        _sessionListViewModel.ConfirmDelete = ConfirmSessionDelete;
 
         // Initialize persistence and load saved sessions
         await InitializeSessionPersistenceAsync();
@@ -86,10 +104,66 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             });
         };
 
-        // Listen for file-open requests from rendered markdown
-        ChatWebView.FileOpenRequested += OnFileOpenRequested;
+        // Listen for clicks and menu picks on file links in rendered markdown
+        ChatWebView.FileLinkRequested += OnFileLinkRequested;
 
         InitializeZoom();
+
+        if (await GetServiceAsync(typeof(SVsShellMonitorSelection)) is IVsMonitorSelection monitorSelection)
+        {
+            // Read on every call, so turning the option off in Tools → Options
+            // takes effect in chats that are already open.
+            var editorOptions = (VsAgenticOptionsPage?)GetDialogPage(typeof(VsAgenticOptionsPage));
+            _editorContext = new EditorContextTracker(
+                monitorSelection, () => editorOptions?.SuggestEditorContext ?? true);
+            _ideContextProviders.Add(new EditorIdeContextProvider(_editorContext));
+        }
+
+        // Subscribed now rather than on Claude's first question: a source
+        // hands over its entries when it is subscribed, and the first call
+        // should not find the list still filling.
+        try
+        {
+            if (await GetServiceAsync(typeof(SComponentModel)) is IComponentModel componentModel &&
+                componentModel.GetService<ITableManagerProvider>() is { } tableManagerProvider)
+            {
+                _errorList = new ErrorListReader(tableManagerProvider.GetTableManager(StandardTables.ErrorsTable));
+                _ideContextProviders.Add(new DiagnosticsIdeContextProvider(_errorList, _editorContext));
+            }
+        }
+        catch (Exception ex)
+        {
+            // Claude then has no get_diagnostics; everything else works.
+            System.Diagnostics.Debug.WriteLine($"VsAgentic: Could not read the Error List: {ex}");
+        }
+
+        try
+        {
+            if (await GetServiceAsync(typeof(SComponentModel)) is IComponentModel componentModel)
+                AddRoslynProvider(componentModel);
+        }
+        catch (Exception ex)
+        {
+            // Visual Studio without the C# and Visual Basic language services:
+            // Claude then has no symbol tools; everything else works.
+            System.Diagnostics.Debug.WriteLine($"VsAgentic: Could not add the Roslyn tools: {ex}");
+        }
+
+        // Advised now rather than on Claude's first question: the exception
+        // that stopped the program is reported once, when it happens.
+        try
+        {
+            if (await GetServiceAsync(typeof(SVsShellDebugger)) is IVsDebugger debugger)
+            {
+                _debuggerState = new DebuggerStateTracker(debugger);
+                _ideContextProviders.Add(new DebuggerIdeContextProvider(_debuggerState));
+            }
+        }
+        catch (Exception ex)
+        {
+            // Claude then has no get_debug_context; everything else works.
+            System.Diagnostics.Debug.WriteLine($"VsAgentic: Could not follow the debugger: {ex}");
+        }
 
         // Listen for solution open/close/switch events
         if (await GetServiceAsync(typeof(SVsSolution)) is IVsSolution solutionService)
@@ -98,6 +172,10 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         }
 
         Initialized?.Invoke();
+
+        // Read on the main thread we are still on, so the update checks below can run
+        // on a background thread without touching GetDialogPage from off it.
+        var updateOptions = (VsAgenticOptionsPage?)GetDialogPage(typeof(VsAgenticOptionsPage));
 
         // Check the Marketplace for a newer published version and surface an InfoBar
         // if one is available. Fire-and-forget on a background task with a small delay
@@ -108,22 +186,41 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             {
                 await Task.Delay(TimeSpan.FromSeconds(10), DisposalToken);
                 await new UpdateChecker(this).CheckAsync(DisposalToken);
+
+                // Then the CLI the extension drives. It is installed and updated
+                // outside Visual Studio, so a stale one is otherwise invisible from
+                // here — run second so the extension's own banner comes first.
+                if (updateOptions is not null)
+                    await new ClaudeCliUpdateChecker(this, updateOptions).CheckAsync(DisposalToken);
             }
             catch (OperationCanceledException) { }
         }, cancellationToken);
     }
+
+    // A method of its own, so that a missing Roslyn assembly fails here, inside
+    // the caller's try, and not when InitializeAsync is compiled.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private void AddRoslynProvider(IComponentModel componentModel)
+        => _ideContextProviders.Add(new RoslynIdeContextProvider(componentModel, _editorContext));
 
     /// <summary>
     /// Seeds the shared chat zoom from the persisted setting and writes every
     /// later change straight back. Zoom is set from the chat window rather than
     /// from Tools → Options, so nothing else would ever save it.
     /// </summary>
+    // The debugger setting as last applied, so OnOptionsApplied can tell
+    // whether the user changed it or only another option.
+    private DebuggerAccessLevel _appliedDebuggerAccess = DebuggerAccessLevel.Off;
+
     private void InitializeZoom()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
 
         var optionsPage = (VsAgenticOptionsPage?)GetDialogPage(typeof(VsAgenticOptionsPage));
         if (optionsPage is null) return;
+
+        optionsPage.Applied += OnOptionsApplied;
+        _appliedDebuggerAccess = optionsPage.DebuggerAccess;
 
         ChatZoom.Initialize(optionsPage.ZoomPercent / 100.0);
 
@@ -161,6 +258,43 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         }
     }
 
+    /// <summary>
+    /// Pushes Appearance-tab changes into every chat session tool window that's
+    /// already open. Each one was handed its own copy of the options when its
+    /// window was created (see <see cref="CreateChatViewModel"/>), so without
+    /// this a toggle would only apply the next time a session is opened.
+    /// </summary>
+    private void OnOptionsApplied(object? sender, EventArgs e)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        if (sender is not VsAgenticOptionsPage optionsPage) return;
+
+        // A changed debugger setting applies to open chats too, replacing what
+        // their switch was set to: turning it off in Options must not leave a
+        // chat that still reads. Applying other options leaves the switch alone.
+        var debuggerAccessChanged = optionsPage.DebuggerAccess != _appliedDebuggerAccess;
+        _appliedDebuggerAccess = optionsPage.DebuggerAccess;
+
+        foreach (var kvp in _sessionWindowMap)
+        {
+            var window = FindToolWindow(typeof(ChatSessionToolWindow), kvp.Value, false);
+            if (window is ChatSessionToolWindow chatWindow
+                && chatWindow.ChatControl.DataContext is ChatSessionViewModel vm)
+            {
+                vm.ApplyAppearanceOptions(
+                    optionsPage.AnimateTitleWhileBusy,
+                    optionsPage.AnimateTitleWhileWaiting,
+                    optionsPage.FlashStatusBarWhileWaiting,
+                    optionsPage.ShowCompletedIndicator,
+                    optionsPage.AnimateTitleWhenComplete,
+                    optionsPage.FlashStatusBarWhenComplete);
+                if (debuggerAccessChanged)
+                    vm.DebuggerAccess = optionsPage.DebuggerAccess;
+            }
+        }
+    }
+
     private async Task InitializeSessionPersistenceAsync()
     {
         if (_sessionStore is null || _solutionDirectory is null || _sessionListViewModel is null) return;
@@ -186,12 +320,33 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         {
             var optionsPage = (VsAgenticOptionsPage?)GetDialogPage(typeof(VsAgenticOptionsPage));
             var keepDays = optionsPage?.KeepActivityDays ?? 30;
-            await _sessionStore.DeleteSessionsOlderThanAsync(_solutionDirectory, keepDays);
+            await _sessionStore.PurgeOldSessionsAsync(_solutionDirectory, keepDays);
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"VsAgentic: Failed to purge old sessions: {ex}");
         }
+    }
+
+    /// <summary>
+    /// Asks before a session is deleted. The shell's message box is used rather
+    /// than a WPF one so the dialog follows the Visual Studio theme and is modal
+    /// to the IDE.
+    /// </summary>
+    private bool ConfirmSessionDelete(SessionInfo session)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        var answer = VsShellUtilities.ShowMessageBox(
+            this,
+            "Its messages, images and conversation history are deleted from disk and cannot be restored.",
+            $"Delete the session \"{session.Name}\"?",
+            OLEMSGICON.OLEMSGICON_WARNING,
+            OLEMSGBUTTON.OLEMSGBUTTON_YESNO,
+            // Cancelling is the safe answer, so it is the one Enter picks.
+            OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_SECOND);
+
+        return answer == (int)Microsoft.VisualStudio.VSConstants.MessageBoxResult.IDYES;
     }
 
     private ChatSessionViewModel CreateChatViewModel()
@@ -223,6 +378,8 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         var outputListener = new OutputListener();
         services.AddSingleton(outputListener);
         services.AddSingleton<IOutputListener>(outputListener);
+        foreach (var ideContextProvider in _ideContextProviders)
+            services.AddSingleton(ideContextProvider);
         services.AddVsAgenticServices(options =>
         {
             options.WorkingDirectory = workingDir;
@@ -231,6 +388,20 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             {
                 options.ClaudeCliPath = optionsPage.ClaudeCliPath;
                 options.CliPermissionMode = optionsPage.CliPermissionMode;
+                options.Model = optionsPage.Model;
+                options.Effort = optionsPage.Effort;
+                options.ShowThinkingSummaries = optionsPage.ShowThinkingSummaries;
+                options.UseClaudeMcpServers = optionsPage.UseClaudeMcpServers;
+                options.BackgroundCommandLimit = optionsPage.BackgroundCommandLimit;
+                options.UsagePlan = optionsPage.UsagePlan;
+                options.FiveHourTokenBudget = optionsPage.FiveHourTokenBudget;
+                options.WeeklyTokenBudget = optionsPage.WeeklyTokenBudget;
+                options.AnimateTitleWhileBusy = optionsPage.AnimateTitleWhileBusy;
+                options.AnimateTitleWhileWaiting = optionsPage.AnimateTitleWhileWaiting;
+                options.FlashStatusBarWhileWaiting = optionsPage.FlashStatusBarWhileWaiting;
+                options.ShowCompletedIndicator = optionsPage.ShowCompletedIndicator;
+                options.AnimateTitleWhenComplete = optionsPage.AnimateTitleWhenComplete;
+                options.FlashStatusBarWhenComplete = optionsPage.FlashStatusBarWhenComplete;
             }
         });
 
@@ -249,6 +420,31 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         var vmLogger = provider.GetService<Microsoft.Extensions.Logging.ILogger<ChatSessionViewModel>>();
 
         var vm = new ChatSessionViewModel(chatService, outputListener, optionsAccessor, permissionBroker, questionBroker, vmLogger);
+        vm.EditorContextProvider = _editorContext;
+        vm.IdeContext = provider.GetService<IdeContextRegistry>();
+        vm.DebuggerAccess = optionsPage?.DebuggerAccess ?? DebuggerAccessLevel.Off;
+        vm.DebuggerModeSource = _debuggerState;
+
+        // The status bar pickers only change this session; persisting the choice so
+        // the next one starts the same way is the host's side of the deal.
+        if (optionsPage is not null)
+        {
+            vm.ModelEffortChanged += (alias, effort) =>
+            {
+                try
+                {
+                    optionsPage.Model = alias;
+                    optionsPage.Effort = effort;
+                    optionsPage.SaveSettingsToStorage();
+                }
+                catch (Exception ex)
+                {
+                    // Worst case the choice is forgotten at the next restart.
+                    Log.Warning(ex, "Could not persist the model/effort choice");
+                }
+            };
+        }
+
         vm.SetServiceScope(provider);
         return vm;
     }
@@ -297,6 +493,51 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         }
     }
 
+    /// <summary>
+    /// Attaches the editor's selection, or the whole file, to the chat the
+    /// user was last in, and brings that chat forward. With no chat open, a new
+    /// session takes it.
+    /// </summary>
+    public static async Task AddEditorContextToChatAsync()
+    {
+        if (_instance is null) return;
+
+        await _instance.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+        if (_instance._editorContext?.ReadActive() is not { } context)
+            return;
+
+        _instance._pendingEditorContext = context;
+
+        var sessions = _instance._sessionListViewModel;
+        if (_instance._lastActiveSessionId is { } id &&
+            _instance._chatWindows.ContainsKey(id) &&
+            sessions?.Sessions.FirstOrDefault(s => s.Id == id) is { } session)
+        {
+            await OpenOrActivateSessionAsync(session);
+        }
+        else if (sessions is not null)
+        {
+            // Opens through SessionOpenRequested, which delivers the context
+            // once the window is up.
+            await sessions.NewSessionAsync();
+        }
+    }
+
+    private void DeliverPendingEditorContext(string sessionId)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        if (_pendingEditorContext is not { } context ||
+            !_chatWindows.TryGetValue(sessionId, out var window))
+        {
+            return;
+        }
+
+        _pendingEditorContext = null;
+        window.ChatControl.AttachFromEditor(context);
+    }
+
     private static async Task OpenOrActivateSessionAsync(SessionInfo session)
     {
         if (_instance is null) return;
@@ -316,6 +557,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 {
                     existingFrame.Show();
                 }
+
+                _instance._lastActiveSessionId = session.Id;
+                _instance.DeliverPendingEditorContext(session.Id);
             }
             catch (Exception ex)
             {
@@ -361,6 +605,14 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                     // Wire up the UI event handlers BEFORE restoring messages,
                     // so the MessagesRestored event is received by the WebView.
                     chatWindow.ChatControl.Initialize(viewModel);
+
+                    _instance._chatWindows[session.Id] = chatWindow;
+                    _instance._lastActiveSessionId = session.Id;
+                    chatWindow.ChatControl.IsKeyboardFocusWithinChanged += (_, e) =>
+                    {
+                        if (e.NewValue is true && _instance is not null)
+                            _instance._lastActiveSessionId = session.Id;
+                    };
 
                     // Enable persistence on the view model
                     if (session.PersistedId.HasValue && _instance._sessionStore is not null && _instance._solutionDirectory is not null)
@@ -425,6 +677,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                     chatWindow.Closed += () =>
                     {
                         _instance?._sessionWindowMap.Remove(session.Id);
+                        _instance?._chatWindows.Remove(session.Id);
+                        if (_instance?._lastActiveSessionId == session.Id)
+                            _instance._lastActiveSessionId = null;
                         session.PropertyChanged -= onSessionChanged;
                         session.IsActive = false;
                         viewModel.Dispose();
@@ -435,6 +690,8 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 {
                     frame.Show();
                 }
+
+                _instance.DeliverPendingEditorContext(session.Id);
             }
         }
         catch (Exception ex)
@@ -508,6 +765,12 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         try
         {
             await _sessionStore.EnsureWorkspaceAsync(_solutionDirectory);
+
+            // The clean-up at start-up only covered the folder known when the
+            // package loaded. That is the user profile when the package loads
+            // before the solution, which is the usual order.
+            await PurgeOldSessionsAsync();
+
             _sessionListViewModel.Initialize(_sessionStore, _solutionDirectory);
             await _sessionListViewModel.LoadSessionsAsync();
         }
@@ -550,7 +813,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     int IVsSolutionEvents.OnBeforeUnloadProject(IVsHierarchy pRealHierarchy, IVsHierarchy pStubHierarchy) => Microsoft.VisualStudio.VSConstants.S_OK;
     int IVsSolutionEvents.OnQueryCloseSolution(object pUnkReserved, ref int pfCancel) => Microsoft.VisualStudio.VSConstants.S_OK;
 
-    private void OnFileOpenRequested(string rawPath)
+    private void OnFileLinkRequested(string rawPath, FileLinkAction action)
     {
         _ = JoinableTaskFactory.RunAsync(async () =>
         {
@@ -561,6 +824,13 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             var lineMatch = Regex.Match(rawPath, @":(\d+)(?:-\d+)?$");
             var filePath = lineMatch.Success ? rawPath.Substring(0, lineMatch.Index) : rawPath;
 
+            // A markdown link can carry a file URI or percent-encoded characters
+            if (filePath.StartsWith("file:", StringComparison.OrdinalIgnoreCase)
+                && Uri.TryCreate(filePath, UriKind.Absolute, out var fileUri))
+                filePath = fileUri.LocalPath;
+            else
+                filePath = Uri.UnescapeDataString(filePath);
+
             // Convert MSYS/Git-Bash style paths ("/c/foo/bar") to Windows form ("c:\foo\bar")
             var msysMatch = Regex.Match(filePath, @"^/([A-Za-z])/");
             if (msysMatch.Success)
@@ -569,42 +839,144 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             // Normalize forward slashes
             filePath = filePath.Replace('/', '\\');
 
-            // Resolve relative paths against the solution directory
-            if (!Path.IsPathRooted(filePath) && _solutionDirectory is not null)
+            var resolved = ResolveLinkedPath(filePath);
+            if (resolved is null)
             {
-                filePath = Path.GetFullPath(Path.Combine(_solutionDirectory, filePath));
-            }
-
-            if (!File.Exists(filePath))
-            {
-                System.Diagnostics.Debug.WriteLine($"VsAgentic: File not found: {filePath}");
+                // Say so where the user can see it. A click that does nothing
+                // looks like a broken link rather than a missing file.
+                SetStatusBarText($"VsAgentic: File not found: {filePath}");
                 return;
             }
 
+            // TryParse, because the regex only checks that the suffix is digits.
+            // "foo.cs:99999999999" overflows, and the throw would land in the
+            // outer fire-and-forget task where nobody sees it. Line 0 means
+            // "open the file and leave the caret alone", which is the right
+            // outcome for a number no editor could scroll to anyway.
             if (lineMatch.Success)
-                line = int.Parse(lineMatch.Groups[1].Value);
+                int.TryParse(lineMatch.Groups[1].Value, out line);
 
             try
             {
-                VsShellUtilities.OpenDocument(this, filePath, Guid.Empty,
-                    out _, out _, out IVsWindowFrame? frame);
-                frame?.Show();
-
-                if (line > 0 && frame is not null)
+                switch (action)
                 {
-                    // Navigate to the specific line
-                    if (VsShellUtilities.GetTextView(frame) is var textView && textView is not null)
-                    {
-                        textView.SetCaretPos(line - 1, 0);
-                        textView.CenterLines(line - 1, 1);
-                    }
+                    case FileLinkAction.Open when Directory.Exists(resolved):
+                        StartExplorer($"\"{resolved}\"");
+                        break;
+
+                    case FileLinkAction.Open:
+                        OpenDocumentAtLine(resolved, line);
+                        break;
+
+                    case FileLinkAction.CopyPath:
+                        Clipboard.SetText(resolved);
+                        SetStatusBarText($"VsAgentic: Copied {resolved}");
+                        break;
+
+                    case FileLinkAction.ShowInExplorer:
+                        StartExplorer($"/select,\"{resolved}\"");
+                        break;
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"VsAgentic: Failed to open file: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"VsAgentic: File link action {action} failed for {resolved}: {ex.Message}");
+                SetStatusBarText($"VsAgentic: {action} failed for {resolved}");
             }
         });
+    }
+
+    /// <summary>
+    /// Opens Explorer and releases the handle. We never wait on it or read its
+    /// exit code, so holding the <see cref="System.Diagnostics.Process"/> only
+    /// keeps a native handle alive for the life of Visual Studio.
+    /// </summary>
+    private static void StartExplorer(string arguments)
+    {
+        using var process = System.Diagnostics.Process.Start("explorer.exe", arguments);
+    }
+
+    /// <summary>
+    /// Finds the file or folder a link in the chat points at, or null if there
+    /// is none. The CLI runs in the solution directory, but the model often
+    /// writes a path relative to the repository root, which can sit above it
+    /// (a solution kept in src\, say). So a relative path is also tried against
+    /// each parent up to the repository root. Outside a repository only the
+    /// solution directory counts: further up, a match would be a coincidence.
+    /// </summary>
+    private string? ResolveLinkedPath(string path)
+    {
+        try
+        {
+            // The link text comes from model output, so a UNC path can name any
+            // host. The existence check below would connect to it over SMB, and
+            // Open or Show in Explorer would then open Explorer on the share.
+            // Device paths (\\?\, \\.\) are refused by the same test.
+            if (path.StartsWith(@"\\", StringComparison.Ordinal)) return null;
+
+            if (Path.IsPathRooted(path))
+                return PathExists(path) ? Path.GetFullPath(path) : null;
+
+            if (_solutionDirectory is null) return null;
+
+            var start = new DirectoryInfo(_solutionDirectory);
+            var stop = FindRepositoryRoot(start) ?? start;
+            for (var dir = start; dir is not null; dir = dir.Parent)
+            {
+                var candidate = Path.GetFullPath(Path.Combine(dir.FullName, path));
+                if (PathExists(candidate)) return candidate;
+                if (SameDirectory(dir, stop)) break;
+            }
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
+        {
+            // Not a valid path at all, e.g. a link the regex took for one
+        }
+        return null;
+    }
+
+    private static bool PathExists(string path) => File.Exists(path) || Directory.Exists(path);
+
+    private static DirectoryInfo? FindRepositoryRoot(DirectoryInfo start)
+    {
+        for (var dir = start; dir is not null; dir = dir.Parent)
+        {
+            // .git is a file, not a folder, in a worktree or a submodule
+            if (PathExists(Path.Combine(dir.FullName, ".git"))) return dir;
+        }
+        return null;
+    }
+
+    private static bool SameDirectory(DirectoryInfo a, DirectoryInfo b) =>
+        string.Equals(
+            a.FullName.TrimEnd(Path.DirectorySeparatorChar),
+            b.FullName.TrimEnd(Path.DirectorySeparatorChar),
+            StringComparison.OrdinalIgnoreCase);
+
+    private void OpenDocumentAtLine(string filePath, int line)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        VsShellUtilities.OpenDocument(this, filePath, Guid.Empty,
+            out _, out _, out IVsWindowFrame? frame);
+        frame?.Show();
+
+        if (line > 0 && frame is not null)
+        {
+            // Navigate to the specific line
+            if (VsShellUtilities.GetTextView(frame) is var textView && textView is not null)
+            {
+                textView.SetCaretPos(line - 1, 0);
+                textView.CenterLines(line - 1, 1);
+            }
+        }
+    }
+
+    private void SetStatusBarText(string text)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        if (GetService(typeof(SVsStatusbar)) is IVsStatusbar statusBar)
+            statusBar.SetText(text);
     }
 
     protected override void Dispose(bool disposing)
@@ -612,7 +984,16 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         ThreadHelper.ThrowIfNotOnUIThread();
         if (disposing)
         {
-            ChatWebView.FileOpenRequested -= OnFileOpenRequested;
+            ChatWebView.FileLinkRequested -= OnFileLinkRequested;
+
+            _editorContext?.Dispose();
+            _editorContext = null;
+
+            _debuggerState?.Dispose();
+            _debuggerState = null;
+
+            _errorList?.Dispose();
+            _errorList = null;
 
             if (_persistZoom is not null)
             {
@@ -620,12 +1001,16 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 _persistZoom = null;
             }
 
-            // A zoom step in the last half-second still has its write pending;
-            // flush it rather than lose it on the way out.
-            if (_zoomSaveTimer is { IsEnabled: true }
-                && GetDialogPage(typeof(VsAgenticOptionsPage)) is VsAgenticOptionsPage optionsPage)
+            if (GetDialogPage(typeof(VsAgenticOptionsPage)) is VsAgenticOptionsPage optionsPage)
             {
-                SaveZoomSetting(optionsPage);
+                optionsPage.Applied -= OnOptionsApplied;
+
+                // A zoom step in the last half-second still has its write pending;
+                // flush it rather than lose it on the way out.
+                if (_zoomSaveTimer is { IsEnabled: true })
+                {
+                    SaveZoomSetting(optionsPage);
+                }
             }
             _zoomSaveTimer?.Stop();
 

@@ -1,0 +1,26 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:platformui="clr-namespace:Microsoft.VisualStudio.PlatformUI;assembly=Microsoft.VisualStudio.Shell.15.0">
+
+    <!-- The stock WPF tooltip style carries hardcoded colours: #FFF1F2F7 for
+         the background, #FF575757 for the text and #FF767676 for the border.
+         They follow neither the VS theme nor the system info colours, so a
+         tooltip reads as the same pale box in every theme, which stands out
+         against a dark one. Only the brushes are wrong; the stock template is
+         plain template bindings and is left alone.
+
+         This is an implicit style, so it reaches every tooltip declared as a
+         plain string in a control that merges this dictionary.
+
+         The brushes are the environment tooltip, not VsBrushes.ScreenTip*.
+         The screen tip keys are the older yellow info tip and do not match
+         what the shell draws for its own toolbar buttons. -->
+    <Style TargetType="ToolTip">
+        <Setter Property="Background" Value="{DynamicResource {x:Static platformui:EnvironmentColors.ToolTipBrushKey}}" />
+        <Setter Property="Foreground" Value="{DynamicResource {x:Static platformui:EnvironmentColors.ToolTipTextBrushKey}}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource {x:Static platformui:EnvironmentColors.ToolTipBorderBrushKey}}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="6,3" />
+    </Style>
+
+</ResourceDictionary>

@@ -7,6 +7,11 @@
              xmlns:catalog="clr-namespace:Microsoft.VisualStudio.Imaging;assembly=Microsoft.VisualStudio.ImageCatalog">
 
     <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/VsAgentic.VSExtension;component/ToolWindows/SharedStyles.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}" />
         </Style>
@@ -110,13 +115,29 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ListBoxItem">
-                        <Border x:Name="border"
-                                CornerRadius="4"
-                                Background="{TemplateBinding Background}"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter />
-                        </Border>
+                        <StackPanel>
+                            <!-- Ends the pinned group. It sits outside the row
+                                 highlight and takes no mouse input, so it never
+                                 reads as part of the row below. The text color
+                                 at low opacity shows in every theme. -->
+                            <Rectangle x:Name="PinnedSeparator"
+                                       Height="1"
+                                       Margin="6,4,6,5"
+                                       Opacity="0.3"
+                                       Fill="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"
+                                       Visibility="Collapsed"
+                                       IsHitTestVisible="False" />
+                            <Border x:Name="border"
+                                    CornerRadius="4"
+                                    Background="{TemplateBinding Background}"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter />
+                            </Border>
+                        </StackPanel>
                         <ControlTemplate.Triggers>
+                            <DataTrigger Binding="{Binding StartsUnpinnedGroup}" Value="True">
+                                <Setter TargetName="PinnedSeparator" Property="Visibility" Value="Visible" />
+                            </DataTrigger>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="border" Property="Background"
                                         Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}" />
@@ -170,18 +191,75 @@
         </Style>
 
         <!-- WPF menus don't pick up the VS theme on their own, so the shell
-             brushes are applied by hand. -->
+             brushes are applied by hand. Setting the brushes is not enough:
+             the stock template paints a hardcoded #F1F1F1 icon gutter behind
+             the whole menu, which reads as a white block in a dark theme, so
+             the template is replaced outright. -->
         <Style x:Key="SessionMenuStyle" TargetType="ContextMenu">
             <Setter Property="Background" Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMenuBackgroundGradientKey}}" />
             <Setter Property="Foreground" Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarTextActiveKey}}" />
             <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMenuBorderKey}}" />
             <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="2" />
+            <!-- The menu opens in its own popup and so inherits nothing from
+                 the tool window. CrispImage needs the colour behind it to
+                 decide whether to invert an icon for a dark theme. -->
+            <Setter Property="platformui:ImageThemingUtilities.ImageBackgroundColor"
+                    Value="{DynamicResource {x:Static vs:VsColors.CommandBarMenuBackgroundGradientBeginKey}}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ContextMenu">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                Padding="{TemplateBinding Padding}"
+                                CornerRadius="4"
+                                SnapsToDevicePixels="True">
+                            <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Cycle" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
+        <!-- Same reason as above: the stock item template hides the styled
+             hover behind its own hardcoded blue, so it is replaced too. -->
         <Style x:Key="SessionMenuItemStyle" TargetType="MenuItem">
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="Foreground" Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarTextActiveKey}}" />
             <Setter Property="Padding" Value="6,4" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="MenuItem">
+                        <Border x:Name="border"
+                                Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}"
+                                CornerRadius="4"
+                                SnapsToDevicePixels="True">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="16" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <ContentPresenter ContentSource="Icon"
+                                                  Width="16" Height="16"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center" />
+                                <ContentPresenter Grid.Column="1"
+                                                  ContentSource="Header"
+                                                  RecognizesAccessKey="True"
+                                                  Margin="8,0,0,0"
+                                                  VerticalAlignment="Center" />
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
             <Style.Triggers>
                 <Trigger Property="IsHighlighted" Value="True">
                     <Setter Property="Background" Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}" />
@@ -190,6 +268,27 @@
             </Style.Triggers>
         </Style>
 
+        <!-- The archive is a separate view of the same list, so a row offers
+             only the actions that belong to the view it is shown in. -->
+        <Style x:Key="ActiveOnlyMenuItemStyle" TargetType="MenuItem" BasedOn="{StaticResource SessionMenuItemStyle}">
+            <Setter Property="Visibility" Value="Collapsed" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding PlacementTarget.DataContext.IsArchived, RelativeSource={RelativeSource AncestorType=ContextMenu}}" Value="False">
+                    <Setter Property="Visibility" Value="Visible" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="ArchivedOnlyMenuItemStyle" TargetType="MenuItem" BasedOn="{StaticResource SessionMenuItemStyle}">
+            <Setter Property="Visibility" Value="Collapsed" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding PlacementTarget.DataContext.IsArchived, RelativeSource={RelativeSource AncestorType=ContextMenu}}" Value="True">
+                    <Setter Property="Visibility" Value="Visible" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+        </ResourceDictionary>
     </UserControl.Resources>
 
     <Grid Background="{DynamicResource {x:Static vs:VsBrushes.ToolWindowBackgroundKey}}">
@@ -202,6 +301,9 @@
         <!-- Toolbar -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4">
             <Button Content="New Session" Command="{Binding NewSessionCommand}" />
+            <!-- Carries the archive count, so the user can see there is
+                 something in there without opening it. -->
+            <Button Content="{Binding ArchiveButtonText}" Command="{Binding ToggleArchiveViewCommand}" />
         </StackPanel>
 
         <!-- Search Box -->
@@ -219,7 +321,7 @@
                                 Margin="5,0,0,0"
                                 VerticalAlignment="Center"
                                 IsHitTestVisible="False" />
-            <TextBlock Text="Search sessions..."
+            <TextBlock Text="Search names and messages..."
                        Margin="24,0,0,0"
                        VerticalAlignment="Center"
                        IsHitTestVisible="False">
@@ -270,8 +372,27 @@
                                         <imaging:CrispImage Width="16" Height="16" Moniker="{x:Static catalog:KnownMonikers.Rename}" />
                                     </MenuItem.Icon>
                                 </MenuItem>
-                                <MenuItem Header="Delete"
-                                          Style="{StaticResource SessionMenuItemStyle}"
+                                <!-- The plain action on a normal row is the
+                                     reversible one. Deleting outright is
+                                     reachable from the archive. -->
+                                <MenuItem Header="Archive"
+                                          Style="{StaticResource ActiveOnlyMenuItemStyle}"
+                                          Command="{Binding PlacementTarget.Tag.ArchiveSessionCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
+                                    <MenuItem.Icon>
+                                        <imaging:CrispImage Width="16" Height="16" Moniker="{x:Static catalog:KnownMonikers.MoveToFolder}" />
+                                    </MenuItem.Icon>
+                                </MenuItem>
+                                <MenuItem Header="Restore"
+                                          Style="{StaticResource ArchivedOnlyMenuItemStyle}"
+                                          Command="{Binding PlacementTarget.Tag.RestoreSessionCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
+                                          CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
+                                    <MenuItem.Icon>
+                                        <imaging:CrispImage Width="16" Height="16" Moniker="{x:Static catalog:KnownMonikers.Undo}" />
+                                    </MenuItem.Icon>
+                                </MenuItem>
+                                <MenuItem Header="Delete permanently"
+                                          Style="{StaticResource ArchivedOnlyMenuItemStyle}"
                                           Command="{Binding PlacementTarget.Tag.RemoveSessionCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}"
                                           CommandParameter="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource AncestorType=ContextMenu}}">
                                     <MenuItem.Icon>
@@ -300,11 +421,41 @@
                                          KeyDown="RenameBox_KeyDown"
                                          LostKeyboardFocus="RenameBox_LostKeyboardFocus" />
                             </Grid>
-                            <TextBlock FontSize="11" Opacity="0.7"
-                                       TextTrimming="CharacterEllipsis">
-                                <Run Text="Last activity " />
-                                <Run Text="{Binding LastActivityDisplay, Mode=OneWay}" />
-                            </TextBlock>
+                            <!-- While the session works, waits or runs background
+                                 tasks, the second line says so instead of the
+                                 time. The name above never changes, so the
+                                 list does not flicker. -->
+                            <DockPanel>
+                                <imaging:CrispImage x:Name="ActivityIcon"
+                                                    DockPanel.Dock="Left"
+                                                    Width="12" Height="12"
+                                                    Margin="0,0,4,0"
+                                                    VerticalAlignment="Center"
+                                                    Visibility="Collapsed"
+                                                    IsHitTestVisible="False" />
+                                <Grid>
+                                    <TextBlock x:Name="LastActivityText"
+                                               FontSize="11" Opacity="0.7"
+                                               TextTrimming="CharacterEllipsis">
+                                        <Run Text="Last activity " />
+                                        <Run Text="{Binding LastActivityDisplay, Mode=OneWay}" />
+                                    </TextBlock>
+                                    <TextBlock x:Name="ActivityText"
+                                               FontSize="11" Opacity="0.7"
+                                               Visibility="Collapsed"
+                                               TextTrimming="CharacterEllipsis"
+                                               Text="{Binding ActivityStatus, Mode=OneWay}" />
+                                </Grid>
+                            </DockPanel>
+                            <!-- Where the search term occurs in the
+                                 conversation, with the term in bold. The runs
+                                 share one line on purpose: a line break between
+                                 them renders as a space, which would split a
+                                 match inside a word. -->
+                            <TextBlock x:Name="SearchHitText"
+                                       FontSize="11" Opacity="0.85"
+                                       Margin="0,2,0,0"
+                                       TextTrimming="CharacterEllipsis"><Run Text="{Binding SearchHit.Before, Mode=OneWay}" /><Run Text="{Binding SearchHit.Match, Mode=OneWay}" FontWeight="Bold" /><Run Text="{Binding SearchHit.After, Mode=OneWay}" /></TextBlock>
                         </StackPanel>
 
                         <!-- Quiet marker so a pinned row reads as pinned while
@@ -344,6 +495,32 @@
                     <!-- Order matters: later triggers win where they overlap,
                          so hover hides the pin marker and renaming hides both. -->
                     <DataTemplate.Triggers>
+                        <!-- Activity: later triggers win, so a turn in flight
+                             outranks background tasks and waiting for the user
+                             outranks both. -->
+                        <DataTrigger Binding="{Binding HasBackgroundTasks}" Value="True">
+                            <Setter TargetName="ActivityIcon" Property="Visibility" Value="Visible" />
+                            <Setter TargetName="ActivityIcon" Property="Moniker" Value="{x:Static catalog:KnownMonikers.StatusRunningNoColor}" />
+                            <Setter TargetName="LastActivityText" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="ActivityText" Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Activity}" Value="Busy">
+                            <Setter TargetName="ActivityIcon" Property="Visibility" Value="Visible" />
+                            <Setter TargetName="ActivityIcon" Property="Moniker" Value="{x:Static catalog:KnownMonikers.StatusRunning}" />
+                            <Setter TargetName="LastActivityText" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="ActivityText" Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Activity}" Value="AwaitingUser">
+                            <Setter TargetName="ActivityIcon" Property="Visibility" Value="Visible" />
+                            <Setter TargetName="ActivityIcon" Property="Moniker" Value="{x:Static catalog:KnownMonikers.StatusHelp}" />
+                            <Setter TargetName="LastActivityText" Property="Visibility" Value="Collapsed" />
+                            <Setter TargetName="ActivityText" Property="Visibility" Value="Visible" />
+                            <Setter TargetName="ActivityText" Property="Opacity" Value="1" />
+                            <Setter TargetName="ActivityText" Property="FontWeight" Value="SemiBold" />
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding SearchHit}" Value="{x:Null}">
+                            <Setter TargetName="SearchHitText" Property="Visibility" Value="Collapsed" />
+                        </DataTrigger>
                         <DataTrigger Binding="{Binding IsPinned}" Value="True">
                             <Setter TargetName="PinIndicator" Property="Visibility" Value="Visible" />
                             <Setter TargetName="PinIcon" Property="Moniker" Value="{x:Static catalog:KnownMonikers.Unpin}" />

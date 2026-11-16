@@ -66,6 +66,21 @@ public partial class SessionInfo : ObservableObject
     private bool _isPinned;
 
     /// <summary>
+    /// True while the session sits in the archive, which is a separate view of
+    /// the same list. Mirrors <see cref="SessionEntry.ArchivedUtc"/>.
+    /// </summary>
+    [ObservableProperty]
+    private bool _isArchived;
+
+    /// <summary>
+    /// True on the first unpinned row when pinned rows sit above it in the
+    /// visible list. The row draws a separator there, so the two groups read
+    /// apart. Set by <see cref="SessionListViewModel"/>.
+    /// </summary>
+    [ObservableProperty]
+    private bool _startsUnpinnedGroup;
+
+    /// <summary>
     /// True while the row shows its inline rename box. Only one session at a
     /// time is in this state.
     /// </summary>
@@ -101,6 +116,34 @@ public partial class SessionInfo : ObservableObject
 
     partial void OnSessionCostChanged(decimal? value)
         => OnPropertyChanged(nameof(SessionCostDisplay));
+
+    /// <summary>
+    /// What the open session is doing right now. Copied from its
+    /// <see cref="ChatSessionViewModel"/>; Idle for a session with no window.
+    /// </summary>
+    [ObservableProperty]
+    private SessionActivity _activity;
+
+    /// <summary>
+    /// The line the row shows instead of "Last activity" while the session
+    /// works, waits or runs background tasks. While a turn runs it is the same
+    /// text as the bar under the chat.
+    /// </summary>
+    [ObservableProperty]
+    private string _activityStatus = string.Empty;
+
+    /// <summary>
+    /// Commands started with run_in_background still run after the turn.
+    /// </summary>
+    [ObservableProperty]
+    private bool _hasBackgroundTasks;
+
+    /// <summary>
+    /// Where the current search term occurs in the conversation. Null when
+    /// there is no search, or the term occurs only in the name or nowhere.
+    /// </summary>
+    [ObservableProperty]
+    private SessionSearchHit? _searchHit;
 }
 
 public partial class SessionListViewModel : ObservableObject
@@ -118,19 +161,148 @@ public partial class SessionListViewModel : ObservableObject
     [ObservableProperty]
     private string _searchText = string.Empty;
 
+    /// <summary>
+    /// Switches the list between the normal sessions and the archive. The two
+    /// never show together, so "Restore" and "Delete permanently" can only be
+    /// reached where they make sense.
+    /// </summary>
+    [ObservableProperty]
+    private bool _showArchived;
+
     public event Action<SessionInfo>? SessionOpenRequested;
     public event Action<SessionInfo>? SessionRemoved;
+
+    /// <summary>
+    /// Asked before a session is deleted; returns true to go ahead. The host
+    /// supplies it, because deleting a session is not reversible and the shell
+    /// owns the dialog. Left null the delete proceeds unasked, which keeps the
+    /// view model usable outside Visual Studio.
+    /// </summary>
+    public Func<SessionInfo, bool>? ConfirmDelete { get; set; }
+
+    /// <summary>
+    /// Shortest term that is also looked up in the conversations. A single
+    /// character matches nearly every session and says nothing.
+    /// </summary>
+    private const int MinContentSearchLength = 2;
+
+    /// <summary>
+    /// Pause in typing before the conversations are searched. Every search
+    /// reads all sessions of the workspace, so one per keystroke is wasted work.
+    /// </summary>
+    private static readonly TimeSpan ContentSearchDelay = TimeSpan.FromMilliseconds(250);
+
+    private CancellationTokenSource? _contentSearchCts;
 
     public SessionListViewModel()
     {
         FilteredSessions = CollectionViewSource.GetDefaultView(Sessions);
         FilteredSessions.Filter = obj =>
             obj is SessionInfo s
+            && s.IsArchived == ShowArchived
             && (string.IsNullOrWhiteSpace(SearchText)
-                || s.Name.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0);
+                || s.Name.IndexOf(SearchText, StringComparison.OrdinalIgnoreCase) >= 0
+                || s.SearchHit is not null);
+
+        Sessions.CollectionChanged += (_, _) => OnPropertyChanged(nameof(ArchiveButtonText));
+
+        // Fires on every add, remove, move and filter refresh.
+        FilteredSessions.CollectionChanged += (_, _) => UpdatePinnedBoundary();
     }
 
-    partial void OnSearchTextChanged(string value) => FilteredSessions.Refresh();
+    /// <summary>
+    /// Marks the row where the pinned group ends. Works on the visible list,
+    /// so a search that hides every pinned row also hides the separator.
+    /// </summary>
+    private void UpdatePinnedBoundary()
+    {
+        var pinnedAbove = false;
+        var marked = false;
+
+        foreach (SessionInfo session in FilteredSessions)
+        {
+            var starts = !marked && pinnedAbove && !session.IsPinned;
+            session.StartsUnpinnedGroup = starts;
+            marked |= starts;
+            pinnedAbove |= session.IsPinned;
+        }
+    }
+
+    partial void OnSearchTextChanged(string value)
+    {
+        // The name filter applies at once. Hits from the previous term stay
+        // until the new search returns: while the user types on, the old term
+        // is part of the new one, and clearing them would make rows blink out
+        // and back.
+        FilteredSessions.Refresh();
+        _ = SearchContentAsync(value);
+    }
+
+    /// <summary>
+    /// Looks the term up in the saved conversations and marks the sessions
+    /// that contain it. A newer call cancels an older one, so only the hits
+    /// for the latest term are applied.
+    /// </summary>
+    private async Task SearchContentAsync(string text)
+    {
+        _contentSearchCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _contentSearchCts = cts;
+
+        var query = text.Trim();
+        if (query.Length < MinContentSearchLength || _sessionStore is null || _folderPath is null)
+        {
+            ApplySearchHits(Array.Empty<SessionSearchHit>());
+            return;
+        }
+
+        try
+        {
+            await Task.Delay(ContentSearchDelay, cts.Token);
+            var hits = await _sessionStore.SearchMessagesAsync(_folderPath, query, cts.Token);
+            if (!cts.IsCancellationRequested)
+                ApplySearchHits(hits);
+        }
+        catch (OperationCanceledException)
+        {
+            // A newer term took over.
+        }
+        catch
+        {
+            // Best effort — the name filter still works without it.
+        }
+    }
+
+    private void ApplySearchHits(IReadOnlyList<SessionSearchHit> hits)
+    {
+        var byId = hits.ToDictionary(h => h.SessionId);
+        foreach (var session in Sessions)
+        {
+            session.SearchHit = session.PersistedId is int id && byId.TryGetValue(id, out var hit)
+                ? hit
+                : null;
+        }
+
+        FilteredSessions.Refresh();
+    }
+
+    partial void OnShowArchivedChanged(bool value)
+    {
+        FilteredSessions.Refresh();
+        OnPropertyChanged(nameof(ArchiveButtonText));
+
+        // The previous selection belongs to the view being left, so it is no
+        // longer in the list the user can see.
+        SelectedSession = null;
+    }
+
+    /// <summary>
+    /// Label of the button that switches views, carrying the archive count so
+    /// the user can see there is something in there without opening it.
+    /// </summary>
+    public string ArchiveButtonText => ShowArchived
+        ? "Back to sessions"
+        : $"Archive ({Sessions.Count(s => s.IsArchived)})";
 
     /// <summary>
     /// Initializes the view model with a session store and folder path for persistence.
@@ -161,17 +333,27 @@ public partial class SessionListViewModel : ObservableObject
                 Name = entry.Title,
                 HasCustomTitle = entry.TitleIsCustom,
                 IsPinned = entry.IsPinned,
+                IsArchived = entry.ArchivedUtc.HasValue,
                 LastActivity = entry.LastActivityUtc.ToLocalTime(),
                 IsActive = false
             };
 
             Sessions.Add(info);
         }
+
+        // A new workspace brings new sessions, which the term in the box has
+        // not been looked up in yet.
+        if (!string.IsNullOrWhiteSpace(SearchText))
+            _ = SearchContentAsync(SearchText);
     }
 
     [RelayCommand]
     public async Task NewSessionAsync()
     {
+        // A new session is never archived, so it would be created into a list
+        // that cannot show it.
+        ShowArchived = false;
+
         var session = new SessionInfo
         {
             Name = $"Chat {Sessions.Count + 1}",
@@ -204,6 +386,9 @@ public partial class SessionListViewModel : ObservableObject
 
         session.IsPinned = !session.IsPinned;
         ApplyPinnedOrder();
+
+        // A row already in place does not move, so the list raises no change.
+        UpdatePinnedBoundary();
 
         if (session.PersistedId.HasValue && _sessionStore is not null && _folderPath is not null)
         {
@@ -242,7 +427,14 @@ public partial class SessionListViewModel : ObservableObject
     private void OpenSession(SessionInfo? session)
     {
         if (session is null) return;
+
         SelectedSession = session;
+
+        // An archived session does not open. Restoring it first is one click,
+        // and it keeps a session the user is working in out of the archive,
+        // where the startup clean-up would eventually delete it.
+        if (session.IsArchived) return;
+
         SessionOpenRequested?.Invoke(session);
     }
 
@@ -251,9 +443,9 @@ public partial class SessionListViewModel : ObservableObject
     /// closed first, so only one rename box is ever open.
     /// </summary>
     [RelayCommand]
-    private void BeginRename(SessionInfo? session)
+    private void BeginRename(object? parameter)
     {
-        if (session is null) return;
+        if (parameter is not SessionInfo session) return;
 
         foreach (var other in Sessions)
         {
@@ -318,9 +510,11 @@ public partial class SessionListViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task RemoveSessionAsync(SessionInfo? session)
+    private async Task RemoveSessionAsync(object? parameter)
     {
-        if (session is null) return;
+        if (parameter is not SessionInfo session) return;
+        if (ConfirmDelete is not null && !ConfirmDelete(session)) return;
+
         session.IsActive = false;
         Sessions.Remove(session);
         SessionRemoved?.Invoke(session);
@@ -337,4 +531,70 @@ public partial class SessionListViewModel : ObservableObject
         if (SelectedSession == session)
             SelectedSession = Sessions.FirstOrDefault();
     }
+
+    /// <summary>
+    /// Moves a session into the archive. This is what the row's main action
+    /// does now, so the plain gesture is the reversible one. No confirmation:
+    /// the point of the archive is that the step can be taken back.
+    /// </summary>
+    /// <remarks>
+    /// The parameter is typed <c>object?</c> on purpose. The menu reads it from
+    /// the row's DataContext, and once the row leaves the list WPF swaps that
+    /// for its DisconnectedItem placeholder. A typed command would throw from
+    /// CanExecute and take Visual Studio down with it.
+    /// </remarks>
+    [RelayCommand]
+    private Task ArchiveSessionAsync(object? parameter) => SetArchivedAsync(parameter as SessionInfo, archived: true);
+
+    /// <summary>
+    /// Takes a session back out of the archive, into the normal list.
+    /// </summary>
+    [RelayCommand]
+    private Task RestoreSessionAsync(object? parameter) => SetArchivedAsync(parameter as SessionInfo, archived: false);
+
+    private async Task SetArchivedAsync(SessionInfo? session, bool archived)
+    {
+        if (session is null || session.IsArchived == archived) return;
+
+        session.IsArchived = archived;
+
+        // The store counts a restore as activity, so the row shows it and
+        // takes the place the next load gives it: newest in its group.
+        if (!archived)
+        {
+            session.LastActivity = DateTime.Now;
+            var target = session.IsPinned ? 0 : Sessions.TakeWhile(s => s.IsPinned).Count();
+            Sessions.Move(Sessions.IndexOf(session), target);
+        }
+
+        // The row belongs to the other view now, so it leaves the one on
+        // screen. Its window goes with it when it is archived; restoring does
+        // not reopen a window the user did not ask for.
+        FilteredSessions.Refresh();
+        OnPropertyChanged(nameof(ArchiveButtonText));
+
+        if (archived)
+        {
+            session.IsActive = false;
+            SessionRemoved?.Invoke(session);
+        }
+
+        if (SelectedSession == session)
+            SelectedSession = null;
+
+        if (session.PersistedId.HasValue && _sessionStore is not null && _folderPath is not null)
+        {
+            try
+            {
+                await _sessionStore.SetSessionArchivedAsync(_folderPath, session.PersistedId.Value, archived);
+            }
+            catch { /* best effort — the list still reflects the choice for this run */ }
+        }
+    }
+
+    /// <summary>
+    /// Switches between the normal list and the archive.
+    /// </summary>
+    [RelayCommand]
+    private void ToggleArchiveView() => ShowArchived = !ShowArchived;
 }

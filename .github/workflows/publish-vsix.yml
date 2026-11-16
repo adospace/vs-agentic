@@ -64,6 +64,9 @@ jobs:
             exit 1
           }
           echo "path=$($vsixPath.FullName)" >> $env:GITHUB_OUTPUT
+          # action-gh-release matches `files` as a glob, where a backslash is an
+          # escape character, so the Windows path above matches nothing.
+          echo "asset=$($vsixPath.FullName.Replace('\', '/'))" >> $env:GITHUB_OUTPUT
           Write-Host "Found VSIX: $($vsixPath.Name)"
 
       - name: Publish to VS Marketplace
@@ -114,7 +117,9 @@ jobs:
           $tags = git tag --sort=-v:refname
           $prevTag = ($tags | Select-Object -Skip 1 -First 1)
           if ($prevTag) {
-            $commits = git log "$prevTag..HEAD" --pretty=format:"- %s" --no-merges
+            # git returns one string per line; joined explicitly, because an array
+            # expanded inside the here-string below is joined with spaces.
+            $commits = (git log "$prevTag..HEAD" --pretty=format:"- %s" --no-merges) -join "`n"
           } else {
             $commits = "- Initial release"
           }
@@ -140,7 +145,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: ${{ steps.vsix.outputs.path }}
+          files: ${{ steps.vsix.outputs.asset }}
           body_path: release-notes.txt
           draft: false
           prerelease: false

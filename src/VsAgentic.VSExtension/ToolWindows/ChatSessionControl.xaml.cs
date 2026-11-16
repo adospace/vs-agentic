@@ -1,12 +1,15 @@
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using Ellipse = System.Windows.Shapes.Ellipse;
 using System.Windows.Threading;
 using Microsoft.VisualStudio.PlatformUI;
 using Microsoft.VisualStudio.Shell;
+using VsAgentic.Services.Abstractions;
 using VsAgentic.UI.Controls;
 using VsAgentic.UI.ViewModels;
 
@@ -29,11 +32,93 @@ public partial class ChatSessionControl : UserControl
     public ChatSessionControl()
     {
         InitializeComponent();
+
+        // The model panel opens above its button with their right edges in
+        // line. The button sits near the right of the status bar, so a panel
+        // aligned to its left edge would run past the window. Above or, if
+        // there is no room, below.
+        ModelPickerPopup.CustomPopupPlacementCallback = (popupSize, targetSize, offset) => new[]
+        {
+            new CustomPopupPlacement(new Point(targetSize.Width - popupSize.Width, -popupSize.Height), PopupPrimaryAxis.Horizontal),
+            new CustomPopupPlacement(new Point(targetSize.Width - popupSize.Width, targetSize.Height), PopupPrimaryAxis.Horizontal),
+        };
+
+        // The panel works from the keyboard: it opens with the focus on the
+        // session's model, the arrow keys and Tab move inside it, and Escape
+        // closes it. The content is laid out after Opened, hence the post.
+        ModelPickerPopup.Opened += (_, _) =>
+            Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(FocusSelectedModelRow));
+        ModelPickerPopup.Closed += (_, _) =>
+        {
+            // Focus left in the closed panel would sit in a hidden window. A
+            // click elsewhere has already moved it, and keeps it there.
+            if (Keyboard.FocusedElement is not DependencyObject focused || IsInModelPickerPanel(focused))
+                ModelPickerToggle.Focus();
+        };
+        ModelPickerToggle.PreviewKeyDown += ModelPickerToggle_PreviewKeyDown;
+    }
+
+    // Alt+Down and F4 open the panel, as they open a dropdown list.
+    private void ModelPickerToggle_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        var altDown = e.Key == Key.System && e.SystemKey == Key.Down;
+        if ((altDown || e.Key == Key.F4) && ModelPickerToggle.IsChecked != true)
+        {
+            ModelPickerToggle.IsChecked = true;
+            e.Handled = true;
+        }
+    }
+
+    private void ModelPickerPanel_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        var altUp = e.Key == Key.System && e.SystemKey == Key.Up;
+        if (e.Key == Key.Escape || altUp || e.Key == Key.F4)
+        {
+            ModelPickerToggle.IsChecked = false;
+            ModelPickerToggle.Focus();
+            e.Handled = true;
+        }
+    }
+
+    private void FocusSelectedModelRow()
+    {
+        if (!ModelPickerPopup.IsOpen) return;
+
+        var row = FindDescendants<Button>(ModelPickerPanel)
+            .FirstOrDefault(b => b.DataContext is ModelOption { IsSelected: true } && b.IsVisible);
+        if (row is not null)
+            row.Focus();
+        else
+            ModelPickerPanel.MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+    }
+
+    private bool IsInModelPickerPanel(DependencyObject element)
+    {
+        for (var node = element; node is not null;
+             node = node is Visual or System.Windows.Media.Media3D.Visual3D ? VisualTreeHelper.GetParent(node) : LogicalTreeHelper.GetParent(node))
+        {
+            if (ReferenceEquals(node, ModelPickerPanel)) return true;
+        }
+        return false;
+    }
+
+    private static IEnumerable<T> FindDescendants<T>(DependencyObject root) where T : DependencyObject
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T match) yield return match;
+            foreach (var nested in FindDescendants<T>(child)) yield return nested;
+        }
     }
 
     public void Initialize(ChatSessionViewModel viewModel)
     {
         DataContext = viewModel;
+
+        // "/model", "/effort" and "/fast", picked or typed, open the panel.
+        viewModel.OpenModelPanel = OpenModelPanel;
 
         viewModel.MessageAdded += (id, type, data) =>
             _ = ChatWebView.AddMessageAsync(id, type, data);
@@ -47,6 +132,17 @@ public partial class ChatSessionControl : UserControl
         viewModel.MessageBodySet += (id, body, mode) =>
             _ = ChatWebView.SetBodyAsync(id, body, mode);
 
+        viewModel.MessageBackgroundStateSet += (id, state, summary) =>
+            _ = ChatWebView.SetBackgroundStateAsync(id, state, summary);
+
+        viewModel.MessageCanMoveToBackground += (id) =>
+            _ = ChatWebView.SetCanMoveToBackgroundAsync(id);
+
+        viewModel.MessageFileChangeSet += (id, summary) =>
+            _ = ChatWebView.SetFileChangeAsync(id, summary);
+
+        viewModel.FileDiffRequested += OnFileDiffRequested;
+
         viewModel.MessageCompleted += (id) =>
             _ = ChatWebView.CompleteMessageAsync(id);
 
@@ -56,12 +152,28 @@ public partial class ChatSessionControl : UserControl
         viewModel.MessagesRestored += (messages) =>
             _ = ChatWebView.LoadMessagesAsync(messages);
 
+        viewModel.TurnEnded += () =>
+            _ = ChatWebView.EndActivityAsync();
+
+        // The dots before the status text. While a banner waits for the user,
+        // Claude is not working.
+        SetWorkingDots(viewModel.IsWorking);
+        viewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName != nameof(ChatSessionViewModel.IsWorking)) return;
+            if (Dispatcher.CheckAccess())
+                SetWorkingDots(viewModel.IsWorking);
+            else
+                Dispatcher.BeginInvoke(new Action(() => SetWorkingDots(viewModel.IsWorking)));
+        };
+
         // Banner mounting is now driven by the ActiveBanner property on the VM —
         // the BannerHost ContentControl in XAML binds to it and DataTemplates
         // pick the right UserControl by VM type.
 
         // Apply VS theme colors to the WebView
         ApplyThemeColors();
+        ApplyShellBrushes();
 
         // Re-apply when VS theme changes
         VSColorTheme.ThemeChanged += OnThemeChanged;
@@ -70,11 +182,152 @@ public partial class ChatSessionControl : UserControl
         // not by WPF; the page relays them.
         ChatWebView.ZoomChangeRequested += OnZoomChangeRequested;
 
+        // The "Run in background" button on a running step.
+        ChatWebView.MoveToBackgroundRequested += OnMoveToBackgroundRequested;
+
+        // The "Diff" button on a step that changed a file.
+        ChatWebView.DiffRequested += OnDiffRequested;
+
         // Zoom is one setting across every chat window, so follow it rather
         // than own it. Applied without the toast here: this is the window
         // adopting the level it was born into, not the user changing it.
         ChatZoom.Changed += OnZoomChanged;
         ApplyZoom(ChatZoom.Level);
+
+        // Three ways to say "seen it", between them covering everywhere a
+        // pending Completed indicator should stop:
+        //
+        //  - Keyboard focus arriving, see UpdateSessionFocus. It arrives when
+        //    VS activates the tab and also when the user comes back to VS from
+        //    another window. GotFocus only covers the first: logical focus
+        //    stays in the input box while VS is in the background, so it does
+        //    not fire again when keyboard focus returns there.
+        //  - PreviewMouseDown catches a click on the chrome that takes no
+        //    focus: the status bar, the usage meters, a header, bare margin.
+        //  - Clicked is relayed by the page, because the transcript itself is
+        //    a browser child window that WPF sees no mouse events from.
+        ChatWebView.Clicked += OnChatClicked;
+
+        // The same focus tells the view model whether the user is in this
+        // session at the moment a turn ends, so one that ends under their nose
+        // raises no indicator at all. Two halves: WPF reports its own chrome,
+        // the page reports itself.
+        IsKeyboardFocusWithinChanged += OnKeyboardFocusWithinChanged;
+        ChatWebView.ContentFocusChanged += OnChatContentFocusChanged;
+    }
+
+    // The dots' ring: seconds per turn, and seconds per turn of the two axes
+    // that tilt it. Periods with no common factor keep the shape from repeating.
+    private const double DotsRingPeriod = 1.8;
+    private const double DotsTiltXPeriod = 4.3;
+    private const double DotsTiltYPeriod = 6.7;
+    private const double DotsRingRadius = 6;
+    private const double DotsMinSize = 1.2;
+    private const double DotsMaxSize = 4.5;
+
+    private readonly Stopwatch _workingDotsClock = new();
+    private TimeSpan _workingDotsLastFrame;
+
+    /// <summary>
+    /// Shows the dots and moves them on every frame while they show. Hidden
+    /// dots take no frames, so an idle window costs nothing.
+    /// </summary>
+    private void SetWorkingDots(bool working)
+    {
+        var shown = WorkingDots.Visibility == Visibility.Visible;
+        if (working == shown) return;
+        WorkingDots.Visibility = working ? Visibility.Visible : Visibility.Collapsed;
+
+        if (working)
+        {
+            _workingDotsClock.Restart();
+            PlaceWorkingDots(0);
+            CompositionTarget.Rendering += OnWorkingDotsFrame;
+        }
+        else
+        {
+            CompositionTarget.Rendering -= OnWorkingDotsFrame;
+            _workingDotsClock.Stop();
+        }
+    }
+
+    private void OnWorkingDotsFrame(object? sender, EventArgs e)
+    {
+        // Rendering can fire more than once for the same frame.
+        var frame = ((RenderingEventArgs)e).RenderingTime;
+        if (frame == _workingDotsLastFrame) return;
+        _workingDotsLastFrame = frame;
+        PlaceWorkingDots(_workingDotsClock.Elapsed.TotalSeconds);
+    }
+
+    /// <summary>
+    /// Three points a third of a turn apart on a ring that turns while it tilts
+    /// about two axes. Each point is projected flat; the nearer it is, the
+    /// larger it is drawn and the higher it sits in the stack.
+    /// </summary>
+    private void PlaceWorkingDots(double t)
+    {
+        var tiltX = 2 * Math.PI * t / DotsTiltXPeriod;
+        var tiltY = 2 * Math.PI * t / DotsTiltYPeriod;
+        var center = WorkingDots.Width / 2;
+
+        for (var i = 0; i < WorkingDots.Children.Count; i++)
+        {
+            var angle = 2 * Math.PI * (t / DotsRingPeriod + i / 3.0);
+            var x = Math.Cos(angle);
+            var y = Math.Sin(angle) * Math.Cos(tiltX);
+            var z = Math.Sin(angle) * Math.Sin(tiltX);
+            var depth = z * Math.Cos(tiltY) - x * Math.Sin(tiltY);
+            x = x * Math.Cos(tiltY) + z * Math.Sin(tiltY);
+
+            var size = DotsMinSize + (DotsMaxSize - DotsMinSize) * (depth + 1) / 2;
+            var dot = (Ellipse)WorkingDots.Children[i];
+            dot.Width = size;
+            dot.Height = size;
+            Canvas.SetLeft(dot, center + DotsRingRadius * x - size / 2);
+            Canvas.SetTop(dot, center + DotsRingRadius * y - size / 2);
+            Panel.SetZIndex(dot, (int)(depth * 100));
+        }
+    }
+
+    private void OnChatClicked()
+    {
+        if (DataContext is ChatSessionViewModel vm) vm.NotifySessionSeen();
+    }
+
+    private void OnPreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (DataContext is ChatSessionViewModel vm) vm.NotifySessionSeen();
+    }
+
+    /// <summary>True while the page reports focus; see <see cref="UpdateSessionFocus"/>.</summary>
+    private bool _chatContentFocused;
+
+    private void OnChatContentFocusChanged(bool hasFocus)
+    {
+        _chatContentFocused = hasFocus;
+        UpdateSessionFocus();
+    }
+
+    private void OnKeyboardFocusWithinChanged(object sender, DependencyPropertyChangedEventArgs e) =>
+        UpdateSessionFocus();
+
+    /// <summary>
+    /// Answers "is the user in this session right now?". Keyboard focus rather
+    /// than logical focus or visibility: it goes false when another pane takes
+    /// over and when VS is sent to the background, both of which mean the user
+    /// is no longer watching — whereas a docked window stays visible either
+    /// way. The page's own answer is OR'd in because focus inside the browser
+    /// child window does not always register as focus within the host.
+    /// Focus coming in also means the user now sees the session, so it clears
+    /// a pending Completed indicator.
+    /// </summary>
+    private void UpdateSessionFocus()
+    {
+        if (DataContext is not ChatSessionViewModel vm) return;
+
+        vm.IsSessionFocused = IsKeyboardFocusWithin || _chatContentFocused;
+        if (vm.IsSessionFocused) vm.NotifySessionSeen();
     }
 
     /// <summary>
@@ -87,6 +340,12 @@ public partial class ChatSessionControl : UserControl
         VSColorTheme.ThemeChanged -= OnThemeChanged;
         ChatZoom.Changed -= OnZoomChanged;
         ChatWebView.ZoomChangeRequested -= OnZoomChangeRequested;
+        ChatWebView.MoveToBackgroundRequested -= OnMoveToBackgroundRequested;
+        ChatWebView.DiffRequested -= OnDiffRequested;
+        ChatWebView.Clicked -= OnChatClicked;
+        ChatWebView.ContentFocusChanged -= OnChatContentFocusChanged;
+        IsKeyboardFocusWithinChanged -= OnKeyboardFocusWithinChanged;
+        SetWorkingDots(false);
 
         // A popup is its own window and would outlive the pane it belongs to.
         _zoomToastTimer?.Stop();
@@ -95,7 +354,11 @@ public partial class ChatSessionControl : UserControl
 
     private void OnThemeChanged(ThemeChangedEventArgs e)
     {
-        Dispatcher.BeginInvoke(new Action(() => ApplyThemeColors()));
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            ApplyThemeColors();
+            ApplyShellBrushes();
+        }));
     }
 
     private void ApplyThemeColors()
@@ -108,23 +371,40 @@ public partial class ChatSessionControl : UserControl
             colors[cssVar] = $"#{wpfColor.R:X2}{wpfColor.G:X2}{wpfColor.B:X2}";
         }
 
+        // Where the shell palette has the color, it comes from the theme the
+        // user picked; the environment key is what a Visual Studio 2026 theme
+        // leaves to its fallback. See ShellPalette.
+        void MapShell(string cssVar, string shellColor, ThemeResourceKey fallback)
+        {
+            if (ShellPalette.TryGetColor(shellColor) is not Color color)
+            {
+                Map(cssVar, fallback);
+                return;
+            }
+
+            // Some of these colors are meant to sit over what is behind them,
+            // a control edge above all, so the alpha is passed on.
+            colors[cssVar] = color.A == byte.MaxValue
+                ? $"#{color.R:X2}{color.G:X2}{color.B:X2}"
+                : $"#{color.R:X2}{color.G:X2}{color.B:X2}{color.A:X2}";
+        }
+
         Map("--bg-primary", EnvironmentColors.ToolWindowBackgroundColorKey);
         Map("--bg-secondary", EnvironmentColors.CommandBarGradientBeginColorKey);
-        Map("--bg-input", EnvironmentColors.ComboBoxBackgroundColorKey);
-        Map("--text-primary", EnvironmentColors.ToolWindowTextColorKey);
-        Map("--text-heading", EnvironmentColors.ToolWindowTextColorKey);
-        Map("--text-muted", EnvironmentColors.CommandBarTextInactiveColorKey);
-        Map("--border", EnvironmentColors.ToolWindowBorderColorKey);
-        // Use VS hyperlink color (theme-driven) rather than the OS system
-        // highlight, which on Win11 is often violet/purple and clashes with
-        // the dark/light VS theme.
-        Map("--accent", EnvironmentColors.PanelHyperlinkColorKey);
+        MapShell("--bg-input", "ControlFillActiveInput", EnvironmentColors.ComboBoxBackgroundColorKey);
+        MapShell("--text-primary", "TextFillPrimary", EnvironmentColors.ToolWindowTextColorKey);
+        MapShell("--text-heading", "TextFillPrimary", EnvironmentColors.ToolWindowTextColorKey);
+        MapShell("--text-muted", "TextFillSecondary", EnvironmentColors.CommandBarTextInactiveColorKey);
+        MapShell("--border", "ControlStrokeDefault", EnvironmentColors.ToolWindowBorderColorKey);
         Map("--code-bg", EnvironmentColors.ToolWindowContentGridColorKey);
         Map("--pre-bg", EnvironmentColors.ToolWindowBackgroundColorKey);
         Map("--thinking-bg", EnvironmentColors.CommandBarGradientBeginColorKey);
 
+        var accent = ThemeAccent();
+        colors["--accent"] = ToCssHex(accent);
+
         var toolWindowBackground = VSColorTheme.GetThemedColor(EnvironmentColors.ToolWindowBackgroundColorKey);
-        var promptAccent = VSColorTheme.GetThemedColor(EnvironmentColors.PanelHyperlinkColorKey);
+        var promptAccent = PromptAccent(accent);
         var promptBorderBase = VSColorTheme.GetThemedColor(EnvironmentColors.ToolWindowBorderColorKey);
         var promptBgBlend = RelativeLuminance(toolWindowBackground) >= 0.5 ? 0.08 : 0.12;
 
@@ -139,6 +419,97 @@ public partial class ChatSessionControl : UserControl
         colors["--scrollbar-thumb-hover"] = $"rgba({grayHover.R}, {grayHover.G}, {grayHover.B}, 0.8)";
 
         _ = ChatWebView.SetThemeColorsAsync(colors);
+    }
+
+    /// <summary>
+    /// The color the chat uses for links and focus borders, and for the prompt
+    /// where the theme names no accent.
+    /// </summary>
+    /// <remarks>
+    /// The OS system highlight is deliberately not used: on Windows 11 it is
+    /// often violet and clashes with the VS theme.
+    /// </remarks>
+    private static System.Drawing.Color ThemeAccent() =>
+        // A theme written for the Visual Studio 2026 shell leaves PanelHyperlink
+        // to its fallback theme, so ask the shell palette first and keep the
+        // environment key for Visual Studio 2022. See ShellPalette.
+        ShellPalette.TryGetColor("HyperlinkFillPrimary") is Color accent
+            ? System.Drawing.Color.FromArgb(accent.A, accent.R, accent.G, accent.B)
+            : VSColorTheme.GetThemedColor(EnvironmentColors.PanelHyperlinkColorKey);
+
+    /// <summary>
+    /// The edge of the prompt box.
+    /// </summary>
+    /// <remarks>
+    /// Not the combo box edge the rest of the window takes: its shell color,
+    /// ControlStrokeDefault, is black at 6% in the Light theme, and
+    /// ControlStrokeSecondary is no stronger there. Held here because the XAML
+    /// compiler resolves CommonControlsColors to a null key.
+    /// </remarks>
+    public static object PromptBoxBorderKey => CommonControlsColors.TextBoxBorderBrushKey;
+
+    /// <summary>
+    /// The edge of the prompt box while the focus is inside it.
+    /// </summary>
+    /// <remarks>
+    /// The theme accent, not the link color the chat uses for its own focus: a
+    /// theme may pick a link color unrelated to its accent, such as cyan in a
+    /// green theme.
+    /// </remarks>
+    public static object PromptBoxFocusBorderKey => CommonControlsColors.TextBoxBorderFocusedBrushKey;
+
+    /// <summary>
+    /// The color that marks the user's own messages.
+    /// </summary>
+    /// <remarks>
+    /// A theme may give links a color of their own, apart from its accent, and
+    /// the prompt is no link. The shell palette names the accent; where it has
+    /// none, which is every Visual Studio 2022, the prompt keeps
+    /// <paramref name="linkAccent"/> as before.
+    /// </remarks>
+    private static System.Drawing.Color PromptAccent(System.Drawing.Color linkAccent) =>
+        ShellPalette.TryGetColor("AccentFillDefault") is Color accent
+            ? System.Drawing.Color.FromArgb(accent.A, accent.R, accent.G, accent.B)
+            : linkAccent;
+
+    /// <summary>
+    /// The environment brushes the chrome of this window binds to, each paired
+    /// with the shell color that carries the same meaning in a Visual Studio
+    /// 2026 theme.
+    /// </summary>
+    // VsBrushes exposes its keys as object, which is also what a resource
+    // dictionary takes, so the pairs are held that way.
+    private static readonly (object Brush, string ShellColor)[] ChromeBrushes =
+    {
+        (VsBrushes.ComboBoxBackgroundKey, "ControlFillActiveInput"),
+        (VsBrushes.ComboBoxBorderKey, "ControlStrokeDefault"),
+        (PromptBoxBorderKey, "SurfaceStrokeDefault"),
+        (PromptBoxFocusBorderKey, "AccentFillDefault"),
+        (VsBrushes.WindowTextKey, "TextFillPrimary"),
+        (VsBrushes.GrayTextKey, "TextFillSecondary"),
+        (VsBrushes.PanelHyperlinkKey, "HyperlinkFillPrimary"),
+        (VsBrushes.CommandBarMouseOverBackgroundGradientKey, "SubtleFillSecondary"),
+        (VsBrushes.CommandBarMouseDownBackgroundGradientKey, "SubtleFillTertiary"),
+        (VsBrushes.CommandBarSelectedKey, "SubtleFillTertiary"),
+    };
+
+    /// <summary>
+    /// The status row binds a color rather than a brush, because it flashes and
+    /// a themed brush is frozen. It has to follow the prompt box background above.
+    /// </summary>
+    private static readonly (object Key, string ShellColor)[] ChromeColors =
+    {
+        (VsColors.ComboBoxBackgroundKey, "ControlFillActiveInput"),
+    };
+
+    /// <summary>
+    /// Points the prompt box and the status row at the shell palette, so that a
+    /// theme which defines only the shell colors still reaches them.
+    /// </summary>
+    private void ApplyShellBrushes()
+    {
+        ShellPalette.OverrideBrushes(this, ChromeBrushes);
+        ShellPalette.OverrideColors(this, ChromeColors);
     }
 
     private static System.Drawing.Color Blend(System.Drawing.Color from, System.Drawing.Color to, double amount)
@@ -173,6 +544,54 @@ public partial class ChatSessionControl : UserControl
 
     private static string ToCssHex(System.Drawing.Color color) =>
         $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+
+    private void RemoveAttachment_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is ChatSessionViewModel vm &&
+            sender is FrameworkElement { DataContext: IChatAttachment attachment })
+        {
+            vm.RemoveAttachment(attachment);
+        }
+    }
+
+    /// <summary>
+    /// Attaches a selection sent from the editor's context menu. The input box
+    /// takes focus once the window has come forward, so the user can type the
+    /// question straight away.
+    /// </summary>
+    public void AttachFromEditor(EditorContext context)
+    {
+        if (DataContext is not ChatSessionViewModel vm) return;
+
+        vm.Attach(context);
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() => InputTextBox.Focus()));
+    }
+
+    private void AcceptEditorContext_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is ChatSessionViewModel vm &&
+            sender is FrameworkElement { DataContext: EditorContext suggestion })
+        {
+            vm.AcceptEditorContext(suggestion);
+
+            // The next thing the user does is type the question about it.
+            InputTextBox.Focus();
+        }
+    }
+
+    // The selection only changes while the user is in the editor, so coming
+    // back to the input box is when the suggestion has to catch up. The mouse
+    // gets there first when the user goes straight for the suggestion, and
+    // the button must name what a click attaches.
+    private void InputTextBox_GotKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        (DataContext as ChatSessionViewModel)?.RefreshEditorContext();
+    }
+
+    private void PromptBox_MouseEnter(object sender, MouseEventArgs e)
+    {
+        (DataContext as ChatSessionViewModel)?.RefreshEditorContext();
+    }
 
     // ------------------------------------------------------------------
     // Zoom
@@ -212,7 +631,65 @@ public partial class ChatSessionControl : UserControl
         e.Handled = true;
     }
 
+    /// <summary>
+    /// Opens the find bar over the chat. Called by the tool window for Edit.Find.
+    /// </summary>
+    public void OpenFind() => _ = ChatWebView.OpenFindAsync();
+
+    /// <summary>
+    /// Steps through the matches. Called by the tool window for Edit.FindNext
+    /// (+1) and Edit.FindPrevious (-1).
+    /// </summary>
+    public void FindNext(int direction) => _ = ChatWebView.FindNextAsync(direction);
+
     private void OnZoomChangeRequested(int step) => ChatZoom.Step(step);
+
+    // The Debugger switch: a click opens the three levels.
+    private void OnDebuggerAccessClick(object sender, RoutedEventArgs e) =>
+        DebuggerAccessPopup.IsOpen = !DebuggerAccessPopup.IsOpen;
+
+    private void OnDebuggerAccessPick(object sender, RoutedEventArgs e)
+    {
+        DebuggerAccessPopup.IsOpen = false;
+        if (DataContext is ChatSessionViewModel vm
+            && sender is FrameworkElement { Tag: string tag }
+            && Enum.TryParse<VsAgentic.Services.IdeContext.DebuggerAccessLevel>(tag, out var level))
+        {
+            vm.DebuggerAccess = level;
+        }
+    }
+
+    private void OnMoveToBackgroundRequested(string stepId)
+    {
+        if (DataContext is ChatSessionViewModel vm)
+            _ = vm.MoveStepToBackgroundAsync(stepId);
+    }
+
+    private void OnDiffRequested(string stepId) =>
+        (DataContext as ChatSessionViewModel)?.OpenStepDiff(stepId);
+
+    private void OnFileDiffRequested(FileDiffContent diff)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        try
+        {
+            Editor.FileDiffViewer.Open(diff);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException)
+        {
+            System.Diagnostics.Debug.WriteLine($"VsAgentic: Could not open the diff for {diff.FilePath}: {ex.Message}");
+        }
+    }
+
+    // Read the output as the tooltip opens rather than on a timer: nobody
+    // looks at it most of the time, and each read is a request to the CLI.
+    // The tooltip shows the last text it had and changes when the answer
+    // comes, in a few milliseconds.
+    private void BackgroundTask_ToolTipOpening(object sender, ToolTipEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is BackgroundTaskItemViewModel task)
+            _ = task.RefreshOutputAsync();
+    }
 
     private void OnZoomChanged(double level)
     {
@@ -296,6 +773,24 @@ public partial class ChatSessionControl : UserControl
             if (DataContext is ChatSessionViewModel vm && vm.SendCommand.CanExecute(null))
             {
                 vm.SendCommand.Execute(null);
+                e.Handled = true;
+            }
+        }
+
+        // Escape empties the input, which Ctrl+Z brings back. The next Escape
+        // removes the attachments, so the text goes first and a second press
+        // is needed for both. An open @ list takes the key first, in
+        // PreviewKeyDown, so the first Escape only closes it. With nothing
+        // left the key goes on to Visual Studio.
+        if (e.Key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None)
+        {
+            if (!string.IsNullOrEmpty(InputTextBox.Text))
+            {
+                InputTextBox.Clear();
+                e.Handled = true;
+            }
+            else if (DataContext is ChatSessionViewModel vm && vm.RemoveAllAttachments())
+            {
                 e.Handled = true;
             }
         }
@@ -383,9 +878,94 @@ public partial class ChatSessionControl : UserControl
         ShowMentionPopup("");
     }
 
+    private void AttachFileButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not ChatSessionViewModel vm) return;
+
+        // No type filter: the CLI reads whatever it is handed, and the picker
+        // reaching only the kinds we inline would hide every other file the
+        // model can be asked about.
+        var picker = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Attach to message",
+            Filter = "All files (*.*)|*.*",
+            Multiselect = true,
+            CheckFileExists = true,
+        };
+
+        if (picker.ShowDialog() != true) return;
+
+        Attach(vm, picker.FileNames);
+        InputTextBox.Focus();
+    }
+
+    private void PromptBox_PreviewDragOver(object sender, DragEventArgs e)
+    {
+        // Anything that is not a file is left alone, so text dragged out of an
+        // editor still drops into the textbox as text.
+        if (!TryGetDroppedPaths(e.Data, out _)) return;
+
+        e.Effects = DragDropEffects.Copy;
+        e.Handled = true;
+        DropHighlight.Visibility = Visibility.Visible;
+    }
+
+    private void PromptBox_PreviewDragLeave(object sender, DragEventArgs e)
+    {
+        // Hidden without asking where the cursor went. The textbox takes drops of
+        // its own, so crossing from the box's chrome into it also raises a leave,
+        // but WPF hands the leave and the next DragOver to us in one pass over
+        // the same mouse move, and the DragOver puts the highlight straight back.
+        // Leaving for good, and a drag cancelled with Escape, both end here too,
+        // which a test on the cursor position would miss: Escape reports the last
+        // point inside the box.
+        DropHighlight.Visibility = Visibility.Collapsed;
+    }
+
+    private void PromptBox_PreviewDrop(object sender, DragEventArgs e)
+    {
+        DropHighlight.Visibility = Visibility.Collapsed;
+
+        if (DataContext is not ChatSessionViewModel vm) return;
+        if (!TryGetDroppedPaths(e.Data, out var paths)) return;
+
+        Attach(vm, paths!);
+        // Otherwise the textbox would go on to handle the same drop.
+        e.Handled = true;
+        InputTextBox.Focus();
+    }
+
+    /// <summary>
+    /// Reads the paths a drag is carrying, if it is carrying any. The data
+    /// object belongs to the source process and can fail on either call, which
+    /// is not a reason to lose the drop's other formats.
+    /// </summary>
+    private static bool TryGetDroppedPaths(IDataObject data, out string[]? paths)
+    {
+        paths = null;
+        try
+        {
+            if (!data.GetDataPresent(DataFormats.FileDrop)) return false;
+            paths = data.GetData(DataFormats.FileDrop) as string[];
+        }
+        catch
+        {
+            return false;
+        }
+        return paths is { Length: > 0 };
+    }
+
+    private static void Attach(ChatSessionViewModel vm, IEnumerable<string?> paths)
+    {
+        foreach (var attachment in AttachmentReader.FromPaths(paths))
+            vm.Attach(attachment);
+    }
+
     private void InputTextBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (_suppressTextChanged) return;
+
+        UpdateSlashPopup();
 
         var text = InputTextBox.Text ?? "";
         var caret = InputTextBox.CaretIndex;
@@ -425,6 +1005,10 @@ public partial class ChatSessionControl : UserControl
 
     private void InputTextBox_SelectionChanged(object sender, RoutedEventArgs e)
     {
+        // Moving the caret out of the command's name closes the menu.
+        if (SlashPopup.IsOpen && !TryGetSlashToken(InputTextBox.Text ?? "", InputTextBox.CaretIndex, out _))
+            CloseSlashPopup();
+
         if (_mentionStart < 0) return;
 
         var caret = InputTextBox.CaretIndex;
@@ -434,8 +1018,9 @@ public partial class ChatSessionControl : UserControl
     private void InputTextBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
         // Don't close if focus moved into the popup (clicking a list item).
-        if (e.NewFocus is DependencyObject d && IsDescendantOf(d, MentionPopup.Child)) return;
+        if (e.NewFocus is DependencyObject d && (IsDescendantOf(d, MentionPopup.Child) || IsDescendantOf(d, SlashPopup.Child))) return;
         CloseMentionPopup();
+        CloseSlashPopup();
     }
 
     private static bool IsDescendantOf(DependencyObject? node, DependencyObject? root)
@@ -451,6 +1036,35 @@ public partial class ChatSessionControl : UserControl
 
     private void InputTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        // Ctrl+V is caught here rather than through DataObject.Pasting. A
+        // screenshot sits on the clipboard as a bitmap with no text format, so
+        // TextBoxBase.CanPaste is false, the paste command never runs, and the
+        // Pasting event never fires — the keystroke would be swallowed silently.
+        //
+        // Which clipboard formats lose to plain text is decided in TryRead: it
+        // is the one place that knows whether what it found is a bitmap, which
+        // text beats, or a file the user copied deliberately, which it does not.
+        if (e.Key == Key.V && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+        {
+            if (DataContext is ChatSessionViewModel vm)
+            {
+                var attachments = ClipboardAttachments.TryRead();
+                if (attachments.Count > 0)
+                {
+                    foreach (var attachment in attachments) vm.Attach(attachment);
+                    // Otherwise a file copied in Explorer would also paste its path.
+                    e.Handled = true;
+                    return;
+                }
+            }
+        }
+
+        if (SlashPopup.IsOpen && HandleSlashKey(e))
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (!MentionPopup.IsOpen) return;
 
         switch (e.Key)

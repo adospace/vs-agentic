@@ -2,10 +2,12 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vs="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0"
-             xmlns:bvm="clr-namespace:VsAgentic.UI.ViewModels.Banners;assembly=VsAgentic.UI">
+             xmlns:bvm="clr-namespace:VsAgentic.UI.ViewModels.Banners;assembly=VsAgentic.UI"
+             PreviewKeyDown="OnPreviewKeyDown">
     <UserControl.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/VsAgentic.VSExtension;component/ToolWindows/SharedStyles.xaml"/>
                 <ResourceDictionary Source="/VsAgentic.VSExtension;component/ToolWindows/Banners/BannerStyles.xaml"/>
             </ResourceDictionary.MergedDictionaries>
 
@@ -22,36 +24,63 @@
                 <RadioButton Style="{StaticResource FluentRadioButtonStyle}"
                              IsChecked="{Binding IsSelected, Mode=TwoWay}"
                              GroupName="{Binding DataContext.GroupName, RelativeSource={RelativeSource AncestorType=ItemsControl}}">
-                    <StackPanel Orientation="Vertical">
-                        <TextBlock Text="{Binding Label}"
+                    <!-- The number is what makes Alt+N discoverable; without it
+                         the shortcut is a secret. Grid, not StackPanel, so the
+                         label still wraps in a narrow tool window. -->
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0"
+                                   Text="{Binding OrdinalLabel}"
                                    FontWeight="SemiBold"
-                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
-                                   TextWrapping="Wrap"/>
-                        <TextBlock Text="{Binding Description}"
-                                   Visibility="{Binding HasDescription, Converter={StaticResource BoolToVis}}"
-                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
-                                   Opacity="0.78"
-                                   FontSize="11"
-                                   TextWrapping="Wrap"/>
-                    </StackPanel>
+                                   Opacity="0.6"
+                                   Margin="0,0,6,0"
+                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"/>
+                        <StackPanel Grid.Column="1" Orientation="Vertical">
+                            <TextBlock Text="{Binding Label}"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                                       TextWrapping="Wrap"/>
+                            <TextBlock Text="{Binding Description}"
+                                       Visibility="{Binding HasDescription, Converter={StaticResource BoolToVis}}"
+                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                                       Opacity="0.78"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Grid>
                 </RadioButton>
             </DataTemplate>
 
             <DataTemplate x:Key="CheckOptionTemplate" DataType="{x:Type bvm:OptionViewModel}">
                 <CheckBox Style="{StaticResource FluentCheckBoxStyle}"
                           IsChecked="{Binding IsSelected, Mode=TwoWay}">
-                    <StackPanel Orientation="Vertical">
-                        <TextBlock Text="{Binding Label}"
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0"
+                                   Text="{Binding OrdinalLabel}"
                                    FontWeight="SemiBold"
-                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
-                                   TextWrapping="Wrap"/>
-                        <TextBlock Text="{Binding Description}"
-                                   Visibility="{Binding HasDescription, Converter={StaticResource BoolToVis}}"
-                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
-                                   Opacity="0.78"
-                                   FontSize="11"
-                                   TextWrapping="Wrap"/>
-                    </StackPanel>
+                                   Opacity="0.6"
+                                   Margin="0,0,6,0"
+                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"/>
+                        <StackPanel Grid.Column="1" Orientation="Vertical">
+                            <TextBlock Text="{Binding Label}"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                                       TextWrapping="Wrap"/>
+                            <TextBlock Text="{Binding Description}"
+                                       Visibility="{Binding HasDescription, Converter={StaticResource BoolToVis}}"
+                                       Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                                       Opacity="0.78"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Grid>
                 </CheckBox>
             </DataTemplate>
 
@@ -65,9 +94,17 @@
                              IsChecked="{Binding IsOtherSelected, Mode=TwoWay}"
                              GroupName="{Binding GroupName}"
                              VerticalAlignment="Center">
-                    <TextBlock Text="Other:"
-                               Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
-                               VerticalAlignment="Center"/>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{Binding OtherOrdinalLabel}"
+                                   FontWeight="SemiBold"
+                                   Opacity="0.6"
+                                   Margin="0,0,6,0"
+                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                                   VerticalAlignment="Center"/>
+                        <TextBlock Text="Other:"
+                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
                 </RadioButton>
             </DataTemplate>
 
@@ -75,9 +112,17 @@
                 <CheckBox Style="{StaticResource FluentCheckBoxStyle}"
                           IsChecked="{Binding IsOtherSelected, Mode=TwoWay}"
                           VerticalAlignment="Center">
-                    <TextBlock Text="Other:"
-                               Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
-                               VerticalAlignment="Center"/>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{Binding OtherOrdinalLabel}"
+                                   FontWeight="SemiBold"
+                                   Opacity="0.6"
+                                   Margin="0,0,6,0"
+                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                                   VerticalAlignment="Center"/>
+                        <TextBlock Text="Other:"
+                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
                 </CheckBox>
             </DataTemplate>
 
@@ -86,7 +131,13 @@
                  option list (radio or check, depending on MultiSelect),
                  and the "Other:" free-text row. -->
             <DataTemplate x:Key="QuestionTemplate" DataType="{x:Type bvm:QuestionViewModel}">
-                <StackPanel Margin="12,6,12,6">
+                <!-- DirectionalNavigation="Cycle" keeps the arrow keys inside
+                     the question: Down walks the options, then the "Other"
+                     toggle and its text box, then wraps round to the first
+                     option instead of wandering off into the chat. -->
+                <StackPanel Margin="12,6,12,6"
+                            KeyboardNavigation.DirectionalNavigation="Cycle"
+                            Loaded="QuestionRoot_Loaded">
                     <TextBlock Text="{Binding QuestionText}"
                                FontWeight="SemiBold"
                                FontSize="15"
@@ -94,7 +145,12 @@
                                Margin="0,2,0,10"
                                TextWrapping="Wrap"/>
 
+                    <!-- Focusable="False": a focusable ItemsControl is its own
+                         tab stop, so walking back up out of the text box first
+                         lands on the list as a whole and draws a dotted frame
+                         around every option before reaching one of them. -->
                     <ItemsControl ItemsSource="{Binding Options}"
+                                  Focusable="False"
                                   Margin="8,0,0,4">
                         <ItemsControl.Style>
                             <Style TargetType="ItemsControl">
@@ -119,6 +175,7 @@
 
                         <ContentControl Grid.Column="0"
                                         Content="{Binding}"
+                                        Focusable="False"
                                         Margin="0,0,8,0"
                                         VerticalAlignment="Center">
                             <ContentControl.Style>
@@ -222,15 +279,26 @@
                             ContentTemplate="{StaticResource QuestionTemplate}"
                             Margin="0,4,0,0"/>
 
-            <!-- Row 3: submit -->
-            <StackPanel Grid.Row="3"
-                        Orientation="Horizontal"
-                        HorizontalAlignment="Right"
-                        Margin="8,4,12,10">
-                <Button Content="{Binding SubmitLabel}"
+            <!-- Row 3: shortcut hint and submit -->
+            <Grid Grid.Row="3" Margin="12,4,12,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0"
+                           Text="{Binding ShortcutHint}"
+                           VerticalAlignment="Center"
+                           FontSize="11"
+                           Opacity="0.7"
+                           TextTrimming="CharacterEllipsis"
+                           Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"/>
+
+                <Button Grid.Column="1"
+                        Content="{Binding SubmitLabel}"
                         Style="{StaticResource PrimaryButtonStyle}"
                         Command="{Binding SubmitCommand}"/>
-            </StackPanel>
+            </Grid>
         </Grid>
     </Border>
 </UserControl>

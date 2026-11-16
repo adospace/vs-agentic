@@ -2,19 +2,38 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.Threading.Tasks;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using VsAgentic.Services.ClaudeCli.Permissions;
 
 namespace VsAgentic.UI.ViewModels.Banners;
 
-public partial class PermissionBannerViewModel : ObservableObject, IBannerViewModel
+public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
 {
     private readonly PermissionRequest _request;
     private readonly Action<PermissionDecision> _onResolved;
 
+    /// <summary>Broker id of the request this banner stands for. Lets the chat
+    /// match a cancellation back to the banner on screen.</summary>
+    public string RequestId => _request.Id;
+
     public string ToolName => _request.ToolName;
-    public string Header => $"Claude wants to use {_request.ToolName}";
+
+    /// <summary>The tool call this prompt is about; its step in the
+    /// transcript has the same id.</summary>
+    public string? ToolUseId => _request.ToolUseId;
+
+    /// <summary>Title of the subagent that asks, or null for the main
+    /// conversation. Can be filled in after the banner is shown.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(Header))]
+    private string? _askedBy;
+
+    public string Header => AskedBy is { Length: > 0 } agent
+        ? $"Subagent “{agent}” wants to use {_request.ToolName}"
+        : $"Claude wants to use {_request.ToolName}";
     public string BodyText { get; }
     public bool HasBodyText => !string.IsNullOrEmpty(BodyText);
 
@@ -40,18 +59,53 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     /// <summary>Whether the similar choices grant anything beyond the specific ones.</summary>
     public bool CanAllowSimilar { get; }
 
-    // The tooltips name every rule about to be granted, e.g.
-    // Bash(cd:*)  Bash(git push:*), so a compound command does not quietly
-    // grant more than it appears to.
-    public string AllowForSessionTooltip => $"Allow {Describe(_rules)} for the rest of this session";
-    public string AllowAlwaysTooltip => $"Allow {Describe(_rules)} from now on, in every project. Written to ~/.claude/settings.json";
+    /// <summary>
+    /// Names every rule about to be granted, e.g. <c>Bash(cd:*) Bash(git push:*)</c>.
+    /// This reads on the banner itself, next to the command: a compound command
+    /// can carry several rules, and what a click grants has to be visible
+    /// without hovering anything.
+    /// </summary>
+    public string SessionRulesText => Describe(_rules);
+
+    /// <summary>Says how long the rules last, which the line on the banner does not.</summary>
+    public string AllowForSessionTooltip =>
+        "The CLI stops asking for calls these rules match. They live in the CLI "
+        + "process, so they are gone when it restarts and nothing is written to disk.";
+
+    /// <summary>Says where the rules go and how far they reach.</summary>
+    public string AllowAlwaysTooltip =>
+        "The CLI writes these rules to ~/.claude/settings.json. They apply in every "
+        + "project from now on, until you remove them there.";
+
+    // The similar rules are not the ones on the banner line, so their tooltips
+    // name them.
     public string AllowSimilarForSessionTooltip => $"Allow {Describe(_similarRules)} for the rest of this session";
     public string AllowSimilarAlwaysTooltip => $"Allow {Describe(_similarRules)} from now on, in every project. Written to ~/.claude/settings.json";
 
-    public PermissionBannerViewModel(PermissionRequest request, Action<PermissionDecision> onResolved)
+    private readonly Func<Task<string?>>? _viewDiff;
+
+    /// <summary>True for a file edit whose change can be shown before Allow.</summary>
+    public bool CanViewDiff => _viewDiff is not null;
+
+    /// <summary>Why the last View diff opened nothing, e.g. the edit no
+    /// longer matches the file. Empty when it opened.</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasDiffNotice))]
+    private string _diffNotice = "";
+
+    public bool HasDiffNotice => !string.IsNullOrEmpty(DiffNotice);
+
+    /// <param name="viewDiff">Opens the diff of a file edit, read against the
+    /// file at the moment of the click. Returns what to tell the user when it
+    /// opened nothing. Null for a call that edits no file.</param>
+    public PermissionBannerViewModel(
+        PermissionRequest request,
+        Action<PermissionDecision> onResolved,
+        Func<Task<string?>>? viewDiff = null)
     {
         _request = request;
         _onResolved = onResolved;
+        _viewDiff = viewDiff;
         BodyText = FormatBody(request);
         _rules = PermissionRuleBuilder.Build(request.ToolName, request.Input);
         _similarRules = PermissionRuleBuilder.BuildSimilar(request.ToolName, request.Input);
@@ -59,7 +113,84 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     }
 
     private static string Describe(IReadOnlyList<PermissionRule> rules) =>
-        string.Join("  ", rules.Select(r => r.Display));
+        string.Join("   ", rules.Select(r => r.Display));
+
+    /// <summary>Opens the file as it is now against the file with the edit
+    /// applied. The banner stays: the user decides after looking.</summary>
+    /// <remarks>Not a decision: it answers nothing, so it works while the
+    /// answer buttons are held. It stops once the banner is answered, because
+    /// the edit then runs or is refused and the diff would show a change that
+    /// is no longer waiting.</remarks>
+    [RelayCommand(CanExecute = nameof(CanOpenDiff))]
+    private async Task ViewDiffAsync()
+    {
+        if (_viewDiff is null) return;
+        DiffNotice = "";
+        DiffNotice = await _viewDiff() ?? "";
+    }
+
+    private bool CanOpenDiff() => !_resolved;
+
+    /// <summary>True once the user has answered. Checked again before the
+    /// viewer opens: the file is read off the UI thread, and the answer may
+    /// come while it is read.</summary>
+    public bool IsAnswered => _resolved;
+
+    // Set by the first decision. A second click or a held Enter must not
+    // answer again: the next banner in the queue would be taken down unread.
+    private bool _resolved;
+
+    /// <summary>True for a moment after the banner comes up from the queue or
+    /// right after another prompt was answered, while the buttons stay disabled. See <see cref="HoldInput"/>.</summary>
+    [ObservableProperty]
+    private bool _isInputHeld;
+
+    partial void OnIsInputHeldChanged(bool value) => NotifyDecisionCommands();
+
+    /// <summary>
+    /// Keeps the buttons disabled for a moment. A banner that replaces an
+    /// answered one appears under the pointer and the keyboard focus, so the
+    /// second click of a double-click, or Enter held a little too long, would
+    /// otherwise answer it before the user has read it.
+    /// </summary>
+    public void HoldInput(TimeSpan time)
+    {
+        IsInputHeld = true;
+        var timer = new DispatcherTimer { Interval = time };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            IsInputHeld = false;
+        };
+        timer.Start();
+    }
+
+    /// <summary>True until the banner is answered, except while its input is
+    /// held. Every command that answers the banner checks this.</summary>
+    protected bool CanDecide() => !_resolved && !IsInputHeld;
+
+    protected void Resolve(PermissionDecision decision)
+    {
+        if (!CanDecide()) return;
+        _resolved = true;
+        NotifyDecisionCommands();
+        ViewDiffCommand.NotifyCanExecuteChanged();
+        _onResolved(decision);
+    }
+
+    /// <summary>Refreshes the commands that check <see cref="CanDecide"/>.
+    /// A subclass with its own answer commands adds them here.</summary>
+    protected virtual void NotifyDecisionCommands()
+    {
+        AllowCommand.NotifyCanExecuteChanged();
+        AllowForSessionCommand.NotifyCanExecuteChanged();
+        AllowAlwaysCommand.NotifyCanExecuteChanged();
+        AllowSimilarForSessionCommand.NotifyCanExecuteChanged();
+        AllowSimilarAlwaysCommand.NotifyCanExecuteChanged();
+        DenyCommand.NotifyCanExecuteChanged();
+        OtherCommand.NotifyCanExecuteChanged();
+        SubmitCommand.NotifyCanExecuteChanged();
+    }
 
     partial void OnIsOtherModeChanged(bool value)
     {
@@ -69,12 +200,12 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
 
     partial void OnAlternativeTextChanged(string value) => SubmitCommand.NotifyCanExecuteChanged();
 
-    [RelayCommand]
-    private void Allow() => _onResolved(PermissionDecision.Allow(InputJson()));
+    [RelayCommand(CanExecute = nameof(CanDecide))]
+    private void Allow() => Resolve(PermissionDecision.Allow(InputJson()));
 
     /// <summary>Allow, and stop asking for calls of this shape until the CLI
     /// process exits.</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDecide))]
     private void AllowForSession() => AllowWith(_rules, PermissionRuleScope.Session);
 
     /// <summary>
@@ -87,31 +218,31 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     /// cost is reach: the rule applies in every project, which the tooltip
     /// says.
     /// </summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDecide))]
     private void AllowAlways() => AllowWith(_rules, PermissionRuleScope.User);
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDecide))]
     private void AllowSimilarForSession() => AllowWith(_similarRules, PermissionRuleScope.Session);
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDecide))]
     private void AllowSimilarAlways() => AllowWith(_similarRules, PermissionRuleScope.User);
 
     private void AllowWith(IReadOnlyList<PermissionRule> rules, PermissionRuleScope scope) =>
-        _onResolved(PermissionDecision.AllowWithRules(InputJson(), rules, scope));
+        Resolve(PermissionDecision.AllowWithRules(InputJson(), rules, scope));
 
     private string InputJson() =>
         _request.Input.ValueKind == JsonValueKind.Undefined
             ? "{}"
             : _request.Input.GetRawText();
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDecide))]
     private void Deny()
     {
-        _onResolved(PermissionDecision.Deny("User denied this action"));
+        Resolve(PermissionDecision.Deny("User denied this action"));
     }
 
     /// <summary>Switches the banner into alt-input mode.</summary>
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanDecide))]
     private void Other() => IsOtherMode = true;
 
     /// <summary>Returns to the initial Allow/Deny/Other row, preserving any
@@ -120,7 +251,7 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     private void Back() => IsOtherMode = false;
 
     private bool CanSubmit() =>
-        IsOtherMode && !string.IsNullOrWhiteSpace(AlternativeText);
+        CanDecide() && IsOtherMode && !string.IsNullOrWhiteSpace(AlternativeText);
 
     /// <summary>Wire-level we send a Deny — that's how the CLI's MCP permission
     /// protocol surfaces "don't run this" — but the message wraps the user's
@@ -130,7 +261,7 @@ public partial class PermissionBannerViewModel : ObservableObject, IBannerViewMo
     private void Submit()
     {
         var alt = (AlternativeText ?? "").Trim();
-        _onResolved(PermissionDecision.Deny(
+        Resolve(PermissionDecision.Deny(
             "The user declined to run this tool and asked you to do the following instead: " + alt));
     }
 

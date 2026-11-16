@@ -12,11 +12,19 @@ public sealed class PermissionRequest
     public string ToolName { get; }
     public JsonElement Input { get; }
 
-    public PermissionRequest(string id, string toolName, JsonElement input)
+    /// <summary>
+    /// The tool call the CLI is asking about. Its step in the transcript has
+    /// the same id, which tells whether a subagent is the one asking. Null
+    /// when the CLI did not send it.
+    /// </summary>
+    public string? ToolUseId { get; }
+
+    public PermissionRequest(string id, string toolName, JsonElement input, string? toolUseId = null)
     {
         Id = id;
         ToolName = toolName;
         Input = input;
+        ToolUseId = toolUseId;
     }
 }
 
@@ -38,6 +46,13 @@ public sealed class PermissionDecision
     public string? Message { get; }
 
     /// <summary>
+    /// Permission mode the CLI switches to as it allows the call, e.g.
+    /// <c>acceptEdits</c> when the user approves a plan and lets Claude edit
+    /// without asking. Null leaves the mode to the CLI.
+    /// </summary>
+    public string? Mode { get; }
+
+    /// <summary>
     /// Rules the CLI should add so it stops asking for calls they match. Empty
     /// for a one-off allow. <see cref="Scope"/> says how long they last.
     /// </summary>
@@ -50,17 +65,23 @@ public sealed class PermissionDecision
         string? updatedInputJson,
         string? message,
         IReadOnlyList<PermissionRule>? rules = null,
-        PermissionRuleScope scope = PermissionRuleScope.Session)
+        PermissionRuleScope scope = PermissionRuleScope.Session,
+        string? mode = null)
     {
         Behavior = behavior;
         UpdatedInputJson = updatedInputJson;
         Message = message;
         Rules = rules ?? Array.Empty<PermissionRule>();
         Scope = scope;
+        Mode = mode;
     }
 
     public static PermissionDecision Allow(string updatedInputJson)
         => new PermissionDecision(PermissionBehavior.Allow, updatedInputJson, null);
+
+    /// <summary>Allow the call, and switch the session to <paramref name="mode"/>.</summary>
+    public static PermissionDecision AllowAndSetMode(string updatedInputJson, string mode)
+        => new PermissionDecision(PermissionBehavior.Allow, updatedInputJson, null, mode: mode);
 
     /// <summary>
     /// Allow this call and stop asking for anything matching <paramref name="rules"/>,

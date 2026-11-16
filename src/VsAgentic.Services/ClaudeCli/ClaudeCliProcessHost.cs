@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -12,6 +14,7 @@ using Microsoft.Extensions.Options;
 using VsAgentic.Services.ClaudeCli.Permissions;
 using VsAgentic.Services.ClaudeCli.Questions;
 using VsAgentic.Services.Configuration;
+using VsAgentic.Services.IdeContext;
 
 namespace VsAgentic.Services.ClaudeCli;
 
@@ -36,6 +39,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
     private readonly VsAgenticOptions _options;
     private readonly IPermissionBroker _permissionBroker;
     private readonly IUserQuestionBroker _questionBroker;
+    private readonly IdeContextRegistry? _ideContext;
     private readonly ILogger _logger;
 
     private Process? _process;
@@ -46,8 +50,18 @@ public sealed class ClaudeCliProcessHost : IDisposable
     private Task? _readerTask;
     private Task? _stderrTask;
     private PermissionPipeServer? _pipeServer;
+    private ProcessTreeJob? _processTree;
     private string? _resumeSessionId;
     private string? _mcpConfigTempPath;
+
+    // The shutdown of the previous run. A new run waits for it, because the
+    // old CLI may still be writing the conversation the new one resumes.
+    private Task _shutdown = Task.CompletedTask;
+
+    // Measured with CLI 2.1.296: an idle CLI exits about 0.7 s after stdin
+    // closes. Mid-turn, or with a background command running, it does not
+    // exit at all, so waiting longer gains nothing.
+    private const int GracefulExitTimeoutMs = 2000;
 
     private readonly object _lifecycleLock = new object();
 
@@ -55,11 +69,13 @@ public sealed class ClaudeCliProcessHost : IDisposable
         IOptions<VsAgenticOptions> options,
         IPermissionBroker permissionBroker,
         IUserQuestionBroker questionBroker,
-        ILogger<ClaudeCliProcessHost> logger)
+        ILogger<ClaudeCliProcessHost> logger,
+        IdeContextRegistry? ideContext = null)
     {
         _options = options.Value;
         _permissionBroker = permissionBroker;
         _questionBroker = questionBroker;
+        _ideContext = ideContext;
         _logger = logger;
     }
 
@@ -80,13 +96,21 @@ public sealed class ClaudeCliProcessHost : IDisposable
         _resumeSessionId = sessionId;
     }
 
-    public Task EnsureStartedAsync(CancellationToken cancellationToken)
+    public async Task EnsureStartedAsync(CancellationToken cancellationToken)
     {
+        Task shutdown;
         lock (_lifecycleLock)
         {
-            if (IsRunning) return Task.CompletedTask;
+            if (IsRunning) return;
+            shutdown = _shutdown;
+        }
+
+        await shutdown.ConfigureAwait(false);
+
+        lock (_lifecycleLock)
+        {
+            if (IsRunning) return;
             StartLocked();
-            return Task.CompletedTask;
         }
     }
 
@@ -99,7 +123,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
 
         // Start the in-process pipe server before launching the CLI so the
         // MCP helper can connect immediately.
-        _pipeServer = new PermissionPipeServer(_permissionBroker, _questionBroker, _logger);
+        _pipeServer = new PermissionPipeServer(_permissionBroker, _questionBroker, _ideContext, _logger);
         _pipeServer.Start();
 
         var helperExePath = ResolveHelperExePath();
@@ -115,7 +139,10 @@ public sealed class ClaudeCliProcessHost : IDisposable
         // Write the MCP config to a temp file. The CLI's --mcp-config flag
         // accepts a path more reliably than inline JSON, especially with the
         // quoting nightmare on Windows.
-        var mcpConfigJson = BuildMcpConfigJson(helperExePath, _pipeServer.PipeName, _pipeServer.Secret);
+        var userServers = _options.UseClaudeMcpServers
+            ? ReadUserMcpServers()
+            : Array.Empty<KeyValuePair<string, string>>();
+        var mcpConfigJson = BuildMcpConfigJson(helperExePath, _pipeServer.PipeName, _pipeServer.Secret, userServers);
         _mcpConfigTempPath = Path.Combine(Path.GetTempPath(), $"vsagentic-mcp-{Guid.NewGuid():N}.json");
         File.WriteAllText(_mcpConfigTempPath, mcpConfigJson, new UTF8Encoding(false));
         _logger.LogInformation("[ClaudeCli] MCP config written to: {Path}", _mcpConfigTempPath);
@@ -138,6 +165,13 @@ public sealed class ClaudeCliProcessHost : IDisposable
         };
 
         ClaudeCliChatService.UseSubscriptionAuth(psi);
+        ApplyBackgroundCommandLimit(psi);
+
+        // Without this, a CLI that refuses to start (bad proxy URL, missing
+        // shell, a session held elsewhere ...) explains itself on stderr only.
+        // With it, the CLI also writes an error result with the same text and
+        // a startup_failure_reason before it exits.
+        psi.EnvironmentVariables["CLAUDE_CODE_STARTUP_FAILURE_RESULTS"] = "1";
 
         _stdinChannel = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
         {
@@ -151,24 +185,82 @@ public sealed class ClaudeCliProcessHost : IDisposable
         });
 
         _process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        // Capture a local reference so the lambda completes THIS run's channel,
-        // not a newer one created by a subsequent StartLocked() call.
+        // Capture local references so the callbacks finish THIS run, not a
+        // newer one created by a subsequent StartLocked() call.
+        var process = _process;
         var channelForThisRun = _stdoutChannel;
-        _process.Exited += (_, __) =>
+        var stderrTail = new StderrTail();
+        var runToken = _runCts.Token;
+        Task stderrTask = Task.CompletedTask;
+        process.Exited += (_, __) =>
         {
-            _logger.LogInformation("[ClaudeCli] Process exited with code {Code}", _process?.ExitCode);
-            // Tear down the channel so any blocked reader unblocks.
-            try { channelForThisRun.Writer.TryComplete(); } catch { }
+            _logger.LogInformation("[ClaudeCli] Process exited with code {Code}", TryGetExitCode(process));
+            // The stdout reader normally completes the channel at end of
+            // stream, after the CLI's last lines. Completing it here at once
+            // could drop them, so this only covers a pipe that stays open
+            // because a grandchild inherited it.
+            _ = Task.Delay(ExitDrainTimeoutMs).ContinueWith(
+                t => CompleteRun(channelForThisRun, process, stderrTask, stderrTail, runToken),
+                TaskScheduler.Default);
         };
-        _process.Start();
+        try
+        {
+            process.Start();
+        }
+        catch
+        {
+            // A process that never started has no HasExited to ask, so leaving
+            // it in place would make IsRunning throw and the next message fail
+            // the same way, even after Claude CLI Path is fixed.
+            TearDownLocked();
+            throw;
+        }
 
         // Assign to a Win32 Job Object so the child is killed if the IDE
         // crashes or is force-terminated without a chance to run cleanup.
-        ChildProcessTracker.AddProcess(_process);
+        ChildProcessTracker.AddProcess(process);
+        _processTree = ProcessTreeJob.TryCreate(process);
+        if (_processTree == null)
+            _logger.LogWarning("[ClaudeCli] No job object for this run; stopping it ends the CLI but not its child processes");
 
-        _writerTask = Task.Run(() => StdinWriterLoopAsync(_runCts.Token));
-        _readerTask = Task.Run(() => StdoutReaderLoopAsync(_runCts.Token));
-        _stderrTask = Task.Run(() => StderrLoopAsync(_runCts.Token));
+        _writerTask = Task.Run(() => StdinWriterLoopAsync(runToken));
+        _stderrTask = stderrTask = Task.Run(() => StderrLoopAsync(process, stderrTail, runToken));
+        _readerTask = Task.Run(() => StdoutReaderLoopAsync(process, channelForThisRun, stderrTask, stderrTail, runToken));
+    }
+
+    // How long the end of a run waits for the process to exit and for stderr
+    // to drain before it reports the exit.
+    private const int ExitDrainTimeoutMs = 2000;
+
+    private static int? TryGetExitCode(Process process)
+    {
+        try { return process.HasExited ? process.ExitCode : null; }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Completes the event channel of one run. A run we stopped ends quietly.
+    /// A run that ended on its own ends with <see cref="CliProcessExitedException"/>,
+    /// so the chat service can explain an exit the CLI did not explain itself.
+    /// </summary>
+    private void CompleteRun(Channel<JsonElement> channel, Process process, Task stderrTask, StderrTail stderrTail, CancellationToken runToken)
+    {
+        if (runToken.IsCancellationRequested)
+        {
+            channel.Writer.TryComplete();
+            return;
+        }
+
+        int? exitCode = null;
+        try
+        {
+            if (process.WaitForExit(ExitDrainTimeoutMs)) exitCode = process.ExitCode;
+        }
+        catch { }
+        try { stderrTask.Wait(ExitDrainTimeoutMs); } catch { }
+
+        if (channel.Writer.TryComplete(new CliProcessExitedException(exitCode, stderrTail.Text)))
+            _logger.LogWarning("[ClaudeCli] CLI ended on its own (exit code {Code})", exitCode);
     }
 
     private string BuildArguments(string mcpConfigPath)
@@ -178,18 +270,55 @@ public sealed class ClaudeCliProcessHost : IDisposable
         // The stream-json input/output flags only apply in print mode.
         sb.Append("-p --input-format stream-json --output-format stream-json --verbose");
 
-        var permFlag = _options.CliPermissionMode switch
+        // Sent only for a mode the user picked. Any --permission-mode, also
+        // "default", overrides permissions.defaultMode from the user's own CLI
+        // settings. A change in the chat window goes to a running process as a
+        // control request (ClaudeCliChatService.ApplyPermissionMode).
+        if (_options.CliPermissionMode.ToCliValue() is { } permFlag)
         {
-            CliPermissionMode.BypassPermissions => "bypassPermissions",
-            CliPermissionMode.AcceptEdits => "acceptEdits",
-            _ => "default",
-        };
-        sb.Append(" --permission-mode ");
-        sb.Append(permFlag);
+            sb.Append(" --permission-mode ");
+            sb.Append(permFlag);
+        }
+
+        // Model and effort are start-up flags. A change in the chat window goes
+        // to a running process as a control request instead (see
+        // ClaudeCliChatService.ApplyModelAndEffort); these flags cover every
+        // start after that.
+        //
+        // Both are sent only when the user has picked a value. An empty model
+        // leaves the CLI's own choice alone, and its init event reports what it
+        // settled on. Effort is never reported back, so the dropdown can only
+        // say Default in that case — but a CLI older than --effort refuses to
+        // start when it sees the flag, and a working chat is worth more than a
+        // named level.
+        if (!string.IsNullOrWhiteSpace(_options.Model))
+        {
+            sb.Append(" --model ");
+            sb.Append(EscapeArgument(_options.Model.Trim()));
+        }
+
+        if (_options.Effort != ClaudeEffort.Default)
+        {
+            sb.Append(" --effort ");
+            sb.Append(_options.Effort.ToCliValue());
+        }
+
+        // Without this flag a stream-json session leaves the display to the
+        // API, whose default sends thinking blocks with no text, so the
+        // Thinking step almost never appeared. The user's showThinkingSummaries
+        // setting is read only by an interactive CLI. "omitted" is sent
+        // explicitly so that off means off for every model. CLI 2.1.150
+        // already accepts the flag.
+        sb.Append(" --thinking-display ");
+        sb.Append(_options.ShowThinkingSummaries ? "summarized" : "omitted");
 
         // Wire the MCP permission tool so the CLI asks us before running gated tools.
-        // --strict-mcp-config prevents user-level MCP config from polluting the session.
-        sb.Append(" --permission-prompt-tool mcp__vsagentic__approval_prompt");
+        // --strict-mcp-config limits the session to the servers in our config
+        // file: ours, and the user's own when they asked for them. Without it
+        // the CLI would also start the stdio servers in the project's .mcp.json,
+        // with no approval step in a -p session, so opening a repository would
+        // run its commands.
+        sb.Append(" --permission-prompt-tool mcp__").Append(PermissionServerName).Append("__approval_prompt");
         sb.Append(" --strict-mcp-config");
         sb.Append(" --mcp-config ");
         sb.Append(EscapeArgument(mcpConfigPath));
@@ -215,23 +344,97 @@ public sealed class ClaudeCliProcessHost : IDisposable
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Lets the model keep a background command longer than the 2 hours the CLI
+    /// allows in an unattended session; see <see cref="BackgroundCommandLimit"/>.
+    /// A value the user already set in the environment Visual Studio inherited
+    /// wins, because it is a deliberate choice and ours is only a default.
+    /// </summary>
+    private void ApplyBackgroundCommandLimit(ProcessStartInfo psi)
+    {
+        var value = _options.BackgroundCommandLimit.ToMaxTimeoutMs();
+        if (value is null) return;
+
+        const string name = BackgroundCommandLimitExtensions.MaxTimeoutVariable;
+        if (!string.IsNullOrEmpty(psi.EnvironmentVariables[name]))
+        {
+            _logger.LogInformation("[ClaudeCli] {Name} kept from the environment: {Value}", name, psi.EnvironmentVariables[name]);
+            return;
+        }
+
+        psi.EnvironmentVariables[name] = value;
+    }
+
     private const string AskUserQuestionPromptNudge =
         "The host application renders the AskUserQuestion tool as an interactive " +
         "multiple-choice card. When a clarification naturally fits 2-4 discrete " +
         "options, prefer AskUserQuestion over inline plain-text questions. For " +
         "open-ended or multi-axis questions, plain prose is still the right choice.";
 
-    private static string BuildMcpConfigJson(string helperExePath, string pipeName, string secret)
+    /// <summary>The name our MCP helper is registered under in <c>--mcp-config</c>.</summary>
+    internal const string PermissionServerName = "vsagentic";
+
+    /// <summary>Where the MCP helper writes its log.</summary>
+    internal static string HelperLogDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "VsAgentic", "logs");
+
+    /// <summary>
+    /// The user-scope MCP servers from the CLI's global config
+    /// (<c>~/.claude.json</c>, or <c>.claude.json</c> under
+    /// <c>CLAUDE_CONFIG_DIR</c>), as name and the server's JSON. Only the
+    /// user writes that file, unlike a repository's <c>.mcp.json</c>. Servers
+    /// added with the local or project scope are not read.
+    /// </summary>
+    private IReadOnlyList<KeyValuePair<string, string>> ReadUserMcpServers()
+    {
+        var configDir = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
+        var path = Path.Combine(
+            string.IsNullOrEmpty(configDir) ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) : configDir!,
+            ".claude.json");
+
+        var servers = new List<KeyValuePair<string, string>>();
+        try
+        {
+            if (!File.Exists(path)) return servers;
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            if (!doc.RootElement.TryGetProperty("mcpServers", out var list) || list.ValueKind != JsonValueKind.Object)
+                return servers;
+
+            foreach (var server in list.EnumerateObject())
+            {
+                // Ours is the one the permission tool points at.
+                if (server.Name == PermissionServerName || server.Value.ValueKind != JsonValueKind.Object) continue;
+                servers.Add(new KeyValuePair<string, string>(server.Name, server.Value.GetRawText()));
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            _logger.LogWarning(ex, "[ClaudeCli] Could not read the user's MCP servers from {Path}", path);
+        }
+
+        _logger.LogInformation("[ClaudeCli] User MCP servers: {Servers}",
+            servers.Count == 0 ? "(none)" : string.Join(", ", servers.Select(s => s.Key)));
+        return servers;
+    }
+
+    private static string BuildMcpConfigJson(
+        string helperExePath, string pipeName, string secret,
+        IReadOnlyList<KeyValuePair<string, string>> userServers)
     {
         // The CLI spawns our helper exe as a stdio MCP server named "vsagentic"
         // and passes the pipe name + secret via env vars.
-        var logDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "VsAgentic", "logs");
+        var logDir = HelperLogDirectory;
         try { Directory.CreateDirectory(logDir); } catch { }
 
         var sb = new StringBuilder();
-        sb.Append("{\"mcpServers\":{\"vsagentic\":{\"command\":");
+        sb.Append("{\"mcpServers\":{");
+        foreach (var server in userServers)
+        {
+            sb.Append(JsonSerializer.Serialize(server.Key)).Append(':').Append(server.Value).Append(',');
+        }
+        sb.Append(JsonSerializer.Serialize(PermissionServerName));
+        sb.Append(":{\"command\":");
         sb.Append(JsonSerializer.Serialize(helperExePath));
         sb.Append(",\"args\":[],\"env\":{\"VSAGENTIC_PERMISSION_PIPE\":");
         sb.Append(JsonSerializer.Serialize(pipeName));
@@ -352,11 +555,11 @@ public sealed class ClaudeCliProcessHost : IDisposable
         }
     }
 
-    private async Task StdoutReaderLoopAsync(CancellationToken ct)
+    private async Task StdoutReaderLoopAsync(Process process, Channel<JsonElement> channel, Task stderrTask, StderrTail stderrTail, CancellationToken ct)
     {
         try
         {
-            var stdout = _process!.StandardOutput;
+            var stdout = process.StandardOutput;
             while (!ct.IsCancellationRequested)
             {
                 var line = await stdout.ReadLineAsync().ConfigureAwait(false);
@@ -375,7 +578,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
                     continue;
                 }
 
-                await _stdoutChannel!.Writer.WriteAsync(evt, ct).ConfigureAwait(false);
+                await channel.Writer.WriteAsync(evt, ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) { }
@@ -385,21 +588,24 @@ public sealed class ClaudeCliProcessHost : IDisposable
         }
         finally
         {
-            _stdoutChannel?.Writer.TryComplete();
+            CompleteRun(channel, process, stderrTask, stderrTail, ct);
         }
     }
 
-    private async Task StderrLoopAsync(CancellationToken ct)
+    private async Task StderrLoopAsync(Process process, StderrTail stderrTail, CancellationToken ct)
     {
         try
         {
-            var stderr = _process!.StandardError;
+            var stderr = process.StandardError;
             string? line;
             while ((line = await stderr.ReadLineAsync().ConfigureAwait(false)) != null)
             {
                 if (ct.IsCancellationRequested) return;
                 if (!string.IsNullOrWhiteSpace(line))
+                {
                     _logger.LogInformation("[ClaudeCli stderr] {Line}", line);
+                    stderrTail.Add(line);
+                }
             }
         }
         catch (OperationCanceledException) { }
@@ -420,25 +626,26 @@ public sealed class ClaudeCliProcessHost : IDisposable
     private void TearDownLocked()
     {
         try { _runCts?.Cancel(); } catch { }
-        try
+
+        // The wait for the CLI to exit happens off the caller's thread, which
+        // is often the UI thread. The next start waits for it instead.
+        var process = _process;
+        var processTree = _processTree;
+        var pipeServer = _pipeServer;
+        var mcpConfigPath = _mcpConfigTempPath;
+        if (process != null || pipeServer != null || mcpConfigPath != null)
         {
-            if (_process is { HasExited: false })
+            var previous = _shutdown;
+            _shutdown = Task.Run(async () =>
             {
-                try { _process.StandardInput.Close(); } catch { }
-                try { _process.Kill(); } catch { }
-            }
+                await previous.ConfigureAwait(false);
+                ShutDown(process, processTree, pipeServer, mcpConfigPath);
+            });
         }
-        catch { }
-        try { _process?.Dispose(); } catch { }
-        try { _pipeServer?.Dispose(); } catch { }
-        try
-        {
-            if (!string.IsNullOrEmpty(_mcpConfigTempPath) && File.Exists(_mcpConfigTempPath))
-                File.Delete(_mcpConfigTempPath);
-        }
-        catch { }
+
         _mcpConfigTempPath = null;
         _process = null;
+        _processTree = null;
         _pipeServer = null;
         _runCts = null;
         _writerTask = null;
@@ -448,7 +655,67 @@ public sealed class ClaudeCliProcessHost : IDisposable
         _stdoutChannel = null;
     }
 
+    private void ShutDown(Process? process, ProcessTreeJob? processTree, PermissionPipeServer? pipeServer, string? mcpConfigPath)
+    {
+        if (process != null)
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    // End of input is the CLI's signal to finish: it writes out
+                    // what it still holds and stops its MCP servers. Killing it
+                    // at once loses that.
+                    try { process.StandardInput.Close(); } catch { }
+                    if (!process.WaitForExit(GracefulExitTimeoutMs))
+                        _logger.LogInformation("[ClaudeCli] CLI still running {Ms} ms after its input closed; ending its process tree", GracefulExitTimeoutMs);
+                }
+            }
+            catch { }
+
+            // Also after a clean exit: a background command can outlive the CLI.
+            if (processTree != null)
+                processTree.Dispose();
+            else
+                try { if (!process.HasExited) process.Kill(); } catch { }
+
+            try { process.Dispose(); } catch { }
+        }
+
+        try { pipeServer?.Dispose(); } catch { }
+        try
+        {
+            if (!string.IsNullOrEmpty(mcpConfigPath) && File.Exists(mcpConfigPath))
+                File.Delete(mcpConfigPath);
+        }
+        catch { }
+    }
+
     public void Dispose() => Stop();
+
+    /// <summary>
+    /// The last lines one run wrote to stderr. When the CLI exits without a
+    /// result event, they are the only account of why.
+    /// </summary>
+    private sealed class StderrTail
+    {
+        private const int MaxLines = 20;
+        private readonly Queue<string> _lines = new Queue<string>();
+
+        public void Add(string line)
+        {
+            lock (_lines)
+            {
+                _lines.Enqueue(line);
+                if (_lines.Count > MaxLines) _lines.Dequeue();
+            }
+        }
+
+        public string Text
+        {
+            get { lock (_lines) return string.Join("\n", _lines); }
+        }
+    }
 
     private static string EscapeArgument(string arg)
     {

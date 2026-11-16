@@ -17,6 +17,20 @@ public interface IUserQuestionBroker
 {
     event Action<UserQuestionRequest>? QuestionRequested;
 
+    /// <summary>
+    /// Raised with the tool_use id when a pending question is settled without
+    /// the user's answer: Stop, or teardown of the CLI process. The card's own
+    /// callback never runs in that case, so the UI needs this to take the card
+    /// down instead of leaving a dead question on screen.
+    /// </summary>
+    event Action<string>? PendingCancelled;
+
+    /// <summary>
+    /// Raised with the tool_use id when the CLI takes back a question it no
+    /// longer needs answered, for example because its turn was interrupted.
+    /// </summary>
+    event Action<string>? PendingWithdrawn;
+
     Task<IReadOnlyDictionary<string, string>> SubmitAsync(
         UserQuestionRequest request,
         CancellationToken cancellationToken);
@@ -29,4 +43,10 @@ public interface IUserQuestionBroker
     /// a question banner is stuck (e.g. banner failed to display).
     /// </summary>
     void CancelAllPending();
+
+    /// <summary>
+    /// Settles one question the CLI has taken back. The answer goes nowhere;
+    /// this only frees the pipe and raises <see cref="PendingWithdrawn"/>.
+    /// </summary>
+    void Withdraw(string toolUseId);
 }

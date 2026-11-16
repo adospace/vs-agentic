@@ -22,6 +22,22 @@ public interface IPermissionBroker
     event Action<PermissionRequest>? PermissionRequested;
 
     /// <summary>
+    /// Raised with the request id when a pending request is settled without the
+    /// user's decision: Stop, or teardown of the CLI process. The banner's own
+    /// callback never runs in that case, so the UI needs this to take the banner
+    /// down. Without it a prompt that has already been denied stays on screen
+    /// and the user cannot tell that Stop landed.
+    /// </summary>
+    event Action<string>? PendingCancelled;
+
+    /// <summary>
+    /// Raised with the request id when the CLI takes back a request it no
+    /// longer needs answered: its turn was interrupted, the subagent that
+    /// asked has stopped, or the request timed out on the CLI's side.
+    /// </summary>
+    event Action<string>? PendingWithdrawn;
+
+    /// <summary>
     /// Called by the pipe server when a request comes in. Returns a task that
     /// completes when the UI resolves the request.
     /// </summary>
@@ -35,4 +51,10 @@ public interface IPermissionBroker
     /// so the dispatcher loop can unblock when a permission banner is stuck.
     /// </summary>
     void CancelAllPending();
+
+    /// <summary>
+    /// Settles one request the CLI has taken back. The decision goes nowhere;
+    /// this only frees the pipe and raises <see cref="PendingWithdrawn"/>.
+    /// </summary>
+    void Withdraw(string requestId);
 }

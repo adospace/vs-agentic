@@ -33,6 +33,13 @@ public partial class QuestionViewModel : ObservableObject
     public bool IsOtherActive =>
         IsOtherSelected && !string.IsNullOrEmpty((OtherText ?? "").Trim());
 
+    /// <summary>Where the "Other" row sits in the Alt+N run: straight after
+    /// the listed options.</summary>
+    public int OtherOrdinal => Options.Count + 1;
+
+    /// <summary>"5." …, or empty past the ninth slot, which has no shortcut.</summary>
+    public string OtherOrdinalLabel => OtherOrdinal <= 9 ? $"{OtherOrdinal}." : "";
+
     public bool IsAnswered
     {
         get
@@ -55,12 +62,46 @@ public partial class QuestionViewModel : ObservableObject
         var opts = new List<OptionViewModel>(source.Options.Count);
         foreach (var o in source.Options)
         {
-            var ovm = new OptionViewModel(o.Label, o.Description);
+            var ovm = new OptionViewModel(o.Label, o.Description, opts.Count + 1);
             ovm.PropertyChanged += OnOptionChanged;
             opts.Add(ovm);
         }
         Options = opts;
     }
+
+    /// <summary>
+    /// Picks the option at <paramref name="ordinal"/> — what the card's Alt+N
+    /// shortcut calls. Single-select replaces the standing pick, multi-select
+    /// toggles. Returns false when the question has no such option.
+    /// </summary>
+    public bool SelectOption(int ordinal)
+    {
+        var target = Options.FirstOrDefault(o => o.Ordinal == ordinal);
+        if (target is null) return false;
+
+        if (MultiSelect)
+        {
+            target.IsSelected = !target.IsSelected;
+            return true;
+        }
+
+        // Clear first, then set. WPF enforces single-select through GroupName
+        // on the radios, but a shortcut goes straight at the view models and
+        // would otherwise leave two of them ticked.
+        foreach (var o in Options)
+        {
+            if (o != target) o.IsSelected = false;
+        }
+        target.IsSelected = true;
+        return true;
+    }
+
+    /// <summary>
+    /// Picks the "Other" row — the last stop of the Alt+N run. Single-select
+    /// switches to it, multi-select toggles it; the card puts the caret in the
+    /// text box afterwards.
+    /// </summary>
+    public void SelectOther() => IsOtherSelected = !MultiSelect || !IsOtherSelected;
 
     private void OnOptionChanged(object? sender, PropertyChangedEventArgs e)
     {

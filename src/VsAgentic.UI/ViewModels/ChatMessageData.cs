@@ -18,4 +18,28 @@ public class ChatMessageData
     public string BodyMode { get; init; } = "Markdown";
     public string? Body { get; init; }
     public bool IsStreaming { get; init; }
+
+    /// <summary>
+    /// The id of the Agent step a subagent's step goes under. Null for the
+    /// main conversation.
+    /// </summary>
+    public string? ParentId { get; init; }
+
+    /// <summary>
+    /// Data URIs for images attached to a user message, rendered inside the
+    /// prompt block. Null when the message has none.
+    /// </summary>
+    public List<string>? Images { get; init; }
+
+    /// <summary>
+    /// True for a step that changed a file, so it offers a diff. Set on
+    /// restore; in a live session the step gets it later.
+    /// </summary>
+    public bool HasFileChange { get; init; }
+
+    /// <summary>
+    /// Shown in place of the Diff button when the change was too large to
+    /// keep, e.g. "file created, 12000 lines". Null when there is a diff.
+    /// </summary>
+    public string? FileChangeSummary { get; init; }
 }

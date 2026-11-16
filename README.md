@@ -1,8 +1,5 @@
 # VsAgentic
 
-## IMPORTANT, FUTURE DEVELOPMENT OF THIS EXTENSION IS AT RISK, PLEASE READ/FOLLOW: https://github.com/adospace/vs-agentic/issues/10
-
-
 **An agentic AI coding assistant for Visual Studio 2026** — chat with Claude to explore, understand, and modify your codebase, powered by the Claude Code CLI and your Claude subscription.
 
 > ⭐ If VsAgentic saves you time, please consider giving it a star — it helps others discover the extension and motivates continued development!
@@ -23,6 +20,10 @@ Settings are available in the Visual Studio **Tools → Options → VsAgentic** 
 
 - **Claude CLI Path** — path to the `claude` executable (defaults to `claude` on PATH)
 - **CLI Permission Mode** — controls how the CLI handles tool permissions
+- **Model** / **Reasoning effort** — remembered from the dropdowns under the chat input
+- **Background command limit** — most time Claude may give a shell command before the CLI stops it. The CLI allows 2 hours (`CliDefault`, the default); the other values raise this through `BASH_MAX_TIMEOUT_MS` for a background command (dev server, watcher) and for a foreground command alike
+- **Plan** — which subscription the 5h / 7d estimates are sized against (`Unlimited` hides the 5h / 7d readings)
+- **5-hour / weekly token budget** — override the estimated limits behind those estimates
 
 ### 🧰 Built-in Agentic Tools
 Claude Code comes with a full suite of agentic tools — file search, code search, file reading/editing, bash commands, web fetching, and sub-agent delegation. The CLI manages all tools natively; VsAgentic displays tool steps inline so you can follow every action.
@@ -32,6 +33,20 @@ Claude Code comes with a full suite of agentic tools — file search, code searc
 - Conversation history is fully restored when you reopen VS
 - Auto-generated session titles based on your first message
 - Manage sessions from the **VsAgentic Sessions** panel (open, rename, delete)
+
+### 📊 Usage in the Status Bar
+The status bar under the chat input shows where your tokens are going:
+
+- **Context** — how full the model's context window is, so a compaction is never a surprise
+- **5h / 7d** — how much of your plan's 5-hour and weekly limits is used, as Claude Code reports it for your account; the tooltip shows when each window resets and any model-specific weekly limit
+- **Session** — what this conversation has cost so far, broken down by input, output and cache in the tooltip
+- **Model / effort** dropdowns — switch either without leaving the chat; the conversation is resumed, not lost. Effort `Default` sends no level to the CLI
+
+In a narrow pane the readings drop out one by one; the context reading stays longest.
+
+The 5h / 7d percentages come from Claude Code after the first reply in a session, and include everything your account spends: the terminal, other IDEs and claude.ai. They turn amber at 75% and red at 90%. All open sessions share the same reading.
+
+Until then — and with a Claude Code that cannot report plan limits, or when they do not apply to your sign-in — the readings fall back to a local estimate: tokens VsAgentic itself spent in the trailing windows, counted across every session on the machine and kept between restarts. Anthropic does not publish the token budgets behind the limits, so the estimate is a gauge, not an authority. Adjust the budgets under **Tools → Options → VsAgentic** if you have measured your own.
 
 ### 🖼️ Rich Markdown Rendering
 Responses are rendered with full Markdown support — syntax-highlighted code blocks, tables, lists, and inline formatting — via an embedded WebView2 control.
@@ -59,7 +74,7 @@ Responses are rendered with full Markdown support — syntax-highlighted code bl
 3. Or, open Visual Studio 2026, go to **Extensions → Manage Extensions**, search for **VsAgentic**, click **Download** and restart Visual Studio
 
 ### Option 2 — Manual VSIX install
-1. Download the latest `.vsix` file from the [Releases](../../releases) page
+1. Download the latest `.vsix` file from the [Releases](https://github.com/adospace/vs-agentic/releases) page
 2. Double-click the `.vsix` file to launch the VSIX Installer
 3. Follow the prompts and restart Visual Studio
 
@@ -110,7 +125,7 @@ A **VsAgentic Sessions** panel will also appear (docked next to Solution Explore
 | Error | Cause | Fix |
 |-------|-------|-----|
 | **"Not logged in · Please run /login"** | The CLI is not authenticated | Run `claude login` from a terminal and complete the browser-based login flow |
-| **"Invalid API key"** | An `ANTHROPIC_API_KEY` environment variable is set and interfering | Remove the `ANTHROPIC_API_KEY` env var — VsAgentic uses subscription auth, not API keys. Remove it with: `[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", $null, "User")` then restart Visual Studio |
+| **"Invalid API key"** | A Claude Code settings file sets an API key: `ANTHROPIC_API_KEY` in its `env` block, or `apiKeyHelper`. VsAgentic clears the `ANTHROPIC_API_KEY` environment variable, but the CLI applies these settings after that | Remove `ANTHROPIC_API_KEY` from `env` and remove `apiKeyHelper` in `%USERPROFILE%\.claude\settings.json` and in `.claude\settings.json` / `.claude\settings.local.json` of the solution folder, then start a new chat — VsAgentic uses subscription auth, not API keys |
 | **"Failed to start Claude CLI"** | The `claude` command was not found | Install the CLI with `npm install -g @anthropic-ai/claude-code`, or set the full path in **Tools → Options → VsAgentic** |
 | **Update banner keeps appearing after upgrading** | Visual Studio may keep stale extension directories from a previous version and continue loading old files | Close VS, go to `%LOCALAPPDATA%\Microsoft\VisualStudio\<instance>\Extensions\`, delete any old VsAgentic folders (check `extension.vsixmanifest` inside each to identify the version), and restart VS |
 
@@ -149,7 +164,6 @@ VsAgentic.sln
 ├── VsAgentic.VSExtension/   # VSIX entry point — commands, tool windows, package bootstrap
 ├── VsAgentic.UI/            # Shared WPF controls, ViewModels, Markdown renderer (WebView2)
 ├── VsAgentic.Services/      # Core service layer — CLI integration, session store
-├── VsAgentic.Desktop/       # Standalone WPF desktop app (for development & testing)
 └── VsAgentic.Console/       # Console host (for development & testing)
 ```
 
@@ -174,10 +188,11 @@ VsAgentic.sln
 
 Your feedback makes VsAgentic better! Here's how to get involved:
 
-- 🐛 **Found a bug?** [Open an issue](../../issues/new?template=bug_report.md)
-- 💡 **Have a feature idea?** [Start a discussion](../../discussions/new?category=ideas)
+- 🐛 **Found a bug?** [Open an issue](https://github.com/adospace/vs-agentic/issues/new)
+- 💡 **Have a feature idea?** [Open an issue](https://github.com/adospace/vs-agentic/issues/new) and describe it
 - ⭐ **Enjoying the extension?** A star on GitHub goes a long way — thank you!
 - 🗳️ **Marketplace review** — Leaving a review on the Visual Studio Marketplace helps other developers discover VsAgentic.
+- 🛠️ **Want to contribute?** See [CONTRIBUTING.md](https://github.com/adospace/vs-agentic/blob/main/CONTRIBUTING.md) for how to build, run, and test the extension locally, on a fork and before raising a PR back to the main repo
 
 ---
 

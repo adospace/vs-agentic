@@ -18,6 +18,10 @@ public sealed class PermissionBroker : IPermissionBroker
 
     public event Action<PermissionRequest>? PermissionRequested;
 
+    public event Action<string>? PendingCancelled;
+
+    public event Action<string>? PendingWithdrawn;
+
     public Task<PermissionDecision> SubmitAsync(PermissionRequest request, CancellationToken cancellationToken)
     {
         var tcs = new TaskCompletionSource<PermissionDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -32,7 +36,10 @@ public sealed class PermissionBroker : IPermissionBroker
         var registration = cancellationToken.Register(() =>
         {
             if (_pending.TryRemove(request.Id, out var pending))
+            {
                 pending.TrySetResult(PermissionDecision.Deny("Cancelled"));
+                RaisePendingCancelled(request.Id);
+            }
         });
         tcs.Task.ContinueWith(_ => registration.Dispose(), TaskScheduler.Default);
 
@@ -69,7 +76,39 @@ public sealed class PermissionBroker : IPermissionBroker
             {
                 _logger.LogInformation("[PermissionBroker] CancelAllPending denying {Id}", key);
                 tcs.TrySetResult(deny);
+                RaisePendingCancelled(key);
             }
+        }
+    }
+
+    public void Withdraw(string requestId)
+    {
+        if (!_pending.TryRemove(requestId, out var tcs)) return;
+
+        _logger.LogInformation("[PermissionBroker] CLI withdrew {Id}", requestId);
+        tcs.TrySetResult(PermissionDecision.Deny("Withdrawn by the CLI"));
+        try
+        {
+            PendingWithdrawn?.Invoke(requestId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[PermissionBroker] PendingWithdrawn handler threw for {Id}", requestId);
+        }
+    }
+
+    // Raised after the TCS is settled, and never allowed to throw: a handler
+    // that fails must not stop the remaining requests from being denied, or the
+    // dispatcher loop stays blocked on them.
+    private void RaisePendingCancelled(string id)
+    {
+        try
+        {
+            PendingCancelled?.Invoke(id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[PermissionBroker] PendingCancelled handler threw for {Id}", id);
         }
     }
 }

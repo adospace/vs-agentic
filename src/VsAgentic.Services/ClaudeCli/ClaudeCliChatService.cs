@@ -40,7 +40,7 @@ namespace VsAgentic.Services.ClaudeCli;
 ///    part of the natural tool execution rather than via a side-channel
 ///    tool_result write.
 /// </summary>
-public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupInfo, IDisposable
+public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupInfo, ISharedInstructions, IDisposable
 {
     private readonly VsAgenticOptions _options;
     private readonly IOutputListener _outputListener;
@@ -707,7 +707,77 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
             SetFastModeStatus(fast);
 
         await RefreshAppliedEffortAsync().ConfigureAwait(false);
+        await CheckSharedInstructionsAsync(control).ConfigureAwait(false);
     }
+
+    // ── AGENTS.md ─────────────────────────────────────────────────────────
+    // The CLI reports the instruction files it loaded in get_context_usage
+    // (memoryFiles). That list already reflects CLAUDE.md, its imports and the
+    // user's settings, so nothing here has to repeat the CLI's rules.
+
+    public event Action<string>? SharedInstructionsNotLoaded;
+
+    // Once per chat: a restart or a resumed process does not ask again.
+    private int _sharedInstructionsChecked;
+
+    private async Task CheckSharedInstructionsAsync(CliControlChannel control)
+    {
+        var folder = _options.WorkingDirectory;
+        if (string.IsNullOrEmpty(folder)
+            || !File.Exists(Path.Combine(folder, SharedInstructionsFile.FileName))
+            || Interlocked.Exchange(ref _sharedInstructionsChecked, 1) == 1)
+            return;
+
+        try
+        {
+            var reply = await control.SendAsync(StreamJsonProtocol.BuildGetContextUsage).ConfigureAwait(false);
+            if (!reply.Succeeded
+                || reply.Response is not { ValueKind: JsonValueKind.Object } body
+                || !body.TryGetProperty("memoryFiles", out var files)
+                || files.ValueKind != JsonValueKind.Array)
+            {
+                // An older CLI: whether it loaded the file is not known.
+                _logger.LogDebug("[ClaudeCli] Loaded instruction files unknown: {Error}", reply.Error ?? "no memoryFiles");
+                return;
+            }
+
+            var loaded = files.EnumerateArray()
+                .Select(f => f.ValueKind == JsonValueKind.Object && f.TryGetProperty("path", out var p) ? p.GetString() : null)
+                .Where(p => !string.IsNullOrEmpty(p))
+                .Select(p => p!)
+                .ToList();
+
+            var missing = SharedInstructionsFile.FindNotLoaded(folder, loaded);
+            if (missing is null) return;
+
+            // Imported but still not loaded: the user's settings leave project
+            // files out, and another import line would not change that.
+            if (SharedInstructionsFile.HasImport(SharedInstructionsFile.ChooseClaudeMd(folder), missing))
+            {
+                _logger.LogInformation("[ClaudeCli] {File} is imported but the CLI did not load it", missing);
+                return;
+            }
+
+            _logger.LogInformation("[ClaudeCli] {File} is not loaded; CLAUDE.md does not import it", missing);
+            SharedInstructionsNotLoaded?.Invoke(missing);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[ClaudeCli] Checking the loaded instruction files failed");
+        }
+    }
+
+    public Task<string> LoadSharedInstructionsAsync(string path) => Task.Run(() =>
+    {
+        var claudeMd = SharedInstructionsFile.ChooseClaudeMd(_options.WorkingDirectory);
+        var added = SharedInstructionsFile.AddImport(claudeMd, path);
+
+        // The running process does not read CLAUDE.md again.
+        _restartBeforeNextMessage = true;
+        _logger.LogInformation("[ClaudeCli] {Change} {ClaudeMd}; restarting before the next message",
+            added ? "Imported AGENTS.md in" : "AGENTS.md already imported in", claudeMd);
+        return claudeMd;
+    });
 
     // ── Fast mode ─────────────────────────────────────────────────────────
     // What the user asked for is kept apart from what the CLI reports. The

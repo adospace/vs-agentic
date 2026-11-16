@@ -537,6 +537,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     private IBannerViewModel? _activeBanner;
 
+    /// <summary>
+    /// The notice that the solution's AGENTS.md is not loaded. Shown beside
+    /// <see cref="ActiveBanner"/>, not in its place: it does not wait for an
+    /// answer. Null when not shown.
+    /// </summary>
+    [ObservableProperty]
+    private SharedInstructionsBannerViewModel? _instructionsBanner;
+
     private readonly IPermissionBroker? _permissionBroker;
     private readonly IUserQuestionBroker? _questionBroker;
     private readonly ILogger _logger;
@@ -597,6 +605,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         chatService.StepBackgroundStateChanged += OnChatServiceStepBackgroundStateChanged;
         chatService.StepCanMoveToBackground += OnChatServiceStepCanMoveToBackground;
         chatService.StepFileChanged += OnChatServiceStepFileChanged;
+        if (chatService is ISharedInstructions sharedInstructions)
+            sharedInstructions.SharedInstructionsNotLoaded += OnSharedInstructionsNotLoaded;
 
         InitializeUsage(chatService, options.Value);
         InitializeSlashCommands();
@@ -892,6 +902,48 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             });
         });
     }
+
+    private void OnSharedInstructionsNotLoaded(string path)
+    {
+        if (_chatService is not ISharedInstructions shared) return;
+
+        Dispatch(() =>
+        {
+            SharedInstructionsBannerViewModel? banner = null;
+            banner = new SharedInstructionsBannerViewModel(
+                AgentName,
+                onImport: () => _ = ImportSharedInstructionsAsync(shared, path, banner!),
+                onDismiss: () =>
+                {
+                    if (ReferenceEquals(InstructionsBanner, banner)) InstructionsBanner = null;
+                });
+            InstructionsBanner = banner;
+        });
+    }
+
+    private async Task ImportSharedInstructionsAsync(ISharedInstructions shared, string path, SharedInstructionsBannerViewModel banner)
+    {
+        string notice;
+        try
+        {
+            var changed = await shared.LoadSharedInstructionsAsync(path);
+            notice = $"_`{changed}` now imports `{System.IO.Path.GetFileName(path)}`. {AgentName} reads it from your next message._";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Importing {File} failed", path);
+            notice = $"_Could not import `{System.IO.Path.GetFileName(path)}`: {ex.Message}_";
+        }
+
+        Dispatch(() =>
+        {
+            if (ReferenceEquals(InstructionsBanner, banner)) InstructionsBanner = null;
+            AddNotice(notice, "instructions");
+        });
+    }
+
+    /// <summary>The agent's name in text the user reads.</summary>
+    private const string AgentName = "Claude";
 
     private void OnPermissionBrokerRequested(PermissionRequest request)
     {
@@ -2157,6 +2209,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 _chatService.StepBackgroundStateChanged -= OnChatServiceStepBackgroundStateChanged;
                 _chatService.StepCanMoveToBackground -= OnChatServiceStepCanMoveToBackground;
                 _chatService.StepFileChanged -= OnChatServiceStepFileChanged;
+                if (_chatService is ISharedInstructions sharedInstructions)
+                    sharedInstructions.SharedInstructionsNotLoaded -= OnSharedInstructionsNotLoaded;
             }
             // Static: without this, a closed session stays reachable from the catalog.
             ClaudeModelCatalog.ReportedChanged -= OnReportedModelsChanged;

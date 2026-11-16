@@ -334,6 +334,111 @@
             </Setter>
         </Style>
 
+        <!-- The permission mode picker: StatusComboStyle, plus the "Don't wait
+             for approval" switch under the modes and a mark on the closed
+             picker while it is on. Both bind to the view model, which the
+             popup inherits through the template. -->
+        <Style x:Key="PermissionComboStyle" TargetType="ComboBox" BasedOn="{StaticResource StatusComboStyle}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <!-- Foreground forwarded as in StatusComboStyle. -->
+                            <ToggleButton x:Name="Toggle"
+                                          Focusable="False"
+                                          ClickMode="Press"
+                                          Foreground="{TemplateBinding Foreground}"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border x:Name="Chrome"
+                                                Background="Transparent"
+                                                CornerRadius="3"
+                                                SnapsToDevicePixels="True">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <ContentPresenter Grid.Column="0"
+                                                                  Margin="6,0,2,0"
+                                                                  VerticalAlignment="Center"
+                                                                  Content="{Binding SelectionBoxItem, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                                                  ContentTemplate="{Binding SelectionBoxItemTemplate, RelativeSource={RelativeSource AncestorType=ComboBox}}"/>
+                                                <TextBlock Grid.Column="1"
+                                                           Margin="0,0,3,0"
+                                                           VerticalAlignment="Center"
+                                                           Text="· Don't wait"
+                                                           Visibility="{Binding DenyPermissionPrompts, Converter={StaticResource BoolToVis}}"/>
+                                                <Path Grid.Column="2"
+                                                      Margin="0,1,6,0"
+                                                      VerticalAlignment="Center"
+                                                      Data="M 0 0 L 3.5 3.5 L 7 0 Z"
+                                                      Fill="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                            </Grid>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Chrome" Property="Background"
+                                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}"/>
+                                            </Trigger>
+                                            <Trigger Property="IsChecked" Value="True">
+                                                <Setter TargetName="Chrome" Property="Background"
+                                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseDownBackgroundGradientKey}}"/>
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+
+                            <Popup IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   Placement="Top"
+                                   AllowsTransparency="True"
+                                   PopupAnimation="Fade"
+                                   Focusable="False">
+                                <Border Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
+                                        BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                                        BorderThickness="1"
+                                        CornerRadius="3"
+                                        MinWidth="{TemplateBinding ActualWidth}"
+                                        SnapsToDevicePixels="True">
+                                    <StackPanel>
+                                        <ItemsPresenter/>
+                                        <Border Style="{StaticResource PickerDividerStyle}" Margin="0,3"/>
+                                        <Grid Margin="8,0,8,5" MaxWidth="240">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock Text="Don't wait for approval"
+                                                           Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                                                <TextBlock Text="A call that needs approval is not run. Claude carries on."
+                                                           TextWrapping="Wrap"
+                                                           Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                            </StackPanel>
+                                            <ToggleButton Grid.Column="1"
+                                                          Style="{StaticResource PickerSwitchStyle}"
+                                                          AutomationProperties.Name="Don't wait for approval"
+                                                          AutomationProperties.HelpText="{Binding DenyPermissionPromptsTooltip}"
+                                                          Margin="10,0,0,0"
+                                                          VerticalAlignment="Center"
+                                                          IsChecked="{Binding DenyPermissionPrompts}">
+                                                <ToggleButton.ToolTip>
+                                                    <TextBlock Text="{Binding DenyPermissionPromptsTooltip}"/>
+                                                </ToggleButton.ToolTip>
+                                            </ToggleButton>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Zoom for everything that is not the WebView. One instance, shared
              by LayoutTransform on each docked child, so the code-behind moves
              the whole chrome by setting a single pair of numbers. LayoutTransform
@@ -1389,7 +1494,7 @@
                                              ItemTemplate for the same reason as the
                                              model picker: the CLI setting row renames
                                              itself to the mode the CLI reports. -->
-                                        <ComboBox Style="{StaticResource StatusComboStyle}"
+                                        <ComboBox Style="{StaticResource PermissionComboStyle}"
                                                   ItemContainerStyle="{StaticResource StatusComboItemStyle}"
                                                   ItemsSource="{Binding PermissionModeOptions}"
                                                   SelectedItem="{Binding SelectedPermissionMode}"

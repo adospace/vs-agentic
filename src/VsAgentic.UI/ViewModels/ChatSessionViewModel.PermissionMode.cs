@@ -34,6 +34,35 @@ public partial class ChatSessionViewModel
     /// <summary>Set while the picker follows the service, so that is not taken for a pick.</summary>
     private bool _suppressPermissionModeApply;
 
+    /// <summary>
+    /// The switch under the permission modes: deny a tool call that would wait
+    /// for approval, and let Claude carry on. This chat only, like the mode.
+    /// </summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PermissionModeTooltip))]
+    private bool _denyPermissionPrompts;
+
+    partial void OnDenyPermissionPromptsChanged(bool value)
+    {
+        if (_suppressPermissionModeApply || _chatService is null) return;
+
+        try
+        {
+            _chatService.ApplyDenyPermissionPrompts(value);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[VM] Could not apply the approval prompt setting");
+        }
+    }
+
+    public string DenyPermissionPromptsTooltip =>
+        "Claude does not stop to ask. A tool call that needs your approval\n"
+        + "is not run; its step says so, and Claude carries on with the rest.\n"
+        + "Claude also cannot ask you questions or present a plan for approval.\n"
+        + "Applies after a restart before the next message; the conversation is kept.\n"
+        + "This chat only.";
+
     private void InitializePermissionMode(IChatService chatService)
     {
         chatService.PermissionModeChanged += OnChatServicePermissionModeChanged;
@@ -81,6 +110,7 @@ public partial class ChatSessionViewModel
         {
             SelectedPermissionMode = PermissionModeOptions.FirstOrDefault(o => o.Mode == mode)
                 ?? PermissionModeOptions[0];
+            DenyPermissionPrompts = _chatService.DenyPermissionPrompts;
         }
         finally
         {
@@ -99,6 +129,7 @@ public partial class ChatSessionViewModel
                     : "not reported yet";
 
             return $"Permission mode: {inForce}\n"
+                + (DenyPermissionPrompts ? "Don't wait for approval: calls that need it are not run.\n" : "")
                 + "Takes effect at once, also during a reply. CLI setting and Bypass\n"
                 + "apply after a restart before the next message; the conversation is kept.\n"
                 + "Changes this chat only. New chats start in the mode set under\n"

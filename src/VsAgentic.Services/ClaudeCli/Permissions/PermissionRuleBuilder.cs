@@ -40,7 +40,10 @@ public static class PermissionRuleBuilder
         {
             // The CLI matches every file-editing tool against Edit rules, so a
             // Write(...) rule would be stored and then never consulted.
-            var path = FileRulePath(ReadString(input, "file_path") ?? ReadString(input, "notebook_path"));
+            var raw = ReadString(input, "file_path") ?? ReadString(input, "notebook_path");
+            if (NamesSensitivePath(raw)) return None;
+
+            var path = FileRulePath(raw);
             return path is null
                 ? None
                 : new[] { new PermissionRule("Edit", path) };
@@ -76,6 +79,10 @@ public static class PermissionRuleBuilder
     {
         var command = ReadString(input, "command");
         if (string.IsNullOrWhiteSpace(command)) return None;
+
+        // The CLI asks again for a line that touches .git, .claude and the like,
+        // whatever rule it holds for it, so the button would buy nothing.
+        if (NamesSensitivePath(command)) return None;
 
         // Bash escapes with a backslash and substitutes with a backtick;
         // PowerShell escapes with the backtick and leaves the backslash alone,
@@ -849,6 +856,69 @@ public static class PermissionRuleBuilder
 
         return null;
     }
+
+    /// <summary>
+    /// Whether the text names a path the CLI protects: a folder such as
+    /// <c>.git</c> or <c>.claude</c> at any depth, or a file such as
+    /// <c>.envrc</c> or <c>.gitconfig</c>. For such a call the CLI asks again
+    /// each time, whatever allow rule it holds (CLI 2.1.323: "don't ask again"
+    /// is no longer offered there).
+    ///
+    /// Measured on 2.1.325 with a session rule holding the call exactly: the
+    /// second <c>cp a.txt .claude/b.txt</c> was asked again, and so were the
+    /// same copy into <c>.git</c>, <c>.vscode</c>, <c>.husky</c>,
+    /// <c>sub/.claude</c>, an absolute path into <c>.claude</c> and onto
+    /// <c>.envrc</c>, a copy out of <c>.claude</c>, <c>touch</c>,
+    /// <c>mkdir</c>, <c>rm</c> and <c>&gt;</c> into it, PowerShell's
+    /// <c>Copy-Item</c>, and Write into <c>.claude</c> and <c>.git</c>. The
+    /// same copy into <c>sub</c>, <c>.github</c>, <c>.foo</c> or onto
+    /// <c>.myfile</c> was not, and neither was <c>git config</c>, which
+    /// writes <c>.git/config</c> without naming it.
+    ///
+    /// The text is cut at every character that can sit next to a path in a
+    /// command line (separators, quotes, <c>=</c>, redirections), and each
+    /// piece is compared with the lists, so <c>&gt;'.claude/x'</c> and
+    /// <c>--out=.git/x</c> are caught. Over-matching only drops a button.
+    /// </summary>
+    private static bool NamesSensitivePath(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return false;
+
+        foreach (var piece in text!.Split(PathCuts, StringSplitOptions.RemoveEmptyEntries))
+            if (SensitiveFolders.Contains(piece) || SensitiveFiles.Contains(piece)) return true;
+
+        return false;
+    }
+
+    private static readonly char[] PathCuts =
+    {
+        '/', '\\', ' ', '\t', '\r', '\n', '"', '\'', '`', '=', '<', '>', '|', '&', ';', ',', ':', '(', ')', '{', '}',
+    };
+
+    /// <summary>
+    /// Folders the CLI protects wherever they sit. <c>.idea</c> was not
+    /// measured; the CLI keeps it in one list with <c>.git</c> and
+    /// <c>.vscode</c>.
+    /// </summary>
+    private static readonly HashSet<string> SensitiveFolders = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".git", ".claude", ".vscode", ".idea", ".husky",
+    };
+
+    /// <summary>
+    /// Files the CLI protects, as listed in CLI 2.1.325. <c>.envrc</c> was
+    /// measured; the others share its list.
+    /// </summary>
+    private static readonly HashSet<string> SensitiveFiles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".gitconfig", ".gitmodules", ".bashrc", ".bash_profile", ".zshrc", ".zprofile", ".profile",
+        ".zshenv", ".zlogin", ".zlogout", ".bash_login", ".bash_aliases", ".bash_logout", ".envrc",
+        ".ripgreprc", ".mcp.json", ".claude.json", ".npmrc", ".yarnrc", ".yarnrc.yml", ".pnp.cjs",
+        ".pnp.loader.mjs", ".pnpmfile.cjs", "bunfig.toml", ".bunfig.toml", ".bazelrc", ".bazelversion",
+        ".bazeliskrc", ".pre-commit-config.yaml", "lefthook.yml", ".lefthook.yml", "lefthook.yaml",
+        ".lefthook.yaml", "gradle-wrapper.properties", "maven-wrapper.properties", ".devcontainer.json",
+        "pyrightconfig.json",
+    };
 
     private static string? ReadString(JsonElement input, string property)
     {

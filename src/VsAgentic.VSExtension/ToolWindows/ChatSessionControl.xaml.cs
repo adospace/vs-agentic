@@ -10,6 +10,7 @@ using System.Windows.Threading;
 using Microsoft.VisualStudio.PlatformUI;
 using Microsoft.VisualStudio.Shell;
 using VsAgentic.Services.Abstractions;
+using VsAgentic.Services.Services;
 using VsAgentic.UI.Controls;
 using VsAgentic.UI.ViewModels;
 
@@ -27,6 +28,17 @@ public partial class ChatSessionControl : UserControl
     // the triggering '@' — text from this index up to the caret is the filter.
     private int _mentionStart = -1;
     private List<MentionEntry>? _mentionCache;
+
+    // Commits, the branch and pull requests offered in the same menu. Read
+    // again each time it opens; the generation drops answers that come back
+    // after a newer read has started.
+    private List<MentionEntry> _gitEntries = new();
+    private List<MentionEntry> _pullRequestEntries = new();
+    private int _gitLoadGeneration;
+    private const int MaxCommitEntries = 30;
+    private const int MaxPullRequestEntries = 30;
+    private const int DefaultCommitEntries = 3;
+    private const int DefaultPullRequestEntries = 3;
     private bool _suppressTextChanged;
 
     public ChatSessionControl()
@@ -1112,7 +1124,14 @@ public partial class ChatSessionControl : UserControl
         while (current != null)
         {
             if (current is T t) return t;
-            current = VisualTreeHelper.GetParent(current) ?? LogicalTreeHelper.GetParent(current);
+            // A click on a row's text lands on a Run, which is a content
+            // element: VisualTreeHelper throws on it, so walk those up through
+            // the content or logical tree instead.
+            current = current is Visual or System.Windows.Media.Media3D.Visual3D
+                ? VisualTreeHelper.GetParent(current) ?? LogicalTreeHelper.GetParent(current)
+                : current is ContentElement ce
+                    ? ContentOperations.GetParent(ce) ?? LogicalTreeHelper.GetParent(current)
+                    : LogicalTreeHelper.GetParent(current);
         }
         return null;
     }
@@ -1155,6 +1174,31 @@ public partial class ChatSessionControl : UserControl
         var atIndex = _mentionStart - 1;
         var endIndex = Math.Min(Math.Max(caret, _mentionStart), text.Length);
 
+        // A commit, branch or pull request is a chip, not text: the "@…" the
+        // user typed to find it goes away.
+        if (entry.Git is { } git)
+        {
+            _suppressTextChanged = true;
+            try
+            {
+                InputTextBox.Text = text.Remove(atIndex, endIndex - atIndex);
+                InputTextBox.CaretIndex = atIndex;
+            }
+            finally
+            {
+                _suppressTextChanged = false;
+            }
+
+            CloseMentionPopup();
+            if (DataContext is ChatSessionViewModel vm)
+            {
+                vm.Attach(git);
+                if (entry.NeedsLookup && vm.WorkingDirectory is { } root)
+                    _ = CompletePullRequestAsync(vm, root, git);
+            }
+            return;
+        }
+
         var path = entry.RelativePath;
         if (path.IndexOf(' ') >= 0) path = "\"" + path + "\"";
 
@@ -1175,7 +1219,122 @@ public partial class ChatSessionControl : UserControl
     private void ShowMentionPopup(string filter)
     {
         EnsureMentionCache();
+        StartGitLoad();
         ApplyMentionFilter(filter);
+    }
+
+    /// <summary>
+    /// Reads the branch, the latest commits and the open pull requests again
+    /// each time the menu opens: Claude may have committed since. The previous
+    /// list stays in the menu until the new one arrives. Pull requests come
+    /// from GitHub and arrive last; the rest does not wait for them.
+    /// </summary>
+    private void StartGitLoad()
+    {
+        var root = (DataContext as ChatSessionViewModel)?.WorkingDirectory;
+        if (string.IsNullOrWhiteSpace(root)) return;
+
+        var generation = ++_gitLoadGeneration;
+        _ = LoadGitEntriesAsync(root!, generation);
+    }
+
+    private async Task LoadGitEntriesAsync(string root, int generation)
+    {
+        try
+        {
+            // Off the UI thread: starting a process is not free, and there are
+            // several.
+            var branchTask = Task.Run(() => GitReferences.GetBranchChangesAsync(root));
+            var commitsTask = Task.Run(() => GitReferences.GetRecentCommitsAsync(root, MaxCommitEntries));
+            var pullRequestsTask = Task.Run(() => GitReferences.GetOpenPullRequestsAsync(root, MaxPullRequestEntries));
+
+            var branch = await branchTask;
+            var commits = await commitsTask;
+            if (generation != _gitLoadGeneration) return;
+
+            var entries = new List<MentionEntry>();
+            if (branch is not null) entries.Add(new MentionEntry(branch));
+            entries.AddRange(commits.Select(c => new MentionEntry(c)));
+            _gitEntries = entries;
+            RefreshOpenMention();
+
+            var pullRequests = await pullRequestsTask;
+            if (generation != _gitLoadGeneration) return;
+
+            _pullRequestEntries = pullRequests.Select(p => new MentionEntry(p)).ToList();
+            RefreshOpenMention();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[VsAgentic] Reading git references failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// A pull request picked by number goes on as a bare chip at once; its
+    /// title and size replace it when gh answers, unless the message has gone
+    /// out or the chip was removed in the meantime.
+    /// </summary>
+    private static async Task CompletePullRequestAsync(ChatSessionViewModel vm, string root, ChatGitAttachment bare)
+    {
+        try
+        {
+            var number = int.Parse(bare.Id, System.Globalization.CultureInfo.InvariantCulture);
+            var found = await Task.Run(() => GitReferences.GetPullRequestAsync(root, number));
+            if (found is null) return;
+
+            var index = vm.PendingAttachments.IndexOf(bare);
+            if (index >= 0) vm.PendingAttachments[index] = found;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[VsAgentic] Looking up the pull request failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>Filters the open menu again, after entries arrived.</summary>
+    private void RefreshOpenMention()
+    {
+        if (_mentionStart < 0) return;
+
+        var text = InputTextBox.Text ?? "";
+        var caret = InputTextBox.CaretIndex;
+        if (caret < _mentionStart || _mentionStart > text.Length) return;
+
+        ApplyMentionFilter(text.Substring(_mentionStart, caret - _mentionStart));
+    }
+
+    /// <summary>
+    /// The commits, branch and pull requests that go above the files. With
+    /// nothing typed, only the branch and the latest few, so the files stay in
+    /// reach; typing narrows the full lists. A number that is not an open pull
+    /// request is offered as one anyway: it may be closed, or gh may be slow.
+    /// </summary>
+    private List<MentionEntry> GitMatches(string filter)
+    {
+        if (string.IsNullOrEmpty(filter))
+        {
+            return _gitEntries.Where(e => e.Git!.Kind == GitReferenceKind.Branch)
+                .Concat(_gitEntries.Where(e => e.Git!.Kind == GitReferenceKind.Commit).Take(DefaultCommitEntries))
+                .Concat(_pullRequestEntries.Take(DefaultPullRequestEntries))
+                .ToList();
+        }
+
+        var matches = _gitEntries.Concat(_pullRequestEntries)
+            .Where(e => e.SearchText.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0)
+            .ToList();
+
+        var digits = filter.TrimStart('#');
+        if (digits.Length > 0 && digits.Length <= 7 && digits.All(char.IsDigit)
+            && int.TryParse(digits, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var number)
+            && number > 0
+            && (DataContext as ChatSessionViewModel)?.WorkingDirectory is { Length: > 0 }
+            && !_pullRequestEntries.Any(e => e.Git!.Id == digits))
+        {
+            matches.Insert(0, new MentionEntry(ChatGitAttachment.PullRequest(number, null), needsLookup: true));
+        }
+
+        return matches;
     }
 
     private void CloseMentionPopup()
@@ -1200,7 +1359,7 @@ public partial class ChatSessionControl : UserControl
                 e.RelativePath.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0);
         }
 
-        var results = q.Take(200).ToList();
+        var results = GitMatches(filter).Concat(q).Take(200).ToList();
         MentionList.ItemsSource = results;
         if (results.Count > 0) MentionList.SelectedIndex = 0;
 

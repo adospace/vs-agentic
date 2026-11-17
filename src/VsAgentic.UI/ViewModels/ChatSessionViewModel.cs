@@ -1429,6 +1429,17 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             : $"{header}\n{list}\n\n{text}";
     }
 
+    /// <summary>
+    /// Puts one line per attached commit, branch or pull request above the
+    /// text. Each line says how to read the changes, so the agent decides
+    /// whether it needs the whole diff.
+    /// </summary>
+    private static string WithGitReferences(string text, IReadOnlyList<ChatGitAttachment> references)
+    {
+        var lines = string.Join("\n", references.Select(r => r.PromptLine));
+        return string.IsNullOrEmpty(text) ? lines : $"{lines}\n\n{text}";
+    }
+
     // Concurrent: a message sent while a turn runs is a second SendAsync
     // alongside the first. Without it the command reports itself disabled
     // until the running call returns, whatever CanSend says.
@@ -1450,8 +1461,11 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         var images = attachments.OfType<ChatImageAttachment>().ToList();
         // In the order they were pasted, so the names line up with the
         // thumbnails the message carries.
-        var named = attachments.Where(a => a.SourcePath is not null && a is not EditorContext).ToList();
+        var named = attachments
+            .Where(a => a.SourcePath is not null && a is not EditorContext && a is not ChatGitAttachment)
+            .ToList();
         var editorContexts = attachments.OfType<EditorContext>().ToList();
+        var gitReferences = attachments.OfType<ChatGitAttachment>().ToList();
         var sentImages = images.Count > 0 ? images : null;
         PendingAttachments.Clear();
         SendCommand.NotifyCanExecuteChanged();
@@ -1462,6 +1476,11 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         // project. Listing them in the message itself also leaves a record in
         // the transcript of what went out.
         var message = named.Count > 0 ? WithFileReferences(typed, named) : typed;
+
+        // Commits, branches and pull requests go the same way: named, with the
+        // command that shows them, for the agent to run when it needs them.
+        if (gitReferences.Count > 0)
+            message = WithGitReferences(message, gitReferences);
 
         // Editor contexts go first, then the same way as files, except that the
         // CLI also gets the selected text. The chat shows message; the CLI

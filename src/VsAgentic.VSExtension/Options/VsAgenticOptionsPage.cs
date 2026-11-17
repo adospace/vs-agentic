@@ -140,6 +140,24 @@ public class VsAgenticOptionsPage : DialogPage
     [DefaultValue(true)]
     public bool FlashStatusBarWhenComplete { get; set; } = true;
 
+    [Category("Notifications")]
+    [DisplayName("Waiting for input - Windows notification")]
+    [Description("Show a Windows notification when a session asks for permission, asks a question, shows a plan or needs you to sign in, and Visual Studio is not the active window. The notification shows on every virtual desktop. Click it to go back to the session.")]
+    [DefaultValue(true)]
+    public bool NotifyWhenWaiting { get; set; } = true;
+
+    [Category("Notifications")]
+    [DisplayName("Completed - Windows notification")]
+    [Description("Show a Windows notification when a turn finishes and Visual Studio is not the active window. Click it to go back to the session.")]
+    [DefaultValue(true)]
+    public bool NotifyWhenComplete { get; set; } = true;
+
+    [Category("Notifications")]
+    [DisplayName("Flash the taskbar button")]
+    [Description("Flash the Visual Studio button on the taskbar while a session waits for you or has a finished turn you have not seen, and Visual Studio is not the active window. To see the button from another virtual desktop, set Windows to show taskbar windows on all desktops.")]
+    [DefaultValue(true)]
+    public bool FlashTaskbarButton { get; set; } = true;
+
     [Category("Editor context")]
     [DisplayName("Suggest the active file and selection")]
     [Description("Offer the file open in the editor, and the lines selected in it, as a faded chip above the chat input. Nothing is sent until you click the chip; it then goes out with the next message like an attached file. Selected text is sent as well, so unsaved changes reach Claude too.")]

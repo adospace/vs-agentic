@@ -334,8 +334,8 @@
             </Setter>
         </Style>
 
-        <!-- The permission mode picker: StatusComboStyle, plus the "Don't wait
-             for approval" switch under the modes and a mark on the closed
+        <!-- The permission mode picker: StatusComboStyle, plus the "Run
+             unattended" switch under the modes and a mark on the closed
              picker while it is on. Both bind to the view model, which the
              popup inherits through the template. -->
         <Style x:Key="PermissionComboStyle" TargetType="ComboBox" BasedOn="{StaticResource StatusComboStyle}">
@@ -369,7 +369,7 @@
                                                 <TextBlock Grid.Column="1"
                                                            Margin="0,0,3,0"
                                                            VerticalAlignment="Center"
-                                                           Text="· Don't wait"
+                                                           Text="· Unattended"
                                                            Visibility="{Binding DenyPermissionPrompts, Converter={StaticResource BoolToVis}}"/>
                                                 <Path Grid.Column="2"
                                                       Margin="0,1,6,0"
@@ -412,15 +412,15 @@
                                                 <ColumnDefinition Width="Auto"/>
                                             </Grid.ColumnDefinitions>
                                             <StackPanel>
-                                                <TextBlock Text="Don't wait for approval"
+                                                <TextBlock Text="Run unattended"
                                                            Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
-                                                <TextBlock Text="A call that needs approval is not run. Claude carries on."
+                                                <TextBlock Text="Claude keeps going. Calls that need your approval are skipped."
                                                            TextWrapping="Wrap"
                                                            Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
                                             </StackPanel>
                                             <ToggleButton Grid.Column="1"
                                                           Style="{StaticResource PickerSwitchStyle}"
-                                                          AutomationProperties.Name="Don't wait for approval"
+                                                          AutomationProperties.Name="Run unattended"
                                                           AutomationProperties.HelpText="{Binding DenyPermissionPromptsTooltip}"
                                                           Margin="10,0,0,0"
                                                           VerticalAlignment="Center"

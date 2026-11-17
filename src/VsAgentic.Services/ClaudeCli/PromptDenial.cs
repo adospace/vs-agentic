@@ -15,7 +15,7 @@ public static class PromptDenial
 {
     private const string Prefix = "Permission for this tool use was denied. It requires approval, and this session has no approval surface";
 
-    public const string Label = "Not run · would need approval";
+    public const string Label = "Skipped · needs your approval";
 
     public static bool IsDenial(string? toolResultText) =>
         toolResultText is not null && toolResultText.StartsWith(Prefix, StringComparison.Ordinal);

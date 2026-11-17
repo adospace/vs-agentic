@@ -35,8 +35,9 @@ public partial class ChatSessionViewModel
     private bool _suppressPermissionModeApply;
 
     /// <summary>
-    /// The switch under the permission modes: deny a tool call that would wait
-    /// for approval, and let Claude carry on. This chat only, like the mode.
+    /// "Run unattended", the switch under the permission modes: deny a tool
+    /// call that would wait for approval, and let Claude keep going. This chat
+    /// only, like the mode.
     /// </summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(PermissionModeTooltip))]
@@ -57,8 +58,8 @@ public partial class ChatSessionViewModel
     }
 
     public string DenyPermissionPromptsTooltip =>
-        "Claude does not stop to ask. A tool call that needs your approval\n"
-        + "is not run; its step says so, and Claude carries on with the rest.\n"
+        "Claude keeps going without you. A tool call that needs your approval\n"
+        + "is skipped; its step says so, and Claude goes on with the rest.\n"
         + "Claude also cannot ask you questions or present a plan for approval.\n"
         + "Applies after a restart before the next message; the conversation is kept.\n"
         + "This chat only.";
@@ -129,7 +130,7 @@ public partial class ChatSessionViewModel
                     : "not reported yet";
 
             return $"Permission mode: {inForce}\n"
-                + (DenyPermissionPrompts ? "Don't wait for approval: calls that need it are not run.\n" : "")
+                + (DenyPermissionPrompts ? "Run unattended: calls that need your approval are skipped.\n" : "")
                 + "Takes effect at once, also during a reply. CLI setting and Bypass\n"
                 + "apply after a restart before the next message; the conversation is kept.\n"
                 + "Changes this chat only. New chats start in the mode set under\n"

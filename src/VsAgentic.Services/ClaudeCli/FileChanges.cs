@@ -141,6 +141,15 @@ public static class FileChanges
             };
         }
 
+        return ForHunks(change);
+    }
+
+    /// <summary>
+    /// The changed parts of a step only, even when the session still has the
+    /// whole file. Null when no hunks were kept.
+    /// </summary>
+    public static FileDiffContent? ForHunks(FileChange change)
+    {
         if (change.Hunks.Count == 0) return null;
 
         var before = new StringBuilder();

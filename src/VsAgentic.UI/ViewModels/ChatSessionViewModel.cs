@@ -618,6 +618,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         {
             _inUnsolicitedTurn = true;
             IsBusy = true;
+            FlushTurnMarker();
             if (scheduled) AddScheduledCheckMark();
         });
     }
@@ -843,15 +844,47 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         });
 
         // The heading is what an older build shows in place of the card.
-        PersistMessageFireAndForget(new PersistedMessage
+        var marker = new PersistedMessage
         {
             ItemType = ChatItemType.Notice.ToString(),
             ToolName = TurnChangesTool,
             Content = heading,
             StatusText = OutputItemStatus.Info.ToString(),
             TurnStepIds = changes.Select(c => c.Key).ToList(),
-            CreatedUtc = DateTime.UtcNow
-        });
+        };
+
+        // The answer's text is saved when its item completes, and that can
+        // come after the turn has ended: the service reports it from its own
+        // thread. Saved before it, the card would come back above the answer
+        // in a reopened session.
+        FlushTurnMarker();
+        _pendingTurnMarker = marker;
+        _pendingTurnMarkerWaitsFor.Clear();
+        foreach (var active in _activeItems)
+        {
+            if (active.Value.Type == ChatItemType.Assistant) _pendingTurnMarkerWaitsFor.Add(active.Key);
+        }
+        if (_pendingTurnMarkerWaitsFor.Count == 0) FlushTurnMarker();
+    }
+
+    // The card's marker, until the answer items it waits for are saved.
+    private PersistedMessage? _pendingTurnMarker;
+    private readonly HashSet<string> _pendingTurnMarkerWaitsFor = new(StringComparer.Ordinal);
+
+    private void FlushTurnMarker()
+    {
+        if (_pendingTurnMarker is not { } marker) return;
+        _pendingTurnMarker = null;
+        _pendingTurnMarkerWaitsFor.Clear();
+        marker.CreatedUtc = DateTime.UtcNow;
+        PersistMessageFireAndForget(marker);
+    }
+
+    // Called after a completed item is saved.
+    private void OnItemSaved(string id)
+    {
+        if (_pendingTurnMarker is null || !_pendingTurnMarkerWaitsFor.Remove(id)) return;
+        if (_pendingTurnMarkerWaitsFor.Count == 0) FlushTurnMarker();
     }
 
     /// <summary>
@@ -1674,6 +1707,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             ? null
             : await PersistImagesAsync(sentImages);
 
+        // The last turn's card, if its answer never completed, goes first.
+        FlushTurnMarker();
         PersistMessageFireAndForget(new PersistedMessage
         {
             ItemType = ChatItemType.User.ToString(),
@@ -1931,6 +1966,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         _fullTextChars = 0;
         _turnFileSteps.Clear();
         _turnCards.Clear();
+        _pendingTurnMarker = null;
+        _pendingTurnMarkerWaitsFor.Clear();
         AllCleared?.Invoke();
     }
 
@@ -2114,6 +2151,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                     FileChange = _fileChanges.TryGetValue(item.Id, out var fileChange) ? fileChange : null,
                     CreatedUtc = DateTime.UtcNow
                 });
+                OnItemSaved(item.Id);
             }
         });
     }

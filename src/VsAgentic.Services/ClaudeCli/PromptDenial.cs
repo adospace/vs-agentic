@@ -22,4 +22,16 @@ public static class PromptDenial
 
     /// <summary>The line the step shows above its input.</summary>
     public static string BodyLine => $"**{Label}**";
+
+    /// <summary>
+    /// Sent to the model with the first message after the switch is turned off.
+    /// The denial text above tells it that such calls "will be denied the same
+    /// way for the rest of this session", and that stays in the conversation:
+    /// without this note the model does not try again, also when asked to
+    /// (measured on 2.1.325; a note in the system prompt was not enough).
+    /// </summary>
+    public const string PromptsBackNote =
+        "Permission prompts are back on in this session: a tool call that needs approval now asks the user, "
+        + "who can allow it. Earlier tool results said such calls would be denied for the rest of the session; "
+        + "that no longer holds. When the user asks for one of them again, make the call.";
 }

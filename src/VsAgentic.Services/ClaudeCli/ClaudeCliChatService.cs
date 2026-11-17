@@ -218,6 +218,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         // Lazy start: bring the long-running process up if it's not running.
+        string? note;
         try
         {
             // A pending restart waits while a turn runs: this message then
@@ -248,6 +249,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             EnsureDispatcherStarted();
             if (!wasRunning)
                 InitializeProcess();
+            note = TakePromptsBackNote(freshProcess: !wasRunning);
         }
         catch (Exception ex)
         {
@@ -276,8 +278,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         try
         {
             var line = images is { Count: > 0 }
-                ? StreamJsonProtocol.BuildUserMessageWithImages(userMessage, images, turn.MessageUuid)
-                : StreamJsonProtocol.BuildUserTextMessage(userMessage, turn.MessageUuid);
+                ? StreamJsonProtocol.BuildUserMessageWithImages(userMessage, images, turn.MessageUuid, note)
+                : StreamJsonProtocol.BuildUserTextMessage(userMessage, turn.MessageUuid, note);
             await _host.WriteLineAsync(line, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -3667,6 +3669,32 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         finally
         {
             Interlocked.Decrement(ref _permissionRequestsInFlight);
+        }
+    }
+
+    // Set when a process of this chat was started with the switch on. The
+    // first message to a process started without it then carries
+    // PromptDenial.PromptsBackNote.
+    private bool _ranWithoutPrompts;
+
+    /// <summary>
+    /// The note for the first message to a process that was just started
+    /// without the switch, after one that ran with it. Null otherwise, also
+    /// while the old process keeps running and denying.
+    /// </summary>
+    private string? TakePromptsBackNote(bool freshProcess)
+    {
+        if (!freshProcess) return null;
+        lock (_permissionLock)
+        {
+            if (_options.DenyPermissionPrompts)
+            {
+                _ranWithoutPrompts = true;
+                return null;
+            }
+            if (!_ranWithoutPrompts) return null;
+            _ranWithoutPrompts = false;
+            return PromptDenial.PromptsBackNote;
         }
     }
 

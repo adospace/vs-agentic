@@ -6,8 +6,9 @@ namespace VsAgentic.VSExtension.Notifications;
 
 /// <summary>
 /// Shows, replaces and removes Windows toast notifications. A toast shows on
-/// every virtual desktop and stays in the notification center, which is what a
-/// Visual Studio on another desktop needs to reach the user.
+/// every virtual desktop, which is what a Visual Studio on another desktop
+/// needs to reach the user. It leaves the notification center when its pop-up
+/// times out, because a click there would not reach this process.
 /// </summary>
 /// <remarks>
 /// The extension targets .NET Framework, which projects WinRT types at run time
@@ -29,6 +30,7 @@ internal sealed class WindowsToast
     private readonly Type? _toastType;
     private readonly Type? _notifierType;
     private readonly Type? _historyType;
+    private readonly Type? _dismissedArgsType;
     private readonly Type? _xmlType;
     private object? _notifier;
 
@@ -56,6 +58,7 @@ internal sealed class WindowsToast
         _toastType = Type.GetType($"Windows.UI.Notifications.ToastNotification, {NotificationsAssembly}", false);
         _notifierType = Type.GetType($"Windows.UI.Notifications.ToastNotifier, {NotificationsAssembly}", false);
         _historyType = Type.GetType($"Windows.UI.Notifications.ToastNotificationHistory, {NotificationsAssembly}", false);
+        _dismissedArgsType = Type.GetType($"Windows.UI.Notifications.ToastDismissedEventArgs, {NotificationsAssembly}", false);
         _xmlType = Type.GetType($"Windows.Data.Xml.Dom.XmlDocument, {XmlAssembly}", false);
     }
 
@@ -84,11 +87,11 @@ internal sealed class WindowsToast
             _toastType!.GetProperty("Tag")!.SetValue(toast, tag);
             _toastType.GetProperty("Group")!.SetValue(toast, Group);
 
-            AddActivatedHandler(toast, new ActivatedHandler(activated, _log));
+            AddHandler(toast, "Activated", new ActivatedHandler(activated, _log), nameof(ActivatedHandler.Invoke));
+            AddHandler(toast, "Dismissed", new DismissedHandler(this, tag, toast), nameof(DismissedHandler.Invoke));
 
+            lock (_shown) _shown[tag] = toast;
             _notifierType!.GetMethod("Show")!.Invoke(GetNotifier(), new[] { toast });
-
-            _shown[tag] = toast;
             return true;
         }
         catch (Exception ex)
@@ -104,7 +107,34 @@ internal sealed class WindowsToast
     /// </summary>
     public void Remove(string tag)
     {
-        if (!_shown.Remove(tag) || !IsAvailable) return;
+        lock (_shown)
+        {
+            if (!_shown.Remove(tag)) return;
+        }
+        RemoveFromHistory(tag);
+    }
+
+    /// <summary>
+    /// Removes the toast when its pop-up times out. Windows hands a click in
+    /// the notification center only to an app whose Start menu shortcut
+    /// registers a COM activator, and the shortcut is Visual Studio's, so such
+    /// a click would only close the entry. The taskbar flash still marks the
+    /// session until the user is back.
+    /// </summary>
+    private void OnTimedOut(string tag, object toast)
+    {
+        lock (_shown)
+        {
+            // A newer toast of the same session replaced this one.
+            if (!_shown.TryGetValue(tag, out var current) || !ReferenceEquals(current, toast)) return;
+            _shown.Remove(tag);
+        }
+        RemoveFromHistory(tag);
+    }
+
+    private void RemoveFromHistory(string tag)
+    {
+        if (!IsAvailable) return;
 
         try
         {
@@ -120,8 +150,12 @@ internal sealed class WindowsToast
     /// <summary>Removes every toast this instance has shown.</summary>
     public void RemoveAll()
     {
-        if (_shown.Count == 0 || !IsAvailable) return;
-        _shown.Clear();
+        lock (_shown)
+        {
+            if (_shown.Count == 0) return;
+            _shown.Clear();
+        }
+        if (!IsAvailable) return;
 
         try
         {
@@ -139,23 +173,24 @@ internal sealed class WindowsToast
             .Invoke(null, new object[] { _appId })!;
 
     /// <summary>
-    /// Subscribes to the toast's Activated event. EventInfo.AddEventHandler
-    /// refuses WinRT events, whose add method returns a registration token, so
-    /// the subscription goes through <see cref="WindowsRuntimeMarshal"/> as the
-    /// compiler would emit it.
+    /// Subscribes to an event of the toast. EventInfo.AddEventHandler refuses
+    /// WinRT events, whose add method returns a registration token, so the
+    /// subscription goes through <see cref="WindowsRuntimeMarshal"/> as the
+    /// compiler would emit it. The event's delegate type is a WinRT generic
+    /// that only exists at run time, so the handler is a method whose
+    /// parameters are wide enough to bind to it.
     /// </summary>
-    private void AddActivatedHandler(object toast, ActivatedHandler handler)
+    private void AddHandler(object toast, string eventName, object target, string methodName)
     {
-        var activatedEvent = _toastType!.GetEvent("Activated")!;
-        var handlerType = activatedEvent.EventHandlerType!;
+        var toastEvent = _toastType!.GetEvent(eventName)!;
+        var handlerType = toastEvent.EventHandlerType!;
         var tokenType = typeof(EventRegistrationToken);
 
-        var callback = Delegate.CreateDelegate(
-            handlerType, handler, typeof(ActivatedHandler).GetMethod(nameof(ActivatedHandler.Invoke))!);
+        var callback = Delegate.CreateDelegate(handlerType, target, target.GetType().GetMethod(methodName)!);
         var add = Delegate.CreateDelegate(
-            typeof(Func<,>).MakeGenericType(handlerType, tokenType), toast, activatedEvent.GetAddMethod()!);
+            typeof(Func<,>).MakeGenericType(handlerType, tokenType), toast, toastEvent.GetAddMethod()!);
         var remove = Delegate.CreateDelegate(
-            typeof(Action<>).MakeGenericType(tokenType), toast, activatedEvent.GetRemoveMethod()!);
+            typeof(Action<>).MakeGenericType(tokenType), toast, toastEvent.GetRemoveMethod()!);
 
         typeof(WindowsRuntimeMarshal).GetMethod(nameof(WindowsRuntimeMarshal.AddEventHandler))!
             .MakeGenericMethod(handlerType)
@@ -191,11 +226,36 @@ internal sealed class WindowsToast
     private static Exception Unwrap(Exception ex) =>
         ex is TargetInvocationException { InnerException: { } inner } ? inner : ex;
 
-    /// <summary>
-    /// Target of the toast's Activated delegate. The event's delegate type is a
-    /// WinRT generic that only exists at run time, so the handler is a method
-    /// whose parameters are wide enough to bind to it.
-    /// </summary>
+    /// <summary>Target of the toast's Dismissed delegate.</summary>
+    private sealed class DismissedHandler
+    {
+        // ToastDismissalReason.TimedOut
+        private const int TimedOut = 2;
+
+        private readonly WindowsToast _owner;
+        private readonly string _tag;
+        private readonly object _toast;
+
+        public DismissedHandler(WindowsToast owner, string tag, object toast)
+        {
+            _owner = owner;
+            _tag = tag;
+            _toast = toast;
+        }
+
+        public void Invoke(object sender, object args)
+        {
+            try
+            {
+                var reason = _owner._dismissedArgsType?.GetProperty("Reason")?.GetValue(args);
+                if (reason is not null && Convert.ToInt32(reason) == TimedOut)
+                    _owner.OnTimedOut(_tag, _toast);
+            }
+            catch (Exception ex) { _owner._log("Windows notification dismiss handler threw", ex); }
+        }
+    }
+
+    /// <summary>Target of the toast's Activated delegate.</summary>
     private sealed class ActivatedHandler
     {
         private readonly Action _activated;

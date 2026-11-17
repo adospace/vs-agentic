@@ -147,10 +147,12 @@ internal sealed class DiagnosticsIdeContextProvider : IIdeContextProvider
     /// <summary>
     /// What the Error List shows by default: no suppressed entries, and one
     /// copy of an entry that every target framework of a project reports.
+    /// Review findings are left out: they are Claude's own, not diagnostics.
     /// </summary>
     private static IEnumerable<ErrorListEntry> Visible(IEnumerable<ErrorListEntry> entries)
         => entries
             .Where(e => !e.IsSuppressed)
+            .Where(e => e.Tool != ReviewFindingsTable.ToolName)
             .OrderBy(e => e.IsActiveContext ? 0 : 1)
             .GroupBy(e => (e.Severity, e.Code, e.Text, Document: e.Document?.ToUpperInvariant(), e.Line, e.Column, e.IsBuild))
             .Select(g => g.First());

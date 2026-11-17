@@ -57,6 +57,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     private readonly List<IIdeContextProvider> _ideContextProviders = new();
     private DebuggerStateTracker? _debuggerState;
     private ErrorListReader? _errorList;
+    private ReviewFindingsTable? _reviewFindings;
 
     // For "Add to VsAgentic Chat": the open chat windows, the one the user was
     // in last, and an editor context waiting for a window still being opened.
@@ -135,6 +136,20 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         {
             // Claude then has no get_diagnostics; everything else works.
             System.Diagnostics.Debug.WriteLine($"VsAgentic: Could not read the Error List: {ex}");
+        }
+
+        // The tool is added per chat (CreateChatViewModel), so each chat
+        // replaces and removes only its own findings.
+        try
+        {
+            if (await GetServiceAsync(typeof(SComponentModel)) is IComponentModel componentModel &&
+                componentModel.GetService<ITableManagerProvider>() is { } tableManagerProvider)
+                _reviewFindings = new ReviewFindingsTable(tableManagerProvider.GetTableManager(StandardTables.ErrorsTable));
+        }
+        catch (Exception ex)
+        {
+            // Claude then has no report_review_findings and the chat no Review button.
+            System.Diagnostics.Debug.WriteLine($"VsAgentic: Could not add the review findings to the Error List: {ex}");
         }
 
         try
@@ -380,6 +395,10 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         services.AddSingleton<IOutputListener>(outputListener);
         foreach (var ideContextProvider in _ideContextProviders)
             services.AddSingleton(ideContextProvider);
+        // From a factory, so the chat's service provider disposes it when the
+        // chat closes, and the chat's findings leave the Error List with it.
+        if (_reviewFindings is { } reviewFindings)
+            services.AddSingleton<IIdeContextProvider>(_ => new ReviewIdeContextProvider(reviewFindings, workingDir));
         services.AddVsAgenticServices(options =>
         {
             options.WorkingDirectory = workingDir;

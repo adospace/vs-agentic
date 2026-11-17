@@ -49,6 +49,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SendCommand))]
     [NotifyCanExecuteChangedFor(nameof(StopCommand))]
+    [NotifyCanExecuteChangedFor(nameof(ReviewChangesCommand))]
     private bool _isBusy;
 
     private CancellationTokenSource? _sendCts;

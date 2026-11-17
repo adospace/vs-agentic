@@ -187,6 +187,8 @@ public partial class ChatSessionControl : UserControl
 
         // The "Diff" button on a step that changed a file.
         ChatWebView.DiffRequested += OnDiffRequested;
+        // The same on a file of the card that ends a turn.
+        ChatWebView.TurnDiffRequested += OnTurnDiffRequested;
 
         // Zoom is one setting across every chat window, so follow it rather
         // than own it. Applied without the toast here: this is the window
@@ -342,6 +344,7 @@ public partial class ChatSessionControl : UserControl
         ChatWebView.ZoomChangeRequested -= OnZoomChangeRequested;
         ChatWebView.MoveToBackgroundRequested -= OnMoveToBackgroundRequested;
         ChatWebView.DiffRequested -= OnDiffRequested;
+        ChatWebView.TurnDiffRequested -= OnTurnDiffRequested;
         ChatWebView.Clicked -= OnChatClicked;
         ChatWebView.ContentFocusChanged -= OnChatContentFocusChanged;
         IsKeyboardFocusWithinChanged -= OnKeyboardFocusWithinChanged;
@@ -667,6 +670,9 @@ public partial class ChatSessionControl : UserControl
 
     private void OnDiffRequested(string stepId) =>
         (DataContext as ChatSessionViewModel)?.OpenStepDiff(stepId);
+
+    private void OnTurnDiffRequested(string cardId, int index) =>
+        (DataContext as ChatSessionViewModel)?.OpenTurnFileDiff(cardId, index);
 
     private void OnFileDiffRequested(FileDiffContent diff)
     {

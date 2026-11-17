@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using VsAgentic.Services.Abstractions;
 
 namespace VsAgentic.Services.Models;
@@ -36,6 +37,15 @@ public class PersistedMessage
     /// step's diff. Null for other steps and in sessions saved before diffs.
     /// </summary>
     public FileChange? FileChange { get; set; }
+
+    /// <summary>
+    /// On the card of the files a turn changed: the <see cref="StepId"/>s of
+    /// the turn's steps that changed a file, oldest first. The card is built
+    /// again from their file changes. Null for every other message, and then
+    /// left out of the JSON.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? TurnStepIds { get; set; }
 
     public DateTime CreatedUtc { get; set; }
 }

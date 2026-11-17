@@ -21,6 +21,21 @@ public class VsAgenticOptions
     public CliPermissionMode CliPermissionMode { get; set; } = CliPermissionMode.Default;
 
     /// <summary>
+    /// Deny every tool call that would wait for the user's approval, and let the
+    /// turn carry on. Passed as <c>--permission-prompts none</c>: the permission
+    /// banner is not shown, and Claude is told the call was not run. The
+    /// permission mode, allow rules and auto mode still decide first; this only
+    /// ever denies. Set for one chat from the permission mode picker; a chat
+    /// always starts with it off.
+    ///
+    /// Not <c>permissions.denyInsteadOfPrompting</c>: with a
+    /// <c>--permission-prompt-tool</c> the CLI ignores that setting, also from
+    /// <c>--settings</c> and <c>apply_flag_settings</c> (measured on 2.1.325).
+    /// The flag is read only at start, so a change needs a restart.
+    /// </summary>
+    public bool DenyPermissionPrompts { get; set; }
+
+    /// <summary>
     /// Alias passed to the CLI's <c>--model</c>, or empty to leave the CLI's own
     /// choice alone. Set from the model dropdown in the chat status bar; see
     /// <see cref="ClaudeModelCatalog"/> for the accepted values.

@@ -218,6 +218,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         // Lazy start: bring the long-running process up if it's not running.
+        string? note;
         try
         {
             // A pending restart waits while a turn runs: this message then
@@ -248,6 +249,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             EnsureDispatcherStarted();
             if (!wasRunning)
                 InitializeProcess();
+            note = TakePromptsBackNote(freshProcess: !wasRunning);
         }
         catch (Exception ex)
         {
@@ -276,8 +278,8 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         try
         {
             var line = images is { Count: > 0 }
-                ? StreamJsonProtocol.BuildUserMessageWithImages(userMessage, images, turn.MessageUuid)
-                : StreamJsonProtocol.BuildUserTextMessage(userMessage, turn.MessageUuid);
+                ? StreamJsonProtocol.BuildUserMessageWithImages(userMessage, images, turn.MessageUuid, note)
+                : StreamJsonProtocol.BuildUserTextMessage(userMessage, turn.MessageUuid, note);
             await _host.WriteLineAsync(line, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -2390,24 +2392,37 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             }
             else if (isError)
             {
-                NoteAutoModeBlock(turn.ToolItem, block);
+                NoteNotRun(turn.ToolItem, block);
                 CompleteToolItem(turn, OutputItemStatus.Error);
             }
         }
     }
 
     /// <summary>
-    /// Says in a failed step that auto mode blocked it, and why. Without this
+    /// Says in a failed step that it did not run because auto mode blocked it
+    /// (and why), or because it would have waited for approval. Without this
     /// the step shows its input and the error mark only, which reads as if
     /// the command had run and failed.
     /// </summary>
-    private void NoteAutoModeBlock(OutputItem step, JsonElement resultBlock)
+    private void NoteNotRun(OutputItem step, JsonElement resultBlock)
     {
         var text = resultBlock.TryGetProperty("content", out var cp) ? ExtractToolResultText(cp) : "";
-        if (!AutoModeBlock.TryReadReason(text, out var reason)) return;
+        string line;
+        if (AutoModeBlock.TryReadReason(text, out var reason))
+        {
+            _logger.LogInformation("[ClaudeCli] Auto mode blocked {Tool}: {Reason}", step.ToolName, reason);
+            line = AutoModeBlock.BodyLine(reason);
+        }
+        else if (PromptDenial.IsDenial(text))
+        {
+            _logger.LogInformation("[ClaudeCli] {Tool} denied without asking: it needs approval", step.ToolName);
+            line = PromptDenial.BodyLine;
+        }
+        else
+        {
+            return;
+        }
 
-        _logger.LogInformation("[ClaudeCli] Auto mode blocked {Tool}: {Reason}", step.ToolName, reason);
-        var line = AutoModeBlock.BodyLine(reason);
         step.Body = string.IsNullOrEmpty(step.Body) ? line : line + "\n\n" + step.Body;
     }
 
@@ -2432,7 +2447,7 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             if (subagent.ToolItem == null || toolUseId != subagent.ToolItem.Id) continue;
 
             var isError = block.TryGetProperty("is_error", out var ep) && ep.ValueKind == JsonValueKind.True;
-            if (isError) NoteAutoModeBlock(subagent.ToolItem, block);
+            if (isError) NoteNotRun(subagent.ToolItem, block);
             CompleteToolItem(subagent, isError ? OutputItemStatus.Error : OutputItemStatus.Success);
         }
     }
@@ -3655,6 +3670,57 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         {
             Interlocked.Decrement(ref _permissionRequestsInFlight);
         }
+    }
+
+    // Set when a process of this chat was started with the switch on. The
+    // first message to a process started without it then carries
+    // PromptDenial.PromptsBackNote.
+    private bool _ranWithoutPrompts;
+
+    /// <summary>
+    /// The note for the first message to a process that was just started
+    /// without the switch, after one that ran with it. Null otherwise, also
+    /// while the old process keeps running and denying.
+    /// </summary>
+    private string? TakePromptsBackNote(bool freshProcess)
+    {
+        if (!freshProcess) return null;
+        lock (_permissionLock)
+        {
+            if (_options.DenyPermissionPrompts)
+            {
+                _ranWithoutPrompts = true;
+                return null;
+            }
+            if (!_ranWithoutPrompts) return null;
+            _ranWithoutPrompts = false;
+            return PromptDenial.PromptsBackNote;
+        }
+    }
+
+    public bool DenyPermissionPrompts
+    {
+        get { lock (_permissionLock) return _options.DenyPermissionPrompts; }
+    }
+
+    public void ApplyDenyPermissionPrompts(bool deny)
+    {
+        lock (_permissionLock)
+        {
+            if (_options.DenyPermissionPrompts == deny) return;
+            _options.DenyPermissionPrompts = deny;
+        }
+
+        // Only a start-up flag carries it: the setting the CLI could take at
+        // run time is ignored next to our permission tool.
+        if (_host.IsRunning)
+            _restartBeforeNextMessage = true;
+
+        _logger.LogInformation(
+            "[ClaudeCli] Tool calls that need approval are {State}; applies when the CLI {When}",
+            deny ? "denied without asking" : "asked about",
+            _host.IsRunning ? "restarts before the next message" : "starts");
+        RaisePermissionModeChanged();
     }
 
     private void RestartForPermissionMode(string reason)

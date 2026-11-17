@@ -29,9 +29,16 @@ internal static class StreamJsonProtocol
     /// <c>user_message_uuids</c> of the turn's result, which is how a result is
     /// matched to the message that started the turn. A CLI that predates the
     /// field ignores it.
+    ///
+    /// <paramref name="note"/>, when given, goes before the text as a block of
+    /// its own, wrapped in <c>&lt;system-reminder&gt;</c>: a word to the model
+    /// from VsAgentic, not from the user. The chat shows only the text.
     /// </summary>
-    public static string BuildUserTextMessage(string text, string uuid)
+    public static string BuildUserTextMessage(string text, string uuid, string? note = null)
     {
+        object content = note is null
+            ? text
+            : new object[] { NoteBlock(note), new { type = "text", text } };
         var msg = new
         {
             type = "user",
@@ -39,11 +46,14 @@ internal static class StreamJsonProtocol
             message = new
             {
                 role = "user",
-                content = text
+                content
             }
         };
         return JsonSerializer.Serialize(msg, SerializerOptions);
     }
+
+    private static object NoteBlock(string note) =>
+        new { type = "text", text = "<system-reminder>" + note + "</system-reminder>" };
 
     /// <summary>
     /// Build the JSON line for a user message carrying one or more images.
@@ -52,14 +62,16 @@ internal static class StreamJsonProtocol
     ///
     /// Images come before the text: the API reads a prompt that refers to
     /// "this screenshot" more reliably when the image is already in context.
-    /// <paramref name="uuid"/> is as in <see cref="BuildUserTextMessage"/>.
+    /// <paramref name="uuid"/> and <paramref name="note"/> are as in <see cref="BuildUserTextMessage"/>.
     /// </summary>
     public static string BuildUserMessageWithImages(
         string text,
         IReadOnlyList<ChatImageAttachment> images,
-        string uuid)
+        string uuid,
+        string? note = null)
     {
-        var content = new List<object>(images.Count + 1);
+        var content = new List<object>(images.Count + 2);
+        if (note is not null) content.Add(NoteBlock(note));
 
         foreach (var image in images)
         {

@@ -162,6 +162,20 @@ public interface IChatService
     void ApplyPermissionMode(CliPermissionMode mode);
 
     /// <summary>
+    /// True when a tool call that would wait for the user's approval is denied
+    /// at once and the turn carries on. Off when a chat starts.
+    /// </summary>
+    bool DenyPermissionPrompts { get; }
+
+    /// <summary>
+    /// Turns <see cref="DenyPermissionPrompts"/> on or off for this session. The
+    /// CLI reads it only at start, so a running process is restarted before
+    /// the next <see cref="SendMessageAsync"/>, resuming the conversation.
+    /// Raises <see cref="PermissionModeChanged"/>. A no-op when it did not change.
+    /// </summary>
+    void ApplyDenyPermissionPrompts(bool deny);
+
+    /// <summary>
     /// The effort level the CLI will send on its next request, as it reports
     /// it — what <see cref="ClaudeEffort.Default"/> resolves to, or the chosen
     /// level after the CLI lowered it for a model that does not support it.

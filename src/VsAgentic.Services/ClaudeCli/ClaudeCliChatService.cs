@@ -3796,7 +3796,28 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
         // session on the model it was created with, so the configured default is
         // not a valid stand-in when this session is reopened later. It is also the
         // only record of a [1m] variant: the CLI's transcript names the bare model.
-        return JsonSerializer.Serialize(new { cliSessionId = _cliSessionId, model = _currentModel });
+        //
+        // The usage readings are kept for the status bar. The counters live in
+        // this process only, so a reopened session would otherwise read
+        // "Session 0" and "0 / 200k" until its next reply, however long it is.
+        // The window is kept as reported: a model with a long default window
+        // has no [1m] in its id, and the estimate from the id reads too low.
+        object usage;
+        lock (_usageLock)
+        {
+            usage = new
+            {
+                inputTokens = _inputTokens,
+                outputTokens = _outputTokens,
+                cacheReadTokens = _cacheReadTokens,
+                cacheCreationTokens = _cacheCreationTokens,
+                contextTokens = _contextTokens,
+                contextWindowTokens = _contextWindowTokens,
+                costUsd = _cumulativeCostUsd > 0 ? _cumulativeCostUsd : (decimal?)null,
+            };
+        }
+
+        return JsonSerializer.Serialize(new { cliSessionId = _cliSessionId, model = _currentModel, usage });
     }
 
     public void RestoreHistory(string serializedHistory)
@@ -3814,11 +3835,49 @@ public sealed class ClaudeCliChatService : IChatService, IDisposable
             // then falls back to reading the CLI's transcript.
             if (doc.RootElement.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String)
                 SetCurrentModel(m.GetString());
+
+            // After the model: setting the model clears the window. Sessions
+            // saved before the readings were kept have none, and read 0 until
+            // their next reply, as before.
+            if (doc.RootElement.TryGetProperty("usage", out var u) && u.ValueKind == JsonValueKind.Object)
+                RestoreUsage(u);
         }
         catch (JsonException)
         {
             _logger.LogDebug("[ClaudeCli] Could not restore history (not a CLI session)");
         }
+    }
+
+    /// <summary>
+    /// Puts back the readings <see cref="SerializeHistory"/> saved. The CLI's
+    /// next result replaces the cost, which then still includes the earlier
+    /// turns (<c>--resume</c> carries them); the next reply replaces the
+    /// context reading and the window. The token counters grow from here.
+    /// </summary>
+    private void RestoreUsage(JsonElement usage)
+    {
+        static long Count(JsonElement obj, string name) => Math.Max(0, ReadLong(obj, name) ?? 0);
+
+        lock (_usageLock)
+        {
+            _inputTokens = Count(usage, "inputTokens");
+            _outputTokens = Count(usage, "outputTokens");
+            _cacheReadTokens = Count(usage, "cacheReadTokens");
+            _cacheCreationTokens = Count(usage, "cacheCreationTokens");
+            _contextTokens = Count(usage, "contextTokens");
+            _contextReadings++;
+            var window = ReadLong(usage, "contextWindowTokens");
+            _contextWindowTokens = window > 0 ? window : null;
+        }
+
+        if (usage.TryGetProperty("costUsd", out var cost)
+            && cost.ValueKind == JsonValueKind.Number
+            && cost.TryGetDecimal(out var costUsd)
+            && costUsd > 0)
+            _cumulativeCostUsd = costUsd;
+
+        _logger.LogInformation("[ClaudeCli] Restored usage: context {Context} tokens", _contextTokens);
+        RaiseUsageChanged();
     }
 
     public event Action<string?>? LoginRequired;

@@ -474,9 +474,14 @@ internal sealed class PermissionPipeServer : IDisposable
 
     /// <summary>
     /// Appends the <c>updatedPermissions</c> array the CLI reads off an allow
-    /// response: a mode switch (plan approval), session rules (Allow for this
-    /// session), or both. Every entry has destination <c>session</c>, so it
-    /// changes the running CLI process only and writes nothing to disk.
+    /// response: a mode switch (plan approval), rules (Allow for this session,
+    /// Always allow), or both.
+    ///
+    /// The mode always has destination <c>session</c>. Rules follow
+    /// <see cref="PermissionDecision.Scope"/>: with <c>session</c> the CLI adds
+    /// them to its permission context and writes nothing to disk, so they end
+    /// with the CLI process. With <c>userSettings</c> it also writes them to
+    /// <c>~/.claude/settings.json</c>, where the user can see and remove them.
     ///
     /// Mode: measured on CLI 2.1.316 for <c>ExitPlanMode</c>, the CLI switches
     /// before it runs the call and reports the new mode in
@@ -488,7 +493,7 @@ internal sealed class PermissionPipeServer : IDisposable
     private static void AppendUpdatedPermissions(StringBuilder sb, PermissionDecision decision)
     {
         var hasMode = decision.Mode is not null;
-        var hasRules = decision.SessionRules.Count > 0;
+        var hasRules = decision.Rules.Count > 0;
         if (!hasMode && !hasRules) return;
 
         sb.Append(",\"updatedPermissions\":[");
@@ -503,12 +508,15 @@ internal sealed class PermissionPipeServer : IDisposable
         if (hasRules)
         {
             if (hasMode) sb.Append(',');
-            sb.Append("{\"type\":\"addRules\",\"behavior\":\"allow\",\"destination\":\"session\",\"rules\":[");
+            var destination = decision.Scope == PermissionRuleScope.User ? "userSettings" : "session";
+            sb.Append("{\"type\":\"addRules\",\"behavior\":\"allow\",\"destination\":");
+            sb.Append(JsonSerializer.Serialize(destination));
+            sb.Append(",\"rules\":[");
 
-            for (var i = 0; i < decision.SessionRules.Count; i++)
+            for (var i = 0; i < decision.Rules.Count; i++)
             {
                 if (i > 0) sb.Append(',');
-                var rule = decision.SessionRules[i];
+                var rule = decision.Rules[i];
                 sb.Append("{\"toolName\":");
                 sb.Append(JsonSerializer.Serialize(rule.ToolName));
                 if (rule.RuleContent is not null)

@@ -72,6 +72,185 @@ public static class PermissionRuleBuilder
             : None;
     }
 
+    /// <summary>
+    /// Broader rules for the family this request belongs to, for the "similar"
+    /// choices: the file's folder for a file edit or a read, and nothing for
+    /// any other tool.
+    ///
+    /// Shell commands get nothing beyond <see cref="Build"/>. That already
+    /// gives the widest rule it can stand behind: a prefix only for commands
+    /// that only read and for subcommands on a list where no flag runs a
+    /// program. Anything wider names a program without its subcommand, and
+    /// every program that is not on those lists has a subcommand or a flag
+    /// that runs other code (<c>npm exec</c>, <c>dotnet run</c>, <c>git
+    /// -c</c>, <c>go env -w</c>). WebFetch is already held to the domain, and
+    /// a rule for every domain would be the bare tool.
+    ///
+    /// A folder rule covers every file under it, so it is refused where that
+    /// reaches too far: a drive or file system root, the home folder or a
+    /// folder above it, and any folder whose name starts with a dot. Those
+    /// hold what runs code or grants access: <c>.git</c> hooks, the
+    /// permission rules in <c>.claude</c>, keys in <c>.ssh</c>.
+    /// </summary>
+    public static IReadOnlyList<PermissionRule> BuildSimilar(string toolName, JsonElement input)
+    {
+        if (string.IsNullOrWhiteSpace(toolName)) return None;
+
+        string? file;
+        string tool;
+        if (IsFileEdit(toolName))
+        {
+            file = ReadString(input, "file_path") ?? ReadString(input, "notebook_path");
+            tool = "Edit";
+        }
+        else if (toolName.Equals("Read", StringComparison.OrdinalIgnoreCase))
+        {
+            file = ReadString(input, "file_path");
+            tool = "Read";
+        }
+        else
+        {
+            return None;
+        }
+
+        var folder = FolderRulePath(FileRulePath(file));
+        return folder is null
+            ? None
+            : new[] { new PermissionRule(tool, folder + "/**") };
+    }
+
+    /// <summary>
+    /// The folder of a file rule path (<c>//c/src/a.cs</c> → <c>//c/src</c>),
+    /// or null when a rule for everything under it would reach too far. See
+    /// <see cref="BuildSimilar"/>.
+    /// </summary>
+    private static string? FolderRulePath(string? fileRule)
+    {
+        if (fileRule is null) return null;
+
+        var slash = fileRule.LastIndexOf('/');
+        if (slash <= 2) return null;
+        var folder = fileRule.Substring(0, slash);
+
+        var segments = folder.Substring(2).Split('/');
+        if (segments.Any(s => s.Length == 0 || s.StartsWith(".", StringComparison.Ordinal))) return null;
+
+        // //c is the root of drive C:, and //home the folder above every home.
+        var isDrive = segments[0].Length == 1 && char.IsLetter(segments[0][0]);
+        if (segments.Length < (isDrive ? 2 : 1)) return null;
+
+        var home = HomeRulePath();
+        if (home is not null &&
+            (home.Equals(folder, StringComparison.OrdinalIgnoreCase) ||
+             home.StartsWith(folder + "/", StringComparison.OrdinalIgnoreCase)))
+            return null;
+
+        return folder;
+    }
+
+    private static string? HomeRulePath()
+    {
+        try
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            return string.IsNullOrEmpty(home) ? null : RulePathForm(home.TrimEnd('\\', '/'));
+        }
+        catch (Exception ex) when (ex is PlatformNotSupportedException or System.Security.SecurityException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Whether a rule may hold a credential: a token, a password, an
+    /// <c>Authorization</c> header or a long random string, as in
+    /// <c>curl -H "Authorization: Bearer …"</c>. The exact command from
+    /// <see cref="Build"/> keeps every argument, so such a rule would put the
+    /// secret into <c>~/.claude/settings.json</c>, in plain text and for good.
+    /// The CLI keeps such rules for the session only (2.1.323), and the banner
+    /// then offers no "Always" choice. A false alarm costs only that choice.
+    /// </summary>
+    public static bool MayHoldSecret(IEnumerable<PermissionRule> rules) =>
+        rules.Any(r => r.RuleContent is { } content && MayHoldSecret(content));
+
+    private static bool MayHoldSecret(string text)
+    {
+        foreach (var word in SecretWords)
+            if (text.IndexOf(word, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+
+        // user:password@host in a URL.
+        var scheme = text.IndexOf("://", StringComparison.Ordinal);
+        if (scheme >= 0)
+        {
+            var rest = text.Substring(scheme + 3);
+            var end = rest.IndexOfAny(new[] { '/', ' ', '"', '\'' });
+            var authority = end >= 0 ? rest.Substring(0, end) : rest;
+            if (authority.IndexOf('@') > authority.IndexOf(':') && authority.IndexOf(':') >= 0) return true;
+        }
+
+        // Well-known token shapes: GitHub, GitLab, Slack, OpenAI-style, AWS,
+        // Google, a JWT. Checked at the start of a word only.
+        var start = true;
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (start)
+                foreach (var prefix in SecretPrefixes)
+                    if (string.CompareOrdinal(text, i, prefix, 0, prefix.Length) == 0) return true;
+
+            start = !char.IsLetterOrDigit(text[i]);
+        }
+
+        // A long run of letters and digits mixed, as a key or a token is. A
+        // commit hash is hex of 40 characters at most and is let through.
+        var run = 0;
+        var letters = false;
+        var digits = false;
+        var hex = true;
+        for (var i = 0; i <= text.Length; i++)
+        {
+            var c = i < text.Length ? text[i] : ' ';
+            if (char.IsLetterOrDigit(c) || c == '_' || c == '-' || c == '+' || c == '=')
+            {
+                run++;
+                letters |= char.IsLetter(c);
+                digits |= char.IsDigit(c);
+                hex &= Uri.IsHexDigit(c);
+                continue;
+            }
+
+            if (run >= 32 && letters && digits && !(hex && run <= 40)) return true;
+            run = 0;
+            letters = digits = false;
+            hex = true;
+        }
+
+        return false;
+    }
+
+    private static readonly string[] SecretWords =
+    {
+        "authorization", "bearer", "password", "passwd", "secret", "token",
+        "api_key", "apikey", "api-key", "private_key", "private-key", "credential",
+    };
+
+    private static readonly string[] SecretPrefixes =
+    {
+        "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-",
+        "xoxb-", "xoxp-", "xoxa-", "sk-", "AKIA", "ASIA", "AIza", "eyJ",
+    };
+
+    /// <summary>
+    /// Whether <see cref="BuildSimilar"/> grants anything beyond <see cref="Build"/>.
+    /// </summary>
+    public static bool HasDistinctSimilar(string toolName, JsonElement input)
+    {
+        var specific = Build(toolName, input);
+        var similar = BuildSimilar(toolName, input);
+        if (specific.Count == 0 || similar.Count == 0) return false;
+
+        return similar.Any(s => specific.All(p => p.Display != s.Display));
+    }
+
     private static IReadOnlyList<PermissionRule> BuildShellRules(string toolName, JsonElement input)
     {
         var command = ReadString(input, "command");
@@ -840,6 +1019,18 @@ public static class PermissionRuleBuilder
 
         if (p.EndsWith("/", StringComparison.Ordinal)) return null;
         if (p.Split('/').Any(part => part == "..")) return null;
+
+        return RulePathForm(p);
+    }
+
+    /// <summary>
+    /// An absolute path in the CLI's rule form (<c>C:\src</c> →
+    /// <c>//c/src</c>, <c>/home/me</c> → <c>//home/me</c>), or null for a
+    /// relative one. No other checks.
+    /// </summary>
+    private static string? RulePathForm(string path)
+    {
+        var p = path.Replace('\\', '/');
 
         if (p.Length >= 3 && char.IsLetter(p[0]) && p[1] == ':' && p[2] == '/')
             return "//" + char.ToLowerInvariant(p[0]) + p.Substring(2);

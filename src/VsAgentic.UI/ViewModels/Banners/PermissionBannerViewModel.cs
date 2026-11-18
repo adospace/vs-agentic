@@ -48,12 +48,28 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
     private string _alternativeText = "";
 
     // The CLI takes rules back on an allow response and stops asking for
-    // anything they match, so "for this session" is not modelled here: the
-    // rules are handed over and the CLI's own rule engine does the matching.
-    private readonly IReadOnlyList<PermissionRule> _sessionRules;
+    // anything they match, so remembering is not modelled here: the rules are
+    // handed over and the CLI's own rule engine does the matching.
+    private readonly IReadOnlyList<PermissionRule> _rules;
+    private readonly IReadOnlyList<PermissionRule> _similarRules;
 
     /// <summary>Whether this request can be turned into rules at all.</summary>
-    public bool CanAllowForSession => _sessionRules.Count > 0;
+    public bool CanAllowForSession => _rules.Count > 0;
+
+    /// <summary>
+    /// Whether the rules may be written to the user's settings. Not when one of
+    /// them may hold a credential: it would be stored there in plain text.
+    /// </summary>
+    public bool CanAllowAlways { get; }
+
+    /// <summary>Whether the similar choices grant anything beyond the specific ones.</summary>
+    public bool CanAllowSimilar { get; }
+
+    /// <summary>Whether "Always allow similar" is offered as well; see <see cref="CanAllowAlways"/>.</summary>
+    public bool CanAllowSimilarAlways { get; }
+
+    /// <summary>Whether the menu next to the session button has anything in it.</summary>
+    public bool HasMoreAllowChoices => CanAllowAlways || CanAllowSimilar;
 
     /// <summary>
     /// Names every rule about to be granted, e.g. <c>Bash(cd:*) Bash(git push:*)</c>.
@@ -61,12 +77,27 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
     /// can carry several rules, and what a click grants has to be visible
     /// without hovering anything.
     /// </summary>
-    public string SessionRulesText => string.Join("   ", _sessionRules.Select(r => r.Display));
+    public string SessionRulesText => Describe(_rules);
+
+    /// <summary>The start of the rule line: which buttons add the rules.</summary>
+    public string RulesLineLead => CanAllowAlways
+        ? "Allow for this session and Always allow add "
+        : "Allow for this session adds ";
 
     /// <summary>Says how long the rules last, which the line on the banner does not.</summary>
     public string AllowForSessionTooltip =>
         "The CLI stops asking for calls these rules match. They live in the CLI "
         + "process, so they are gone when it restarts and nothing is written to disk.";
+
+    /// <summary>Says where the rules go and how far they reach.</summary>
+    public string AllowAlwaysTooltip =>
+        "The CLI writes these rules to ~/.claude/settings.json. They apply in every "
+        + "project from now on, until you remove them there.";
+
+    // The similar rules are not the ones on the banner line, so their tooltips
+    // name them.
+    public string AllowSimilarForSessionTooltip => $"Allow {Describe(_similarRules)} for the rest of this session";
+    public string AllowSimilarAlwaysTooltip => $"Allow {Describe(_similarRules)} from now on, in every project. Written to ~/.claude/settings.json";
 
     private readonly Func<Task<string?>>? _viewDiff;
 
@@ -93,8 +124,15 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
         _onResolved = onResolved;
         _viewDiff = viewDiff;
         BodyText = FormatBody(request);
-        _sessionRules = PermissionRuleBuilder.Build(request.ToolName, request.Input);
+        _rules = PermissionRuleBuilder.Build(request.ToolName, request.Input);
+        _similarRules = PermissionRuleBuilder.BuildSimilar(request.ToolName, request.Input);
+        CanAllowSimilar = PermissionRuleBuilder.HasDistinctSimilar(request.ToolName, request.Input);
+        CanAllowAlways = _rules.Count > 0 && !PermissionRuleBuilder.MayHoldSecret(_rules);
+        CanAllowSimilarAlways = CanAllowSimilar && !PermissionRuleBuilder.MayHoldSecret(_similarRules);
     }
+
+    private static string Describe(IReadOnlyList<PermissionRule> rules) =>
+        string.Join("   ", rules.Select(r => r.Display));
 
     /// <summary>Opens the file as it is now against the file with the edit
     /// applied. The banner stays: the user decides after looking.</summary>
@@ -165,6 +203,9 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
     {
         AllowCommand.NotifyCanExecuteChanged();
         AllowForSessionCommand.NotifyCanExecuteChanged();
+        AllowAlwaysCommand.NotifyCanExecuteChanged();
+        AllowSimilarForSessionCommand.NotifyCanExecuteChanged();
+        AllowSimilarAlwaysCommand.NotifyCanExecuteChanged();
         DenyCommand.NotifyCanExecuteChanged();
         OtherCommand.NotifyCanExecuteChanged();
         SubmitCommand.NotifyCanExecuteChanged();
@@ -184,8 +225,40 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
     /// <summary>Allow, and stop asking for calls of this shape until the CLI
     /// process exits.</summary>
     [RelayCommand(CanExecute = nameof(CanDecide))]
-    private void AllowForSession() =>
-        Resolve(PermissionDecision.AllowForSession(InputJson(), _sessionRules));
+    private void AllowForSession() => AllowWith(_rules, PermissionRuleScope.Session);
+
+    /// <summary>
+    /// Allow, and have the CLI write the rule to the user's own settings.
+    ///
+    /// User settings rather than the project's, for two reasons. The CLI
+    /// ignores project settings until the workspace is trusted, so a rule
+    /// written there can be silently inert. And a personal choice should not
+    /// end up in a repository and travel into someone else's checkout. The
+    /// cost is reach: the rule applies in every project, which the tooltip
+    /// says.
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanDecide))]
+    private void AllowAlways()
+    {
+        if (CanAllowAlways) AllowWith(_rules, PermissionRuleScope.User);
+    }
+
+    [RelayCommand(CanExecute = nameof(CanDecide))]
+    private void AllowSimilarForSession()
+    {
+        if (CanAllowSimilar) AllowWith(_similarRules, PermissionRuleScope.Session);
+    }
+
+    [RelayCommand(CanExecute = nameof(CanDecide))]
+    private void AllowSimilarAlways()
+    {
+        if (CanAllowSimilarAlways) AllowWith(_similarRules, PermissionRuleScope.User);
+    }
+
+    private void AllowWith(IReadOnlyList<PermissionRule> rules, PermissionRuleScope scope)
+    {
+        if (rules.Count > 0) Resolve(PermissionDecision.AllowWithRules(InputJson(), rules, scope));
+    }
 
     private string InputJson() =>
         _request.Input.ValueKind == JsonValueKind.Undefined

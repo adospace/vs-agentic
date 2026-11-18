@@ -56,8 +56,20 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
     /// <summary>Whether this request can be turned into rules at all.</summary>
     public bool CanAllowForSession => _rules.Count > 0;
 
+    /// <summary>
+    /// Whether the rules may be written to the user's settings. Not when one of
+    /// them may hold a credential: it would be stored there in plain text.
+    /// </summary>
+    public bool CanAllowAlways { get; }
+
     /// <summary>Whether the similar choices grant anything beyond the specific ones.</summary>
     public bool CanAllowSimilar { get; }
+
+    /// <summary>Whether "Always allow similar" is offered as well; see <see cref="CanAllowAlways"/>.</summary>
+    public bool CanAllowSimilarAlways { get; }
+
+    /// <summary>Whether the menu next to the session button has anything in it.</summary>
+    public bool HasMoreAllowChoices => CanAllowAlways || CanAllowSimilar;
 
     /// <summary>
     /// Names every rule about to be granted, e.g. <c>Bash(cd:*) Bash(git push:*)</c>.
@@ -66,6 +78,11 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
     /// without hovering anything.
     /// </summary>
     public string SessionRulesText => Describe(_rules);
+
+    /// <summary>The start of the rule line: which buttons add the rules.</summary>
+    public string RulesLineLead => CanAllowAlways
+        ? "Allow for this session and Always allow add "
+        : "Allow for this session adds ";
 
     /// <summary>Says how long the rules last, which the line on the banner does not.</summary>
     public string AllowForSessionTooltip =>
@@ -110,6 +127,8 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
         _rules = PermissionRuleBuilder.Build(request.ToolName, request.Input);
         _similarRules = PermissionRuleBuilder.BuildSimilar(request.ToolName, request.Input);
         CanAllowSimilar = PermissionRuleBuilder.HasDistinctSimilar(request.ToolName, request.Input);
+        CanAllowAlways = _rules.Count > 0 && !PermissionRuleBuilder.MayHoldSecret(_rules);
+        CanAllowSimilarAlways = CanAllowSimilar && !PermissionRuleBuilder.MayHoldSecret(_similarRules);
     }
 
     private static string Describe(IReadOnlyList<PermissionRule> rules) =>
@@ -219,16 +238,27 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
     /// says.
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanDecide))]
-    private void AllowAlways() => AllowWith(_rules, PermissionRuleScope.User);
+    private void AllowAlways()
+    {
+        if (CanAllowAlways) AllowWith(_rules, PermissionRuleScope.User);
+    }
 
     [RelayCommand(CanExecute = nameof(CanDecide))]
-    private void AllowSimilarForSession() => AllowWith(_similarRules, PermissionRuleScope.Session);
+    private void AllowSimilarForSession()
+    {
+        if (CanAllowSimilar) AllowWith(_similarRules, PermissionRuleScope.Session);
+    }
 
     [RelayCommand(CanExecute = nameof(CanDecide))]
-    private void AllowSimilarAlways() => AllowWith(_similarRules, PermissionRuleScope.User);
+    private void AllowSimilarAlways()
+    {
+        if (CanAllowSimilarAlways) AllowWith(_similarRules, PermissionRuleScope.User);
+    }
 
-    private void AllowWith(IReadOnlyList<PermissionRule> rules, PermissionRuleScope scope) =>
-        Resolve(PermissionDecision.AllowWithRules(InputJson(), rules, scope));
+    private void AllowWith(IReadOnlyList<PermissionRule> rules, PermissionRuleScope scope)
+    {
+        if (rules.Count > 0) Resolve(PermissionDecision.AllowWithRules(InputJson(), rules, scope));
+    }
 
     private string InputJson() =>
         _request.Input.ValueKind == JsonValueKind.Undefined

@@ -319,4 +319,104 @@ public class PermissionRuleBuilderTests
     [InlineData("Read", @"src\a.cs", "")]
     public void File_rule_names_one_file(string tool, string path, string expected)
         => Assert.Equal(expected, Rules(tool, "file_path", path));
+
+    private static string SimilarRules(string tool, string property, string value)
+    {
+        var json = JsonSerializer.Serialize(new Dictionary<string, string> { [property] = value });
+        using var doc = JsonDocument.Parse(json);
+        return string.Join(" | ", PermissionRuleBuilder.BuildSimilar(tool, doc.RootElement.Clone()).Select(r => r.Display));
+    }
+
+    private static bool HasDistinctSimilar(string tool, string property, string value)
+    {
+        var json = JsonSerializer.Serialize(new Dictionary<string, string> { [property] = value });
+        using var doc = JsonDocument.Parse(json);
+        return PermissionRuleBuilder.HasDistinctSimilar(tool, doc.RootElement.Clone());
+    }
+
+    /// <summary>
+    /// "Similar" for a file tool is the file's folder, and nothing where a
+    /// folder rule reaches too far.
+    /// </summary>
+    [Theory]
+    [InlineData("Edit", @"C:\no-such-dir\src\a.cs", "Edit(//c/no-such-dir/src/**)")]
+    [InlineData("Write", @"C:\no-such-dir\new.txt", "Edit(//c/no-such-dir/**)")]
+    [InlineData("MultiEdit", @"C:\no-such-dir\a.cs", "Edit(//c/no-such-dir/**)")]
+    [InlineData("Read", @"C:\no-such-dir\a.cs", "Read(//c/no-such-dir/**)")]
+    [InlineData("Read", "/srv/app/a.txt", "Read(//srv/app/**)")]
+    [InlineData("Read", "/srv/a.txt", "Read(//srv/**)")]
+    // A drive or file system root.
+    [InlineData("Edit", @"C:\a.cs", "")]
+    [InlineData("Read", "/a.txt", "")]
+    // A folder that starts with a dot, anywhere in the path.
+    [InlineData("Edit", @"C:\no-such-dir\.git\hooks\pre-commit", "")]
+    [InlineData("Edit", @"C:\no-such-dir\.claude\settings.json", "")]
+    [InlineData("Read", @"C:\no-such-dir\.ssh\id_rsa", "")]
+    [InlineData("Edit", @"C:\no-such-dir\.vscode\x\a.json", "")]
+    // No file rule, so no folder rule either.
+    [InlineData("Read", @"src\a.cs", "")]
+    [InlineData("Read", @"C:\src\..\a.cs", "")]
+    [InlineData("Read", @"C:\src\*.cs", "")]
+    public void Similar_for_a_file_is_its_folder(string tool, string path, string expected)
+        => Assert.Equal(expected, SimilarRules(tool, "file_path", path));
+
+    [Fact]
+    public void Similar_never_covers_the_home_folder()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        Assert.Equal("", SimilarRules("Read", "file_path", Path.Combine(home, "notes.txt")));
+        Assert.Equal("", SimilarRules("Edit", "file_path", Path.Combine(Path.GetDirectoryName(home)!, "x.txt")));
+
+        // A folder inside it is fine.
+        Assert.StartsWith("Read(", SimilarRules("Read", "file_path", Path.Combine(home, "no-such-dir", "a.txt")));
+    }
+
+    /// <summary>
+    /// No "similar" for shells, WebFetch, or any tool other than a file tool:
+    /// <see cref="PermissionRuleBuilder.Build"/> already gives the widest rule.
+    /// </summary>
+    [Theory]
+    [InlineData("Bash", "command", "npm run build")]
+    [InlineData("Bash", "command", "git status")]
+    [InlineData("Bash", "command", "dotnet --list-sdks")]
+    [InlineData("Bash", "command", "npx rimraf dist")]
+    [InlineData("Bash", "command", "timeout 30 npm test")]
+    [InlineData("PowerShell", "command", "Get-ChildItem")]
+    [InlineData("WebFetch", "url", "https://example.com/a")]
+    [InlineData("WebSearch", "query", "x")]
+    [InlineData("mcp__s__t", "x", "y")]
+    public void Similar_is_offered_only_for_file_tools(string tool, string property, string value)
+    {
+        Assert.Equal("", SimilarRules(tool, property, value));
+        Assert.False(HasDistinctSimilar(tool, property, value));
+    }
+
+    [Fact]
+    public void Similar_is_distinct_for_a_file()
+        => Assert.True(HasDistinctSimilar("Edit", "file_path", @"C:\no-such-dir\a.cs"));
+
+    /// <summary>
+    /// Always allow writes the rule to ~/.claude/settings.json in plain text,
+    /// so it is not offered for a rule that may hold a credential.
+    /// </summary>
+    [Theory]
+    [InlineData("curl -H \"Authorization: Bearer abc\" https://x", true)]
+    [InlineData("git clone https://me:pw@host/r.git", true)]
+    [InlineData("gh api -H 'X-Token: 1' /user", true)]
+    [InlineData("mysql --password=hunter2", true)]
+    [InlineData("export GITHUB_TOKEN=x", true)]
+    [InlineData("deploy ghp_abcdefghijklmnop", true)]
+    [InlineData("deploy --key sk-abc123", true)]
+    [InlineData("deploy AKIAIOSFODNN7EXAMPLE", true)]
+    [InlineData("deploy --key aZ3kL9mQ2xV7pR4tY8wB1nC6dF5gH0jK", true)]
+    [InlineData("git show 2ecd1a1ef474b084831a8d6a5bff02f4266a825d", false)]
+    [InlineData("dotnet --list-sdks", false)]
+    [InlineData("npm run build", false)]
+    [InlineData("git log:*", false)]
+    public void Rule_that_may_hold_a_secret_is_kept_out_of_settings(string content, bool expected)
+        => Assert.Equal(expected, PermissionRuleBuilder.MayHoldSecret(new[] { new PermissionRule("Bash", content) }));
+
+    [Fact]
+    public void Rule_without_content_holds_no_secret()
+        => Assert.False(PermissionRuleBuilder.MayHoldSecret(new[] { new PermissionRule("WebSearch") }));
 }

@@ -38,6 +38,9 @@
                                 <Trigger Property="Tag" Value="Right">
                                     <Setter TargetName="bd" Property="CornerRadius" Value="0,3,3,0"/>
                                 </Trigger>
+                                <Trigger Property="Tag" Value="Single">
+                                    <Setter TargetName="bd" Property="CornerRadius" Value="3"/>
+                                </Trigger>
                                 <Trigger Property="IsMouseOver" Value="True">
                                     <Setter TargetName="bd" Property="Background"
                                             Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}"/>
@@ -123,7 +126,7 @@
                            Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
                            Opacity="0.75"
                            Visibility="{Binding CanAllowForSession, Converter={StaticResource BoolToVis}}">
-                    <Run Text="Allow for this session and Always allow add "/><Run Text="{Binding SessionRulesText, Mode=OneWay}"
+                    <Run Text="{Binding RulesLineLead, Mode=OneWay}"/><Run Text="{Binding SessionRulesText, Mode=OneWay}"
                                                                    FontFamily="Consolas, Cascadia Mono, Menlo"/>
                 </TextBlock>
 
@@ -146,17 +149,31 @@
                             SnapsToDevicePixels="True"
                             Visibility="{Binding CanAllowForSession, Converter={StaticResource BoolToVis}}">
                         <StackPanel Orientation="Horizontal">
+                            <!-- Without a menu (a rule that may hold a credential,
+                                 so no Always) the session half is the whole
+                                 button and rounds all four corners. -->
                             <Button Content="Allow for this session"
-                                    Style="{StaticResource SplitHalfButtonStyle}"
-                                    Tag="Left"
                                     Command="{Binding AllowForSessionCommand}"
-                                    ToolTip="{Binding AllowForSessionTooltip}"/>
+                                    ToolTip="{Binding AllowForSessionTooltip}">
+                                <Button.Style>
+                                    <Style TargetType="Button" BasedOn="{StaticResource SplitHalfButtonStyle}">
+                                        <Setter Property="Tag" Value="Left"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasMoreAllowChoices}" Value="False">
+                                                <Setter Property="Tag" Value="Single"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Button.Style>
+                            </Button>
                             <Border Width="1"
-                                    Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"/>
+                                    Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                                    Visibility="{Binding HasMoreAllowChoices, Converter={StaticResource BoolToVis}}"/>
                             <Button Style="{StaticResource SplitHalfButtonStyle}"
                                     Tag="Right"
                                     Padding="8,5,8,5"
                                     ToolTip="More ways to allow"
+                                    Visibility="{Binding HasMoreAllowChoices, Converter={StaticResource BoolToVis}}"
                                     Click="MoreAllowButton_Click">
                                 <TextBlock Text="&#xE70D;"
                                            FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
@@ -197,6 +214,7 @@
                                 <Button Content="Always allow"
                                         Style="{StaticResource MenuChoiceButtonStyle}"
                                         ToolTip="{Binding AllowAlwaysTooltip}"
+                                        Visibility="{Binding CanAllowAlways, Converter={StaticResource BoolToVis}}"
                                         Click="MoreAllowChoice_Click"
                                         Command="{Binding AllowAlwaysCommand}"/>
                                 <Button Content="Allow similar for this session"
@@ -208,7 +226,7 @@
                                 <Button Content="Always allow similar"
                                         Style="{StaticResource MenuChoiceButtonStyle}"
                                         ToolTip="{Binding AllowSimilarAlwaysTooltip}"
-                                        Visibility="{Binding CanAllowSimilar, Converter={StaticResource BoolToVis}}"
+                                        Visibility="{Binding CanAllowSimilarAlways, Converter={StaticResource BoolToVis}}"
                                         Click="MoreAllowChoice_Click"
                                         Command="{Binding AllowSimilarAlwaysCommand}"/>
                             </StackPanel>

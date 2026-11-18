@@ -81,19 +81,39 @@ public partial class PermissionBannerViewModel : ObservableObject, IQueuedPrompt
 
     public bool HasDiffNotice => !string.IsNullOrEmpty(DiffNotice);
 
+    /// <summary>
+    /// What is unusual about this call, one short line each: "Deletes folders
+    /// with everything in them", "Changes a file outside the solution folder".
+    /// Empty when no pattern matched.
+    /// </summary>
+    public IReadOnlyList<string> RiskNotes { get; }
+
+    public bool HasRiskNotes => RiskNotes.Count > 0;
+
+    /// <summary>Says where the notes come from, and that their absence does
+    /// not make a command safe.</summary>
+    public string RiskNotesTooltip =>
+        "VsAgentic checks the command against a fixed list of patterns. "
+        + "A command without a warning can still be risky.";
+
     /// <param name="viewDiff">Opens the diff of a file edit, read against the
     /// file at the moment of the click. Returns what to tell the user when it
     /// opened nothing. Null for a call that edits no file.</param>
+    /// <param name="workingDirectory">The folder the session works in, so a
+    /// file change outside it gets a warning. Null says nothing about where
+    /// a file is.</param>
     public PermissionBannerViewModel(
         PermissionRequest request,
         Action<PermissionDecision> onResolved,
-        Func<Task<string?>>? viewDiff = null)
+        Func<Task<string?>>? viewDiff = null,
+        string? workingDirectory = null)
     {
         _request = request;
         _onResolved = onResolved;
         _viewDiff = viewDiff;
         BodyText = FormatBody(request);
         _sessionRules = PermissionRuleBuilder.Build(request.ToolName, request.Input);
+        RiskNotes = ToolRiskNotes.For(request.ToolName, request.Input, workingDirectory);
     }
 
     /// <summary>Opens the file as it is now against the file with the edit

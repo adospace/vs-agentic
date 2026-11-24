@@ -898,6 +898,20 @@
                                                             Moniker="{x:Static catalog:KnownMonikers.AddAttachment}"/>
                                     </Button>
 
+                                    <!-- Dictation: the first click records, the second turns
+                                         the recording into text at the caret. Ctrl+Shift+M
+                                         does the same from the input box. -->
+                                    <Button x:Name="DictationButton"
+                                            Style="{StaticResource IconButtonStyle}"
+                                            Click="DictationButton_Click"
+                                            ToolTip="Dictate (Ctrl+Shift+M)">
+                                        <TextBlock x:Name="DictationGlyph"
+                                                   Text="&#xE720;"
+                                                   FontFamily="Segoe MDL2 Assets"
+                                                   FontSize="14"
+                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                                    </Button>
+
                                     <!-- What Claude may read from the debugger in this
                                          chat: off, the stack, or the stack and values
                                          on request. Shown whenever access is on, so

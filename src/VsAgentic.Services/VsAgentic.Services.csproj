@@ -34,6 +34,8 @@
     <PackageReference Include="Serilog" Version="4.2.0" />
     <PackageReference Include="System.Text.Json" Version="[10.0.0]" />
     <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />
+    <!-- The framework's own HttpClient, for the speech services. -->
+    <Reference Include="System.Net.Http" />
   </ItemGroup>
 
   <!--

@@ -89,20 +89,24 @@ public partial class ChatSessionControl
             return;
         }
 
+        var recorder = new WaveRecorder();
         try
         {
-            _recorder = new WaveRecorder();
-            _recorder.LimitReached += () => Dispatcher.BeginInvoke(new Action(() =>
+            _recorder = recorder;
+            // Only this recording may be ended: by the time the dispatcher runs
+            // this, it may be finished and a new one started.
+            recorder.LimitReached += () => Dispatcher.BeginInvoke(new Action(() =>
             {
-                if (_recorder is { IsRecording: true }) FinishDictation();
+                if (ReferenceEquals(_recorder, recorder) && recorder.IsRecording) FinishDictation();
             }));
-            _recorder.Start();
+            recorder.Start();
         }
         catch (SpeechToTextException ex)
         {
-            _recorder?.Dispose();
+            recorder.Dispose();
             _recorder = null;
             ShowDictationError(ex.Message);
+            InputTextBox.Focus();
             return;
         }
 
@@ -110,14 +114,48 @@ public partial class ChatSessionControl
         InputTextBox.Focus();
     }
 
+    // The window is closed (from Shutdown, not Unloaded, which tabbing away
+    // also raises): nothing may keep recording or turning bars. Safe to call
+    // twice and with no recording. No focus here: the window is going away.
+    private void AbortDictation()
+    {
+        try { _transcribeCts?.Cancel(); }
+        catch (ObjectDisposedException) { }
+
+        var recorder = _recorder;
+        _recorder = null;
+        if (recorder is not null)
+        {
+            try { recorder.Stop(); }
+            catch (Exception) { }
+            try { recorder.Dispose(); }
+            catch (Exception) { }
+        }
+
+        if (!_transcribing) SetDictationState(recording: false);
+    }
+
     private async void FinishDictation()
     {
         var recorder = _recorder;
         if (recorder is null) return;
-
-        var wav = recorder.Stop();
-        recorder.Dispose();
         _recorder = null;
+
+        byte[] wav;
+        try
+        {
+            wav = recorder.Stop();
+        }
+        catch (ObjectDisposedException)
+        {
+            SetDictationState(recording: false);
+            InputTextBox.Focus();
+            return;
+        }
+        finally
+        {
+            recorder.Dispose();
+        }
 
         var settings = VsAgenticPackage.GetSpeechSettings();
         var service = SpeechToTextFactory.Create(settings);
@@ -126,6 +164,7 @@ public partial class ChatSessionControl
         if (service is null || wav.Length < 44 + 32000)
         {
             SetDictationState(recording: false);
+            InputTextBox.Focus();
             return;
         }
 
@@ -155,6 +194,8 @@ public partial class ChatSessionControl
             _transcribeCts?.Dispose();
             _transcribeCts = null;
             SetDictationState(recording: false);
+            // The button was disabled meanwhile; the shortcut lives on the box.
+            InputTextBox.Focus();
         }
     }
 
@@ -177,6 +218,8 @@ public partial class ChatSessionControl
 
     private void SetDictationState(bool recording, bool working = false)
     {
+        // Room for the microphone alone at rest; the level bars need more while recording.
+        InputTextBox.Padding = new Thickness(8, 6, recording ? 84 : 44, 6);
         if (recording)
         {
             DictationGlyph.Foreground = Brushes.Red;

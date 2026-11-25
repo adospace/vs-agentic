@@ -346,6 +346,7 @@ public partial class ChatSessionControl : UserControl
         ChatWebView.ContentFocusChanged -= OnChatContentFocusChanged;
         IsKeyboardFocusWithinChanged -= OnKeyboardFocusWithinChanged;
         SetWorkingDots(false);
+        AbortDictation();
 
         // A popup is its own window and would outlive the pane it belongs to.
         _zoomToastTimer?.Stop();

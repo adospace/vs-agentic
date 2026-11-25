@@ -22,6 +22,9 @@ public sealed class WaveRecorder : IDisposable
     private IntPtr _device;
     private volatile bool _recording;
     private volatile bool _limitHit;
+    // Set under lock(_pcm) before the buffers are freed. The callback reads
+    // the headers only under the same lock and only while this is false.
+    private bool _released = true;
 
     /// <summary>Raised once, on a worker thread, when the recording reached <see cref="MaxSeconds"/>.</summary>
     public event Action? LimitReached;
@@ -43,7 +46,11 @@ public sealed class WaveRecorder : IDisposable
         {
             if (_recording) return;
             _limitHit = false;
-            _pcm.SetLength(0);
+            lock (_pcm)
+            {
+                _pcm.SetLength(0);
+                _released = false;
+            }
 
             var format = new WAVEFORMATEX
             {
@@ -84,11 +91,18 @@ public sealed class WaveRecorder : IDisposable
         lock (_gate)
         {
             if (!_recording) return Array.Empty<byte>();
-            _recording = false;
+            // Under the callback's lock: a callback in progress finishes its
+            // waveInAddBuffer first, and none after this gives a buffer back.
+            lock (_pcm) _recording = false;
 
             // Reset hands every queued buffer back through the callback, so the
-            // last audio is in _pcm before the headers are released.
+            // last audio is normally in _pcm before the headers are released.
+            // That the callback has run by the time waveInReset returns is not
+            // guaranteed, so a late one is shut out by _released instead. The
+            // lock is not held across winmm calls: waveInReset or waveInClose
+            // may wait for a callback that is waiting for the lock.
             waveInReset(_device);
+            lock (_pcm) _released = true;
             var headerSize = Marshal.SizeOf(typeof(WAVEHDR));
             foreach (var (header, data) in _buffers)
             {
@@ -101,52 +115,69 @@ public sealed class WaveRecorder : IDisposable
             _device = IntPtr.Zero;
             Level = 0;
 
-            return _pcm.Length == 0 ? Array.Empty<byte>() : ToWav(_pcm.ToArray());
+            byte[] pcm;
+            lock (_pcm) pcm = _pcm.ToArray();
+            return pcm.Length == 0 ? Array.Empty<byte>() : ToWav(pcm);
         }
     }
 
     public void Dispose()
     {
         try { Stop(); } catch { /* closing anyway */ }
-        _pcm.Dispose();
+        lock (_pcm)
+        {
+            _released = true;
+            _pcm.Dispose();
+        }
     }
 
     private void OnWaveIn(IntPtr hwi, uint msg, IntPtr instance, IntPtr param1, IntPtr param2)
     {
         if (msg != WIM_DATA) return;
 
-        var header = Marshal.PtrToStructure<WAVEHDR>(param1);
-        var count = (int)header.dwBytesRecorded;
-        if (count > 0)
+        // A native winmm thread: an exception here would take Visual Studio down.
+        try
         {
-            var chunk = new byte[count];
-            Marshal.Copy(header.lpData, chunk, 0, count);
-
-            var peak = 0;
-            for (var i = 0; i + 1 < count; i += 2)
-                peak = Math.Max(peak, Math.Abs((int)BitConverter.ToInt16(chunk, i)));
-            Level = peak / 32768.0;
-
             // The callback runs on a winmm thread, while Stop may be waiting for
-            // it inside waveInReset with the gate held. Write without the gate.
+            // it inside waveInReset with the gate held. Lock _pcm, not the gate.
             lock (_pcm)
-                _pcm.Write(chunk, 0, count);
+            {
+                // Stopped and freed, or disposed: the header is no longer ours.
+                if (_released) return;
+
+                var header = Marshal.PtrToStructure<WAVEHDR>(param1);
+                var count = (int)header.dwBytesRecorded;
+                if (count > 0)
+                {
+                    var chunk = new byte[count];
+                    Marshal.Copy(header.lpData, chunk, 0, count);
+
+                    var peak = 0;
+                    for (var i = 0; i + 1 < count; i += 2)
+                        peak = Math.Max(peak, Math.Abs((int)BitConverter.ToInt16(chunk, i)));
+                    Level = peak / 32768.0;
+
+                    _pcm.Write(chunk, 0, count);
+                }
+
+                if (!_recording || _limitHit) return;
+
+                if (_pcm.Length >= (long)SampleRate * 2 * MaxSeconds)
+                {
+                    // Stop must not run on this thread: it waits for this callback.
+                    // No buffer goes back, so the recording ends; the owner calls Stop.
+                    _limitHit = true;
+                    System.Threading.Tasks.Task.Run(() => LimitReached?.Invoke());
+                    return;
+                }
+
+                waveInAddBuffer(hwi, param1, Marshal.SizeOf(typeof(WAVEHDR)));
+            }
         }
-
-        if (!_recording || _limitHit) return;
-
-        long length;
-        lock (_pcm) length = _pcm.Length;
-        if (length >= (long)SampleRate * 2 * MaxSeconds)
+        catch
         {
-            // Stop must not run on this thread: it waits for this callback.
-            // No buffer goes back, so the recording ends; the owner calls Stop.
-            _limitHit = true;
-            System.Threading.Tasks.Task.Run(() => LimitReached?.Invoke());
-            return;
+            // Nothing can be reported from here; the buffer is simply lost.
         }
-
-        waveInAddBuffer(hwi, param1, Marshal.SizeOf(typeof(WAVEHDR)));
     }
 
     private static byte[] ToWav(byte[] pcm)

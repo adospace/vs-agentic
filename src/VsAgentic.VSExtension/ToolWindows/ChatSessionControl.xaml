@@ -698,6 +698,7 @@
                                             IsHitTestVisible="False"/>
                                 <Button x:Name="DictationButton"
                                         Style="{StaticResource IconButtonStyle}"
+                                        Focusable="False"
                                         Click="DictationButton_Click"
                                         ToolTip="Dictate (Ctrl+Shift+M)">
                                     <TextBlock x:Name="DictationGlyph"

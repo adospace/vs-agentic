@@ -75,6 +75,14 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         return page?.ToSettings() ?? new VsAgentic.Services.Dictation.SpeechSettings();
     }
 
+    /// <summary>The shortcut text from the Dictation options page.</summary>
+    internal static string GetDictationShortcutText()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        var page = (DictationOptionsPage?)_instance?.GetDialogPage(typeof(DictationOptionsPage));
+        return page?.Shortcut ?? VsAgentic.Services.Dictation.DictationShortcut.Default;
+    }
+
     internal static void ShowDictationOptions()
     {
         ThreadHelper.ThrowIfNotOnUIThread();

@@ -32,6 +32,7 @@ public partial class ChatSessionControl : UserControl
     public ChatSessionControl()
     {
         InitializeComponent();
+        InitializeDictationInput();
 
         // The model panel opens above its button with their right edges in
         // line. The button sits near the right of the status bar, so a panel
@@ -1037,13 +1038,6 @@ public partial class ChatSessionControl : UserControl
 
     private void InputTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.M && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
-        {
-            e.Handled = true;
-            ToggleDictation();
-            return;
-        }
-
         // Ctrl+V is caught here rather than through DataObject.Pasting. A
         // screenshot sits on the clipboard as a bitmap with no text format, so
         // TextBoxBase.CanPaste is false, the paste command never runs, and the

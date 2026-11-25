@@ -1,5 +1,8 @@
 using System.Threading;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
@@ -232,10 +235,128 @@ public partial class ChatSessionControl
                 Microsoft.VisualStudio.Shell.VsBrushes.WindowTextKey);
         }
 
-        DictationButton.ToolTip = recording ? "Stop and insert the text (Ctrl+Shift+M)"
-            : working ? "Turning the recording into text…"
-            : "Dictate (Ctrl+Shift+M)";
+        _dictationRecording = recording;
+        _dictationWorking = working;
+        RefreshDictationTooltip();
+        UpdateStopHint();
         DictationButton.IsEnabled = !working;
+    }
+
+    // ------------------------------------------------------------------
+    // Shortcut, tooltip and the "how to stop" hint
+    // ------------------------------------------------------------------
+
+    private bool _dictationRecording;
+    private bool _dictationWorking;
+    private string? _shortcutText;
+    private DictationShortcut _shortcut = DictationShortcut.Parse(DictationShortcut.Default)!;
+    private Key? _shortcutKey = Key.M;
+    private ToolTip? _stopHint;
+
+    private void InitializeDictationInput()
+    {
+        // On the control, not the box: the shortcut works wherever the focus is in this window.
+        PreviewKeyDown += OnDictationKeyDown;
+
+        // The scrollbar of a long prompt sits at the right edge; the microphone moves left of it.
+        InputTextBox.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler(OnInputScrollChanged));
+
+        // Options can change the shortcut at any time; the tooltip is refreshed when the pointer arrives.
+        DictationButton.MouseEnter += (_, _) => RefreshDictationTooltip();
+
+        // The hint is a window of its own and would stay over another tab.
+        IsVisibleChanged += (_, _) => UpdateStopHint();
+    }
+
+    private void OnInputScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (e.OriginalSource is not ScrollViewer sv) return;
+        var bar = sv.ComputedVerticalScrollBarVisibility == Visibility.Visible
+            ? SystemParameters.VerticalScrollBarWidth
+            : 0;
+        DictationOverlay.Margin = new Thickness(0, 0, 6 + bar, 0);
+    }
+
+    /// <summary>The configured shortcut, or Ctrl+Shift+M when the text in Options is not one.</summary>
+    private DictationShortcut CurrentShortcut()
+    {
+        var text = VsAgenticPackage.GetDictationShortcutText();
+        if (!string.Equals(text, _shortcutText, StringComparison.Ordinal))
+        {
+            _shortcutText = text;
+            var parsed = DictationShortcut.Parse(text);
+            Key? key = null;
+            if (parsed?.Key is { } name)
+            {
+                if (Enum.TryParse(name, out Key k) && Enum.IsDefined(typeof(Key), k)) key = k;
+                else parsed = null;
+            }
+
+            if (parsed is null)
+            {
+                parsed = DictationShortcut.Parse(DictationShortcut.Default)!;
+                key = Key.M;
+            }
+            _shortcut = parsed;
+            _shortcutKey = key;
+        }
+        return _shortcut;
+    }
+
+    private void OnDictationKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.IsRepeat) return;
+
+        var pressed = e.Key == Key.System ? e.SystemKey
+            : e.Key == Key.ImeProcessed ? e.ImeProcessedKey
+            : e.Key;
+        if (!ShortcutMatches(CurrentShortcut(), pressed)) return;
+
+        e.Handled = true;
+        ToggleDictation();
+    }
+
+    private bool ShortcutMatches(DictationShortcut s, Key pressed)
+    {
+        var want = (s.Ctrl ? ModifierKeys.Control : 0) | (s.Shift ? ModifierKeys.Shift : 0) | (s.Alt ? ModifierKeys.Alt : 0);
+        if (Keyboard.Modifiers != want) return false;
+
+        foreach (var side in s.Sides)
+            if (!Enum.TryParse(side, out Key sideKey) || !Keyboard.IsKeyDown(sideKey)) return false;
+
+        if (_shortcutKey is { } closing) return pressed == closing;
+
+        // Modifiers only: the last one to go down completes it.
+        return pressed is Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift or Key.LeftAlt or Key.RightAlt;
+    }
+
+    private void RefreshDictationTooltip()
+    {
+        var keys = CurrentShortcut().Display;
+        DictationButton.ToolTip = _dictationRecording ? $"Stop and insert the text ({keys})"
+            : _dictationWorking ? "Turning the recording into text…"
+            : $"Dictate ({keys})";
+    }
+
+    // While recording, a note above the button says how to end it, so nobody
+    // has to remember the shortcut or find out that a second click stops.
+    private void UpdateStopHint()
+    {
+        var show = _dictationRecording && IsVisible;
+        if (!show)
+        {
+            if (_stopHint is not null) _stopHint.IsOpen = false;
+            return;
+        }
+
+        _stopHint ??= new ToolTip
+        {
+            PlacementTarget = DictationButton,
+            Placement = PlacementMode.Top,
+            HorizontalOffset = 0,
+        };
+        _stopHint.Content = $"Recording. Press {CurrentShortcut().Display} or click the microphone to stop.";
+        _stopHint.IsOpen = true;
     }
 
     private void ShowDictationError(string message)

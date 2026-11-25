@@ -57,6 +57,12 @@ public class DictationOptionsPage : DialogPage
     [DefaultValue("")]
     public string Language { get; set; } = "";
 
+    [Category("Speech recognition settings")]
+    [DisplayName("Shortcut")]
+    [Description("Starts and stops dictation while the chat window has focus. Keys joined with +, for example Ctrl+Shift+M (default), Alt+F9, or RightCtrl+RightShift, which uses the right-hand keys alone. Ctrl, Shift and Alt accept either side; LeftCtrl, RightCtrl, and so on name one. Two modifiers are enough; one key needs at least one modifier. Text that is not a shortcut falls back to Ctrl+Shift+M. Applies at once.")]
+    [DefaultValue(DictationShortcut.Default)]
+    public string Shortcut { get; set; } = DictationShortcut.Default;
+
     public SpeechSettings ToSettings() => new()
     {
         Provider = Provider,

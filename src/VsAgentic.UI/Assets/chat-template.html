@@ -368,6 +368,71 @@ html, body {
     flex-shrink: 0;
 }
 
+/* The card below a turn's answer: the files the turn changed. */
+.msg-turn-changes {
+    margin: 6px 12px;
+    padding: 6px 12px 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 12px;
+}
+.turn-changes-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    color: var(--text-muted);
+    margin-bottom: 2px;
+}
+.turn-change {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 1px 0;
+}
+.turn-change-name {
+    color: var(--text-primary);
+    text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+.turn-change-name:hover { text-decoration: underline; }
+.turn-change-folder {
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+.turn-change-counts {
+    display: inline-flex;
+    gap: 4px;
+    flex-shrink: 0;
+    font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+    font-size: 11px;
+}
+.turn-change-added { color: var(--success); }
+.turn-change-removed { color: var(--error); }
+.turn-change-created { color: var(--text-muted); font-family: 'Segoe UI', sans-serif; }
+.turn-change .toolstep-diffbtn { margin-left: auto; }
+.msg-turn-changes .turn-change-more { display: none; }
+.msg-turn-changes.expanded .turn-change-more { display: flex; }
+.turn-changes-toggle { display: inline-block; margin-top: 2px; }
+/* The card opens folded: only the heading shows until it is clicked. */
+.turn-changes-header { cursor: pointer; user-select: none; }
+.turn-changes-header::before {
+    content: '\25B6';
+    font-size: 9px;
+    display: inline-block;
+    transition: transform 0.15s;
+}
+.msg-turn-changes:not(.collapsed) .turn-changes-header::before { transform: rotate(90deg); }
+.msg-turn-changes.collapsed .turn-changes-list,
+.msg-turn-changes.collapsed .turn-changes-toggle { display: none; }
+.msg-turn-changes.collapsed .turn-changes-header { margin-bottom: 0; }
+
 /* Notice: a one-line event from the extension, e.g. a background command that
    ended. Indented like a step, in muted text, with a colored outcome icon. */
 .msg-notice {
@@ -1591,6 +1656,9 @@ function addMessage(id, type, dataJson) {
         body.style.display = 'none';
         div.appendChild(body);
     }
+    else if (isTurnChanges(type, data)) {
+        renderTurnChanges(div, id, data);
+    }
     else if (type === 'Notice') {
         div.classList.add('msg-notice', 'notice-' + (data.Status || 'Info'));
         var icon = document.createElement('span');
@@ -1699,6 +1767,12 @@ function placeMessage(div, type, data) {
         _userScrolledUp = false;
         scrollToBottom();
         updateScrollButton();
+    } else if (isTurnChanges(type, data)) {
+        // Below the answer it closes, outside the row: it is the turn's
+        // outcome, not a step toward it.
+        closeActivityGroup();
+        outputHost().appendChild(div);
+        maybeScrollToBottom();
     } else if (type === 'Notice') {
         // Background work ending is a boundary like a prompt: the CLI wakes up
         // after it and starts a turn of its own. Close the row so that turn's
@@ -1890,6 +1964,127 @@ function addDiffButton(header, id, summary) {
         window.chrome.webview.postMessage(JSON.stringify({type:'diff', id:id}));
     });
     header.appendChild(btn);
+}
+
+// The card below a turn's answer: every file the turn's steps changed, with
+// the lines added and removed, and a diff over all the turn's changes to it.
+function isTurnChanges(type, data) {
+    return type === 'Notice' && data.ToolName === 'TurnChanges';
+}
+
+// Files shown before "Show N more" on a card with many.
+var TURN_CHANGES_SHOWN = 6;
+
+function renderTurnChanges(div, id, data) {
+    div.classList.add('msg-turn-changes', 'collapsed');
+    var card = null;
+    try { card = data.Body ? JSON.parse(data.Body) : null; } catch (e) { card = null; }
+    var files = card && card.files ? card.files : [];
+    // A saved card whose steps are gone: nothing to list.
+    if (!files.length) { div.style.display = 'none'; return; }
+
+    var added = 0, removed = 0, names = {};
+    for (var i = 0; i < files.length; i++) {
+        added += files[i].added || 0;
+        removed += files[i].removed || 0;
+        names[files[i].name] = (names[files[i].name] || 0) + 1;
+    }
+
+    var header = document.createElement('div');
+    header.className = 'turn-changes-header';
+    var title = document.createElement('span');
+    title.className = 'turn-changes-title';
+    title.textContent = data.Content || (files.length === 1 ? 'Edited 1 file' : 'Edited ' + files.length + ' files');
+    header.appendChild(title);
+    if (files.length > 1) header.appendChild(lineCounts(added, removed, false));
+    header.addEventListener('click', function() { div.classList.toggle('collapsed'); });
+    div.appendChild(header);
+
+    var list = document.createElement('div');
+    list.className = 'turn-changes-list';
+    for (var j = 0; j < files.length; j++) {
+        var row = turnChangeRow(id, j, files[j], names[files[j].name] > 1);
+        if (j >= TURN_CHANGES_SHOWN && files.length > TURN_CHANGES_SHOWN + 1) row.classList.add('turn-change-more');
+        list.appendChild(row);
+    }
+    div.appendChild(list);
+
+    var hidden = files.length - TURN_CHANGES_SHOWN;
+    if (files.length > TURN_CHANGES_SHOWN + 1) {
+        var more = document.createElement('span');
+        more.className = 'show-more-link turn-changes-toggle';
+        more.textContent = 'Show ' + hidden + ' more';
+        more.addEventListener('click', function() {
+            var open = div.classList.toggle('expanded');
+            more.textContent = open ? 'Show less' : 'Show ' + hidden + ' more';
+        });
+        div.appendChild(more);
+    }
+}
+
+function turnChangeRow(cardId, index, file, showFolder) {
+    var row = document.createElement('div');
+    row.className = 'turn-change';
+
+    var name = document.createElement('a');
+    name.href = '#';
+    name.className = 'file-link turn-change-name';
+    name.dataset.path = file.path;
+    name.title = file.path;
+    name.textContent = file.name;
+    row.appendChild(name);
+
+    // Two files of the same name on one card: the folder tells them apart.
+    if (showFolder) {
+        var folder = document.createElement('span');
+        folder.className = 'turn-change-folder';
+        folder.textContent = parentFolder(file.path);
+        row.appendChild(folder);
+    }
+
+    var counts = lineCounts(file.added || 0, file.removed || 0, file.created);
+    if (file.edits > 1) counts.title = file.edits + ' edits in this turn';
+    row.appendChild(counts);
+
+    if (file.canDiff) {
+        var btn = document.createElement('button');
+        btn.className = 'toolstep-diffbtn';
+        btn.textContent = 'Diff';
+        btn.title = file.edits > 1
+            ? 'Compare the file before and after this turn\'s ' + file.edits + ' edits'
+            : 'Compare the file before and after this change';
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            window.chrome.webview.postMessage(JSON.stringify({type:'turnDiff', id:cardId, index:index}));
+        });
+        row.appendChild(btn);
+    }
+    return row;
+}
+
+// "+12 −3"; a created file reads "+12 Created", as nothing was removed.
+function lineCounts(added, removed, created) {
+    var span = document.createElement('span');
+    span.className = 'turn-change-counts';
+    var plus = document.createElement('span');
+    plus.className = 'turn-change-added';
+    plus.textContent = '+' + added;
+    span.appendChild(plus);
+    var minus = document.createElement('span');
+    if (created) {
+        minus.className = 'turn-change-created';
+        minus.textContent = 'Created';
+    } else {
+        minus.className = 'turn-change-removed';
+        minus.textContent = '−' + removed;
+    }
+    span.appendChild(minus);
+    return span;
+}
+
+function parentFolder(path) {
+    var parts = String(path).split(/[\\/]/);
+    return parts.length > 1 ? parts[parts.length - 2] : '';
 }
 
 function moveToBackgroundButton(id) {
@@ -2371,6 +2566,13 @@ function revealMatch(range) {
     var live = el.closest('.toolstep-expander-content');
     if (live && !live.classList.contains('visible')) {
         live.previousElementSibling.click();
+    }
+    var changeCard = el.closest('.msg-turn-changes');
+    if (changeCard) changeCard.classList.remove('collapsed');
+    var moreFile = el.closest('.turn-change-more');
+    if (moreFile) {
+        var card = moreFile.closest('.msg-turn-changes');
+        if (card && !card.classList.contains('expanded')) card.querySelector('.turn-changes-toggle').click();
     }
 
     // After the frame in which an opened block caps its own height, so the

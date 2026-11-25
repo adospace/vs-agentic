@@ -9,6 +9,7 @@ using VsAgentic.Services.ClaudeCli.Permissions;
 using VsAgentic.Services.ClaudeCli.Questions;
 using VsAgentic.Services.Configuration;
 using VsAgentic.Services.Models;
+using VsAgentic.Services.Services;
 using VsAgentic.UI.ViewModels.Banners;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
@@ -617,6 +618,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         {
             _inUnsolicitedTurn = true;
             IsBusy = true;
+            FlushTurnMarker();
             if (scheduled) AddScheduledCheckMark();
         });
     }
@@ -676,6 +678,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             if (_sendCts is not null) return;
 
             IsBusy = false;
+            AddTurnChangesCard();
             TurnEnded?.Invoke();
             RequestScroll();
         });
@@ -766,6 +769,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         Dispatch(() =>
         {
             _fileChanges[stepId] = change;
+            if (!_turnFileSteps.Contains(stepId)) _turnFileSteps.Add(stepId);
             KeepFullText(stepId, change);
             MessageFileChangeSet?.Invoke(stepId, FileChanges.Summary(change));
 
@@ -786,6 +790,156 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         if (!_fileChanges.TryGetValue(stepId, out var change)) return;
         if (FileChanges.ForStep(change) is { } diff)
+            FileDiffRequested?.Invoke(diff);
+    }
+
+    // ── Card of the turn's file changes ───────────────────────────────────
+    // Steps of the running turn that changed a file, oldest first, including
+    // a subagent's. When the turn ends they become one card below the answer.
+    private readonly List<string> _turnFileSteps = new();
+
+    // The files on each card, by card id, for the card's Diff buttons.
+    private readonly Dictionary<string, List<TurnFileEntry>> _turnCards = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Tool name of the notice that holds the card of the files a turn
+    /// changed. Saved with the ids of the steps it covers only: a reopened
+    /// session builds the card again from their saved file changes.
+    /// </summary>
+    public const string TurnChangesTool = "TurnChanges";
+
+    // Called just before TurnEnded, on the UI thread.
+    private void AddTurnChangesCard()
+    {
+        if (_turnFileSteps.Count == 0) return;
+        var changes = new List<KeyValuePair<string, FileChange>>(_turnFileSteps.Count);
+        foreach (var stepId in _turnFileSteps)
+        {
+            if (_fileChanges.TryGetValue(stepId, out var change))
+                changes.Add(new KeyValuePair<string, FileChange>(stepId, change));
+        }
+        _turnFileSteps.Clear();
+
+        var id = $"turnchanges-{Guid.NewGuid():N}";
+        var card = BuildTurnCard(id, changes);
+        if (card is null) return;
+        var heading = TurnFileChanges.Heading(_turnCards[id].Count);
+
+        Items.Add(new ChatItemViewModel
+        {
+            Type = ChatItemType.Notice,
+            ToolName = TurnChangesTool,
+            Content = heading,
+            Status = OutputItemStatus.Info,
+            IsStreaming = false
+        });
+        MessageAdded?.Invoke(id, ChatItemType.Notice, new ChatMessageData
+        {
+            Id = id,
+            Type = ChatItemType.Notice.ToString(),
+            ToolName = TurnChangesTool,
+            Content = heading,
+            Body = card,
+            Status = OutputItemStatus.Info.ToString()
+        });
+
+        // The heading is what an older build shows in place of the card.
+        var marker = new PersistedMessage
+        {
+            ItemType = ChatItemType.Notice.ToString(),
+            ToolName = TurnChangesTool,
+            Content = heading,
+            StatusText = OutputItemStatus.Info.ToString(),
+            TurnStepIds = changes.Select(c => c.Key).ToList(),
+        };
+
+        // The answer's text is saved when its item completes, and that can
+        // come after the turn has ended: the service reports it from its own
+        // thread. Saved before it, the card would come back above the answer
+        // in a reopened session.
+        FlushTurnMarker();
+        _pendingTurnMarker = marker;
+        _pendingTurnMarkerWaitsFor.Clear();
+        foreach (var active in _activeItems)
+        {
+            if (active.Value.Type == ChatItemType.Assistant) _pendingTurnMarkerWaitsFor.Add(active.Key);
+        }
+        if (_pendingTurnMarkerWaitsFor.Count == 0) FlushTurnMarker();
+    }
+
+    // The card's marker, until the answer items it waits for are saved.
+    private PersistedMessage? _pendingTurnMarker;
+    private readonly HashSet<string> _pendingTurnMarkerWaitsFor = new(StringComparer.Ordinal);
+
+    private void FlushTurnMarker()
+    {
+        if (_pendingTurnMarker is not { } marker) return;
+        _pendingTurnMarker = null;
+        _pendingTurnMarkerWaitsFor.Clear();
+        marker.CreatedUtc = DateTime.UtcNow;
+        PersistMessageFireAndForget(marker);
+    }
+
+    // Called after a completed item is saved.
+    private void OnItemSaved(string id)
+    {
+        if (_pendingTurnMarker is null || !_pendingTurnMarkerWaitsFor.Remove(id)) return;
+        if (_pendingTurnMarkerWaitsFor.Count == 0) FlushTurnMarker();
+    }
+
+    /// <summary>
+    /// Groups the changes by file, keeps the files for the card's buttons and
+    /// returns what the web view draws, as JSON. Null when no change names a
+    /// file.
+    /// </summary>
+    private string? BuildTurnCard(string cardId, List<KeyValuePair<string, FileChange>> changes)
+    {
+        var entries = TurnFileChanges.Group(changes);
+        if (entries.Count == 0) return null;
+        _turnCards[cardId] = entries;
+
+        var files = new List<object>(entries.Count);
+        foreach (var entry in entries)
+        {
+            files.Add(new
+            {
+                path = entry.FilePath,
+                name = SafeFileName(entry.FilePath),
+                added = entry.AddedLines,
+                removed = entry.RemovedLines,
+                created = entry.IsNewFile,
+                edits = entry.StepIds.Count,
+                canDiff = TurnFileChanges.CanDiff(ChangesOf(entry)),
+            });
+        }
+        return System.Text.Json.JsonSerializer.Serialize(new { files });
+    }
+
+    private List<FileChange> ChangesOf(TurnFileEntry entry)
+    {
+        var list = new List<FileChange>(entry.StepIds.Count);
+        foreach (var stepId in entry.StepIds)
+        {
+            if (_fileChanges.TryGetValue(stepId, out var change)) list.Add(change);
+        }
+        return list;
+    }
+
+    private static string SafeFileName(string path)
+    {
+        try { return System.IO.Path.GetFileName(path) is { Length: > 0 } name ? name : path; }
+        catch (ArgumentException) { return path; }
+    }
+
+    /// <summary>
+    /// Opens the diff of one file on a turn's card, over all the turn's
+    /// changes to it. Called from the card's button in the transcript.
+    /// </summary>
+    public void OpenTurnFileDiff(string cardId, int index)
+    {
+        if (!_turnCards.TryGetValue(cardId, out var entries)) return;
+        if (index < 0 || index >= entries.Count) return;
+        if (TurnFileChanges.Diff(ChangesOf(entries[index])) is { } diff)
             FileDiffRequested?.Invoke(diff);
     }
 
@@ -1305,6 +1459,21 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 if (msg.FileChange is { } fileChange)
                     _fileChanges[restoreId] = fileChange;
 
+                // The card names its steps by their ids from the live session.
+                // Those steps were saved before it, so their changes are in.
+                var body = msg.Body;
+                if (type == ChatItemType.Notice && msg.ToolName == TurnChangesTool)
+                {
+                    var turnChanges = new List<KeyValuePair<string, FileChange>>();
+                    foreach (var stepId in msg.TurnStepIds ?? new List<string>())
+                    {
+                        if (restoredIds.TryGetValue(stepId, out var restoredStep)
+                            && _fileChanges.TryGetValue(restoredStep, out var stepChange))
+                            turnChanges.Add(new KeyValuePair<string, FileChange>(restoredStep, stepChange));
+                    }
+                    body = BuildTurnCard(restoreId, turnChanges);
+                }
+
                 restoreData.Add(new ChatMessageData
                 {
                     Id = restoreId,
@@ -1314,7 +1483,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                     Content = msg.Content,
                     ToolName = msg.ToolName,
                     Title = msg.Title ?? "",
-                    Body = msg.Body,
+                    Body = body,
                     BodyMode = msg.BodyMode ?? "Markdown",
                     ExpanderTitle = msg.ExpanderTitle ?? "",
                     Status = msg.StatusText,
@@ -1538,6 +1707,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             ? null
             : await PersistImagesAsync(sentImages);
 
+        // The last turn's card, if its answer never completed, goes first.
+        FlushTurnMarker();
         PersistMessageFireAndForget(new PersistedMessage
         {
             ItemType = ChatItemType.User.ToString(),
@@ -1683,6 +1854,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 if (!_inUnsolicitedTurn)
                 {
                     IsBusy = false;
+                    AddTurnChangesCard();
                     TurnEnded?.Invoke();
                 }
             }
@@ -1792,6 +1964,10 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         _fileChanges.Clear();
         _fullTextSteps.Clear();
         _fullTextChars = 0;
+        _turnFileSteps.Clear();
+        _turnCards.Clear();
+        _pendingTurnMarker = null;
+        _pendingTurnMarkerWaitsFor.Clear();
         AllCleared?.Invoke();
     }
 
@@ -1975,6 +2151,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                     FileChange = _fileChanges.TryGetValue(item.Id, out var fileChange) ? fileChange : null,
                     CreatedUtc = DateTime.UtcNow
                 });
+                OnItemSaved(item.Id);
             }
         });
     }

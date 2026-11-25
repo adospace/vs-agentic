@@ -61,6 +61,12 @@ public partial class ChatWebView : UserControl
     public event Action<string>? DiffRequested;
 
     /// <summary>
+    /// Raised when the user presses "Diff" on a file of the card that ends a
+    /// turn. The arguments are the card id and the file's place on it.
+    /// </summary>
+    public event Action<string, int>? TurnDiffRequested;
+
+    /// <summary>
     /// Raised when the user presses a pointer button anywhere in the rendered
     /// chat. The transcript is a browser child window, so a click in it is not
     /// a WPF mouse event and need not move WPF focus either — without this
@@ -554,6 +560,12 @@ public partial class ChatWebView : UserControl
                 var id = root.GetProperty("id").GetString();
                 if (!string.IsNullOrEmpty(id))
                     DiffRequested?.Invoke(id!);
+            }
+            else if (type == "turnDiff")
+            {
+                var id = root.GetProperty("id").GetString();
+                if (!string.IsNullOrEmpty(id) && root.TryGetProperty("index", out var index) && index.TryGetInt32(out var i))
+                    TurnDiffRequested?.Invoke(id!, i);
             }
             else if (type == "click")
             {

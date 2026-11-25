@@ -420,6 +420,18 @@ html, body {
 .msg-turn-changes .turn-change-more { display: none; }
 .msg-turn-changes.expanded .turn-change-more { display: flex; }
 .turn-changes-toggle { display: inline-block; margin-top: 2px; }
+/* The card opens folded: only the heading shows until it is clicked. */
+.turn-changes-header { cursor: pointer; user-select: none; }
+.turn-changes-header::before {
+    content: '\25B6';
+    font-size: 9px;
+    display: inline-block;
+    transition: transform 0.15s;
+}
+.msg-turn-changes:not(.collapsed) .turn-changes-header::before { transform: rotate(90deg); }
+.msg-turn-changes.collapsed .turn-changes-list,
+.msg-turn-changes.collapsed .turn-changes-toggle { display: none; }
+.msg-turn-changes.collapsed .turn-changes-header { margin-bottom: 0; }
 
 /* Notice: a one-line event from the extension, e.g. a background command that
    ended. Indented like a step, in muted text, with a colored outcome icon. */
@@ -1964,7 +1976,7 @@ function isTurnChanges(type, data) {
 var TURN_CHANGES_SHOWN = 6;
 
 function renderTurnChanges(div, id, data) {
-    div.classList.add('msg-turn-changes');
+    div.classList.add('msg-turn-changes', 'collapsed');
     var card = null;
     try { card = data.Body ? JSON.parse(data.Body) : null; } catch (e) { card = null; }
     var files = card && card.files ? card.files : [];
@@ -1985,6 +1997,7 @@ function renderTurnChanges(div, id, data) {
     title.textContent = data.Content || (files.length === 1 ? 'Edited 1 file' : 'Edited ' + files.length + ' files');
     header.appendChild(title);
     if (files.length > 1) header.appendChild(lineCounts(added, removed, false));
+    header.addEventListener('click', function() { div.classList.toggle('collapsed'); });
     div.appendChild(header);
 
     var list = document.createElement('div');
@@ -2554,6 +2567,8 @@ function revealMatch(range) {
     if (live && !live.classList.contains('visible')) {
         live.previousElementSibling.click();
     }
+    var changeCard = el.closest('.msg-turn-changes');
+    if (changeCard) changeCard.classList.remove('collapsed');
     var moreFile = el.closest('.turn-change-more');
     if (moreFile) {
         var card = moreFile.closest('.msg-turn-changes');

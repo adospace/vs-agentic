@@ -16,14 +16,31 @@ public static class SpeechToTextFactory
     {
         SpeechProvider.OpenAI when s.ApiKey.Length > 0
             => new OpenAiTranscriber(Http, "https://api.openai.com/v1", s.ApiKey,
-                s.Model.Length > 0 ? s.Model : "gpt-4o-transcribe"),
+                s.Model.Length > 0 ? s.Model : "gpt-4o-transcribe", EffectivePrompt(s)),
         SpeechProvider.OpenAICompatible when s.Endpoint.Length > 0
             => new OpenAiTranscriber(Http, s.Endpoint, s.ApiKey,
-                s.Model.Length > 0 ? s.Model : "whisper-1"),
+                s.Model.Length > 0 ? s.Model : "whisper-1", EffectivePrompt(s)),
         SpeechProvider.AzureSpeech when s.ApiKey.Length > 0 && s.Region.Length > 0
             => new AzureTranscriber(Http, s.Region, s.ApiKey),
+        SpeechProvider.WindowsSpeech => new WindowsSpeechTranscriber(),
         _ => null,
     };
+
+    /// <summary>
+    /// A short Slovenian sentence with diacritics. Sent as the prompt, it keeps the
+    /// OpenAI models in Slovenian and Latin script; without it they sometimes
+    /// answer a Slovenian recording in Cyrillic, as if it were Serbian or Bulgarian.
+    /// </summary>
+    public const string SlovenianPrompt = "Preglej kodo in poišči napake v projektu. Popravi težavo, dodaj preizkus in ustvari pull request.";
+
+    /// <summary>What is sent as the prompt: the user's text, else the Slovenian sample for sl, else nothing.</summary>
+    public static string EffectivePrompt(SpeechSettings s)
+    {
+        var own = (s.Prompt ?? "").Trim();
+        if (own.Length > 0) return own;
+        var code = (s.Language ?? "").Split('-')[0].Trim();
+        return string.Equals(code, "sl", StringComparison.OrdinalIgnoreCase) ? SlovenianPrompt : "";
+    }
 
     /// <summary>The first line of a failed response, so the user sees why instead of a status code.</summary>
     internal static async Task<string> DescribeFailureAsync(HttpResponseMessage response)
@@ -57,13 +74,15 @@ internal sealed class OpenAiTranscriber : ISpeechToText
     private readonly string _url;
     private readonly string _apiKey;
     private readonly string _model;
+    private readonly string _prompt;
 
-    public OpenAiTranscriber(HttpClient http, string baseUrl, string apiKey, string model)
+    public OpenAiTranscriber(HttpClient http, string baseUrl, string apiKey, string model, string prompt)
     {
         _http = http;
         _url = baseUrl.TrimEnd('/') + "/audio/transcriptions";
         _apiKey = apiKey;
         _model = model;
+        _prompt = prompt;
     }
 
     public async Task<string> TranscribeAsync(byte[] wav, string language, CancellationToken ct)
@@ -79,6 +98,8 @@ internal sealed class OpenAiTranscriber : ISpeechToText
         var code = language.Split('-')[0].Trim().ToLowerInvariant();
         if (code.Length > 0)
             form.Add(new StringContent(code, Encoding.UTF8), "language");
+        if (_prompt.Length > 0)
+            form.Add(new StringContent(_prompt, Encoding.UTF8), "prompt");
 
         using var request = new HttpRequestMessage(HttpMethod.Post, _url) { Content = form };
         if (_apiKey.Length > 0)

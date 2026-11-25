@@ -19,7 +19,7 @@ public class DictationOptionsPage : DialogPage
 
     [Category("Speech recognition")]
     [DisplayName("Provider")]
-    [Description("Who turns your voice into text. None (default): dictation is off, and the microphone button opens this page. The recording is sent to the provider you choose, and to no one else. OpenAI and Azure Speech need a key; OpenAICompatible is for a server of your own (whisper.cpp, faster-whisper, LocalAI) or another service that speaks the OpenAI transcription API.")]
+    [Description("Who turns your voice into text. None (default): dictation is off, and the microphone button opens this page. The recording is sent to the provider you choose, and to no one else. OpenAI and Azure Speech need a key; OpenAICompatible is for a server of your own (whisper.cpp, faster-whisper, LocalAI) or another service that speaks the OpenAI transcription API. WindowsSpeech uses the recognizer installed in Windows: it runs on this computer, needs no key and no network, but knows only the languages added under Settings > Time & language > Speech (a fresh Windows has English only, no Slovenian), and writes without capitals or punctuation.")]
     [DefaultValue(SpeechProvider.None)]
     public SpeechProvider Provider { get; set; } = SpeechProvider.None;
 
@@ -58,6 +58,12 @@ public class DictationOptionsPage : DialogPage
     public string Language { get; set; } = "";
 
     [Category("Speech recognition settings")]
+    [DisplayName("Prompt")]
+    [Description("OpenAI and OpenAICompatible only. Text sent with the recording that shows the model what your speech looks like: its language, script and the spelling of names, for example VsAgentic, Roslyn, WebView2. It is not an instruction. Keep it short; the model reads about the last 200 words. Empty: for language sl a Slovenian sentence is sent, which stops the model from answering in Cyrillic; for other languages nothing is sent. The text is sent to the provider with the recording.")]
+    [DefaultValue("")]
+    public string Prompt { get; set; } = "";
+
+    [Category("Speech recognition settings")]
     [DisplayName("Shortcut")]
     [Description("Starts and stops dictation while the chat window has focus. Keys joined with +, for example Ctrl+Shift+M (default), Alt+F9, or RightCtrl+RightShift, which uses the right-hand keys alone. Ctrl, Shift and Alt accept either side; LeftCtrl, RightCtrl, and so on name one. Two modifiers are enough; one key needs at least one modifier. Text that is not a shortcut falls back to Ctrl+Shift+M. Applies at once.")]
     [DefaultValue(DictationShortcut.Default)]
@@ -71,6 +77,7 @@ public class DictationOptionsPage : DialogPage
         Endpoint = (Endpoint ?? "").Trim(),
         Region = (Region ?? "").Trim(),
         Language = (Language ?? "").Trim(),
+        Prompt = (Prompt ?? "").Trim(),
     };
 
     // The registry gets every property except the key.

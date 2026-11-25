@@ -23,6 +23,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\VsAgentic.Services\VsAgentic.Services.csproj" />
+    <!-- To make a recording for the Windows recognizer: the engine speaks it. -->
+    <Reference Include="System.Speech" />
   </ItemGroup>
 
 </Project>

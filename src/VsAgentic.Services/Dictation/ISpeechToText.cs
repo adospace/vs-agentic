@@ -18,6 +18,8 @@ public enum SpeechProvider
     AzureSpeech,
     /// <summary>Any server that speaks the OpenAI transcription API (whisper.cpp, faster-whisper, LocalAI, Groq).</summary>
     OpenAICompatible,
+    /// <summary>The recognizer installed in Windows (System.Speech). Runs on this computer; no key, no network.</summary>
+    WindowsSpeech,
 }
 
 /// <summary>Everything a provider needs. A plain snapshot, so it does not depend on the Options page.</summary>
@@ -32,6 +34,11 @@ public sealed class SpeechSettings
     /// <summary>Azure region, e.g. westeurope.</summary>
     public string Region { get; set; } = "";
     public string Language { get; set; } = "";
+    /// <summary>
+    /// Text that tells the OpenAI models what the speech looks like: language,
+    /// script, spelling of names. Empty uses a built-in sample for Slovenian and nothing for other languages.
+    /// </summary>
+    public string Prompt { get; set; } = "";
 }
 
 public sealed class SpeechToTextException : Exception

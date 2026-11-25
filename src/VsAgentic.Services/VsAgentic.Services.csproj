@@ -36,6 +36,8 @@
     <PackageReference Include="PolySharp" Version="1.15.0" PrivateAssets="all" />
     <!-- The framework's own HttpClient, for the speech services. -->
     <Reference Include="System.Net.Http" />
+    <!-- The recognizer Windows has installed, for the local speech provider. -->
+    <Reference Include="System.Speech" />
   </ItemGroup>
 
   <!--

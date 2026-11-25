@@ -215,6 +215,36 @@ public class SpeechToTextTests
     }
 
     [Fact]
+    public async Task Windows_recognizer_survives_speech_it_does_not_understand()
+    {
+        if (!System.Speech.Recognition.SpeechRecognitionEngine.InstalledRecognizers()
+                .Any(r => r.Culture.TwoLetterISOLanguageName == "en"))
+            return;
+
+        // Slovenian read with English sounds: several phrases, and the engine
+        // used to throw "No audio input is supplied" after the last of them.
+        var wav = Speak("Prega led ka da kod a che ima ka sh ne ba go ve");
+        var stt = SpeechToTextFactory.Create(new SpeechSettings { Provider = SpeechProvider.WindowsSpeech })!;
+
+        var text = await stt.TranscribeAsync(wav, "en", CancellationToken.None);
+
+        Assert.NotEmpty(text);
+    }
+
+    [Fact]
+    public async Task Windows_recognizer_returns_nothing_for_silence()
+    {
+        if (!System.Speech.Recognition.SpeechRecognitionEngine.InstalledRecognizers()
+                .Any(r => r.Culture.TwoLetterISOLanguageName == "en"))
+            return;
+
+        var stt = SpeechToTextFactory.Create(new SpeechSettings { Provider = SpeechProvider.WindowsSpeech })!;
+        var text = await stt.TranscribeAsync(WavOf(new byte[64000]), "en", CancellationToken.None);
+
+        Assert.Equal("", text);
+    }
+
+    [Fact]
     public async Task Windows_recognizer_names_the_languages_it_has_when_yours_is_missing()
     {
         var stt = SpeechToTextFactory.Create(new SpeechSettings { Provider = SpeechProvider.WindowsSpeech })!;
@@ -238,7 +268,11 @@ public class SpeechToTextTests
             synth.Speak(text);
         }
 
-        var pcm = ms.ToArray();
+        return WavOf(ms.ToArray());
+    }
+
+    private static byte[] WavOf(byte[] pcm)
+    {
         using var wav = new MemoryStream();
         var w = new BinaryWriter(wav);
         w.Write(new[] { 'R', 'I', 'F', 'F' });

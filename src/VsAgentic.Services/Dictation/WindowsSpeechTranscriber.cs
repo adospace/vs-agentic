@@ -13,8 +13,7 @@ namespace VsAgentic.Services.Dictation;
 /// </summary>
 internal sealed class WindowsSpeechTranscriber : ISpeechToText
 {
-    // A recording is at most a minute; this only stops a loop that never meets the end of the stream.
-    private const int MaxPhrases = 500;
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(90);
 
     public Task<string> TranscribeAsync(byte[] wav, string language, CancellationToken cancellationToken)
         => Task.Run(() => Recognize(wav, language, cancellationToken), cancellationToken);
@@ -30,17 +29,48 @@ internal sealed class WindowsSpeechTranscriber : ISpeechToText
             using var stream = new MemoryStream(wav);
             engine.SetInputToWaveStream(stream);
 
+            // Recognize() in a loop is not an option: after the last phrase of a
+            // stream it throws "No audio input is supplied" instead of returning
+            // null. The asynchronous mode reports the end of the stream itself.
             var text = new StringBuilder();
-            for (var i = 0; i < MaxPhrases; i++)
+            Exception? failure = null;
+            using var done = new ManualResetEventSlim();
+
+            engine.SpeechRecognized += (_, e) =>
             {
-                ct.ThrowIfCancellationRequested();
-                // Null once the stream has ended.
-                var result = engine.Recognize();
-                if (result is null) break;
-                if (text.Length > 0) text.Append(' ');
-                text.Append(result.Text);
+                lock (text)
+                {
+                    if (text.Length > 0) text.Append(' ');
+                    text.Append(e.Result.Text);
+                }
+            };
+            engine.RecognizeCompleted += (_, e) =>
+            {
+                failure = e.Error;
+                done.Set();
+            };
+
+            engine.RecognizeAsync(RecognizeMode.Multiple);
+
+            try
+            {
+                // The engine works faster than real time; this only stops a stream that never ends.
+                if (!done.Wait(Timeout, ct))
+                {
+                    engine.RecognizeAsyncCancel();
+                    throw new SpeechToTextException("The Windows speech recognizer did not finish in time.");
+                }
             }
-            return text.ToString().Trim();
+            catch (OperationCanceledException)
+            {
+                engine.RecognizeAsyncCancel();
+                throw;
+            }
+
+            if (failure is not null)
+                throw new SpeechToTextException("The Windows speech recognizer failed: " + failure.Message, failure);
+
+            lock (text) return text.ToString().Trim();
         }
         catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or IOException)
         {

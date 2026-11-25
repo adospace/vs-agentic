@@ -14,6 +14,14 @@
          of the session, the user can change the model of each part, then runs
          it or drops it. -->
     <Border Style="{StaticResource BannerCardBorderStyle}">
+        <!-- The plan scrolls when the window is too low for it; the buttons
+             stay in the last row and are always visible. -->
+        <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Focusable="False">
         <StackPanel>
             <DockPanel Margin="12,10,12,2">
                 <TextBlock DockPanel.Dock="Right"
@@ -181,10 +189,12 @@
                            TextWrapping="Wrap"
                            Foreground="{DynamicResource {x:Static vs:VsBrushes.CommandBarTextInactiveKey}}"/>
             </StackPanel>
+        </StackPanel>
+        </ScrollViewer>
 
-            <StackPanel Orientation="Horizontal"
+            <StackPanel Grid.Row="1" Orientation="Horizontal"
                         HorizontalAlignment="Right"
-                        Margin="8,0,12,10">
+                        Margin="8,6,12,10">
                 <!-- The button Claude recommends is the primary one: Run with
                      agents for a split that pays off, Continue alone otherwise.
                      Both stay available. Cancel puts the task back in the box. -->
@@ -211,6 +221,6 @@
                         Command="{Binding RunCommand}"
                         Visibility="{Binding PreferAgents, Converter={StaticResource BoolToVis}}"/>
             </StackPanel>
-        </StackPanel>
+        </Grid>
     </Border>
 </UserControl>

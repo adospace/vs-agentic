@@ -23,7 +23,7 @@ public class DictationOptionsPage : DialogPage
     [DefaultValue(SpeechProvider.None)]
     public SpeechProvider Provider { get; set; } = SpeechProvider.None;
 
-    [Category("Speech recognition")]
+    [Category("Speech recognition settings")]
     [DisplayName("API key")]
     [Description("Key for the provider. Stored in Windows Credential Manager under your account, not in the Visual Studio settings. A local server that needs no key can leave it empty.")]
     [PasswordPropertyText(true)]
@@ -33,25 +33,25 @@ public class DictationOptionsPage : DialogPage
         set => _apiKey = value ?? "";
     }
 
-    [Category("Speech recognition")]
+    [Category("Speech recognition settings")]
     [DisplayName("Model")]
     [Description("OpenAI and OpenAICompatible only. Empty uses gpt-4o-transcribe for OpenAI and whisper-1 for a compatible server. Other OpenAI choices: gpt-4o-mini-transcribe (cheaper), whisper-1.")]
     [DefaultValue("")]
     public string Model { get; set; } = "";
 
-    [Category("Speech recognition")]
+    [Category("Speech recognition settings")]
     [DisplayName("Endpoint")]
     [Description("OpenAICompatible only. Base URL up to and including the version, for example http://localhost:8080/v1. The extension adds /audio/transcriptions.")]
     [DefaultValue("")]
     public string Endpoint { get; set; } = "";
 
-    [Category("Speech recognition")]
+    [Category("Speech recognition settings")]
     [DisplayName("Azure region")]
     [Description("AzureSpeech only. The region of the Speech resource, for example westeurope.")]
     [DefaultValue("")]
     public string Region { get; set; } = "";
 
-    [Category("Speech recognition")]
+    [Category("Speech recognition settings")]
     [DisplayName("Language")]
     [Description("What you speak, as a language code such as sl, en or de. Empty detects it automatically, except with AzureSpeech, which then assumes en-US.")]
     [DefaultValue("")]

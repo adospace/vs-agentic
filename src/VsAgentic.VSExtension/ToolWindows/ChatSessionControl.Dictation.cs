@@ -13,6 +13,61 @@ public partial class ChatSessionControl
     private bool _transcribing;
     private CancellationTokenSource? _transcribeCts;
 
+    // The bars beside the microphone: each tick the newest level enters on the
+    // right and the rest move left, so the row reads as a moving waveform.
+    private const int MeterBars = 9;
+    private const double MeterMin = 3, MeterMax = 18;
+    private readonly System.Windows.Threading.DispatcherTimer _meterTimer =
+        new(System.Windows.Threading.DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(55) };
+    private readonly double[] _meterLevels = new double[MeterBars];
+    private System.Windows.Shapes.Rectangle[]? _meterBars;
+
+    private void StartMeter()
+    {
+        if (_meterBars is null)
+        {
+            _meterBars = new System.Windows.Shapes.Rectangle[MeterBars];
+            for (var i = 0; i < MeterBars; i++)
+            {
+                _meterBars[i] = new System.Windows.Shapes.Rectangle
+                {
+                    Width = 3,
+                    Height = MeterMin,
+                    RadiusX = 1.5,
+                    RadiusY = 1.5,
+                    Margin = new Thickness(1, 0, 1, 0),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Fill = Brushes.Red,
+                };
+                DictationMeter.Children.Add(_meterBars[i]);
+            }
+            _meterTimer.Tick += (_, _) => TickMeter();
+        }
+
+        Array.Clear(_meterLevels, 0, _meterLevels.Length);
+        DictationMeter.Visibility = Visibility.Visible;
+        _meterTimer.Start();
+    }
+
+    private void StopMeter()
+    {
+        _meterTimer.Stop();
+        DictationMeter.Visibility = Visibility.Collapsed;
+    }
+
+    private void TickMeter()
+    {
+        var level = _recorder?.Level ?? 0;
+        // Speech peaks at a fraction of full scale; the root lifts quiet speech
+        // so the bars move for a normal voice, not only a loud one.
+        var shaped = Math.Min(1.0, Math.Sqrt(level) * 1.6);
+
+        Array.Copy(_meterLevels, 1, _meterLevels, 0, MeterBars - 1);
+        _meterLevels[MeterBars - 1] = shaped;
+        for (var i = 0; i < MeterBars; i++)
+            _meterBars![i].Height = MeterMin + (MeterMax - MeterMin) * _meterLevels[i];
+    }
+
     private void DictationButton_Click(object sender, RoutedEventArgs e) => ToggleDictation();
 
     private void ToggleDictation()
@@ -123,10 +178,17 @@ public partial class ChatSessionControl
     private void SetDictationState(bool recording, bool working = false)
     {
         if (recording)
+        {
             DictationGlyph.Foreground = Brushes.Red;
+            StartMeter();
+        }
         else
+        {
+            StopMeter();
             DictationGlyph.SetResourceReference(System.Windows.Controls.TextBlock.ForegroundProperty,
                 Microsoft.VisualStudio.Shell.VsBrushes.WindowTextKey);
+        }
+
         DictationButton.ToolTip = recording ? "Stop and insert the text (Ctrl+Shift+M)"
             : working ? "Turning the recording into text…"
             : "Dictate (Ctrl+Shift+M)";

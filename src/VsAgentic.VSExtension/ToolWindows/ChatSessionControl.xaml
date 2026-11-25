@@ -667,7 +667,7 @@
                                      Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"
                                      CaretBrush="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"
                                      BorderThickness="0"
-                                     Padding="8,6"
+                                     Padding="8,6,44,6"
                                      FontSize="13"
                                      AcceptsReturn="True"
                                      TextWrapping="Wrap"
@@ -680,6 +680,33 @@
                                      SelectionChanged="InputTextBox_SelectionChanged"
                                      GotKeyboardFocus="InputTextBox_GotKeyboardFocus"
                                      LostKeyboardFocus="InputTextBox_LostKeyboardFocus"/>
+
+                            <!-- Dictation, in the corner of the box: the first click
+                                 records, the second turns the recording into text at
+                                 the caret (Ctrl+Shift+M does the same). While
+                                 recording, the bars follow the voice. -->
+                            <StackPanel Orientation="Horizontal"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Top"
+                                        Margin="0,4,6,0">
+                                <StackPanel x:Name="DictationMeter"
+                                            Orientation="Horizontal"
+                                            VerticalAlignment="Center"
+                                            Height="20"
+                                            Margin="0,0,4,0"
+                                            Visibility="Collapsed"
+                                            IsHitTestVisible="False"/>
+                                <Button x:Name="DictationButton"
+                                        Style="{StaticResource IconButtonStyle}"
+                                        Click="DictationButton_Click"
+                                        ToolTip="Dictate (Ctrl+Shift+M)">
+                                    <TextBlock x:Name="DictationGlyph"
+                                               Text="&#xE720;"
+                                               FontFamily="Segoe MDL2 Assets"
+                                               FontSize="14"
+                                               Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                                </Button>
+                            </StackPanel>
 
                             <!-- @-mention popup: anchored above the input box, holds a filtered file/folder list -->
                             <Popup x:Name="MentionPopup"
@@ -896,20 +923,6 @@
                                             ToolTip="Attach files to the next message.&#x0a;Images go inline; anything else is sent as a path.">
                                         <imaging:CrispImage Width="16" Height="16"
                                                             Moniker="{x:Static catalog:KnownMonikers.AddAttachment}"/>
-                                    </Button>
-
-                                    <!-- Dictation: the first click records, the second turns
-                                         the recording into text at the caret. Ctrl+Shift+M
-                                         does the same from the input box. -->
-                                    <Button x:Name="DictationButton"
-                                            Style="{StaticResource IconButtonStyle}"
-                                            Click="DictationButton_Click"
-                                            ToolTip="Dictate (Ctrl+Shift+M)">
-                                        <TextBlock x:Name="DictationGlyph"
-                                                   Text="&#xE720;"
-                                                   FontFamily="Segoe MDL2 Assets"
-                                                   FontSize="14"
-                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
                                     </Button>
 
                                     <!-- What Claude may read from the debugger in this

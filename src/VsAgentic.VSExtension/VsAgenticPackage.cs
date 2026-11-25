@@ -32,6 +32,7 @@ namespace VsAgentic.VSExtension;
 [ProvideAutoLoad(UIContextGuids80.NoSolution, PackageAutoLoadFlags.BackgroundLoad)]
 [ProvideAutoLoad(UIContextGuids80.SolutionExists, PackageAutoLoadFlags.BackgroundLoad)]
 [ProvideOptionPage(typeof(VsAgenticOptionsPage), "VsAgentic", "General", 0, 0, true)]
+[ProvideOptionPage(typeof(DictationOptionsPage), "VsAgentic", "Dictation", 0, 0, true)]
 [ProvideToolWindow(typeof(SessionListToolWindow), Style = VsDockStyle.Tabbed, Window = EnvDTE.Constants.vsWindowKindSolutionExplorer)]
 [ProvideToolWindow(typeof(ChatSessionToolWindow), Style = VsDockStyle.MDI, MultiInstances = true, Transient = true)]
 [Guid("c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7f")]
@@ -65,6 +66,28 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     private EditorContext? _pendingEditorContext;
 
     public static bool IsLoaded => _instance is not null;
+
+    /// <summary>The dictation settings as they are now; read when the microphone is used, so a change applies at once.</summary>
+    internal static VsAgentic.Services.Dictation.SpeechSettings GetSpeechSettings()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        var page = (DictationOptionsPage?)_instance?.GetDialogPage(typeof(DictationOptionsPage));
+        return page?.ToSettings() ?? new VsAgentic.Services.Dictation.SpeechSettings();
+    }
+
+    /// <summary>The shortcut text from the Dictation options page.</summary>
+    internal static string GetDictationShortcutText()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        var page = (DictationOptionsPage?)_instance?.GetDialogPage(typeof(DictationOptionsPage));
+        return page?.Shortcut ?? VsAgentic.Services.Dictation.DictationShortcut.Default;
+    }
+
+    internal static void ShowDictationOptions()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+        _instance?.ShowOptionPage(typeof(DictationOptionsPage));
+    }
 
     /// <summary>Raised on the UI thread after the package has fully initialized.</summary>
     internal static event Action? Initialized;

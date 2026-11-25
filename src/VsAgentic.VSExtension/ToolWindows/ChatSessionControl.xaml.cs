@@ -32,6 +32,7 @@ public partial class ChatSessionControl : UserControl
     public ChatSessionControl()
     {
         InitializeComponent();
+        InitializeDictationInput();
 
         // The model panel opens above its button with their right edges in
         // line. The button sits near the right of the status bar, so a panel
@@ -346,6 +347,7 @@ public partial class ChatSessionControl : UserControl
         ChatWebView.ContentFocusChanged -= OnChatContentFocusChanged;
         IsKeyboardFocusWithinChanged -= OnKeyboardFocusWithinChanged;
         SetWorkingDots(false);
+        AbortDictation();
 
         // A popup is its own window and would outlive the pane it belongs to.
         _zoomToastTimer?.Stop();

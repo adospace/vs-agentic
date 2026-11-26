@@ -182,15 +182,19 @@ html, body {
     color: var(--text-muted);
 }
 .side-label { flex: 1; }
+/* The question in a quieter tone, a line under it, then the answer: the two
+   must not read as one paragraph. */
 .side-question-text {
-    padding: 0 8px 2px 8px;
-    color: var(--text-heading);
+    padding: 0 8px 4px 8px;
+    color: var(--text-muted);
     white-space: pre-wrap;
     max-height: 4.5em;
     overflow: hidden;
 }
 .side-answer {
-    padding: 0 8px 6px 8px;
+    margin: 0 8px;
+    padding: 4px 0 6px 0;
+    border-top: 1px solid var(--border);
     overflow-y: auto;
     min-height: 0;
 }

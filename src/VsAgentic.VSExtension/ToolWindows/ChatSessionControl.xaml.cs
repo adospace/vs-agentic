@@ -828,6 +828,30 @@ public partial class ChatSessionControl : UserControl
         }
     }
 
+    private void SideQuestionButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is ChatSessionViewModel vm)
+            AskSideQuestionFromInput(vm);
+    }
+
+    /// <summary>
+    /// Asks the input as a side question. With no question in it, writes
+    /// "/btw " in front of the caret's text so the user can type one.
+    /// </summary>
+    private void AskSideQuestionFromInput(ChatSessionViewModel vm)
+    {
+        InputTextBox.Focus();
+        if (vm.AskInputAsSideQuestion()) return;
+
+        var prefix = "/" + ChatSessionViewModel.SideQuestionCommand + " ";
+        var text = (InputTextBox.Text ?? "").Trim();
+        if (!text.StartsWith(prefix.TrimEnd(), StringComparison.OrdinalIgnoreCase))
+            text = prefix + text;
+        else if (!text.EndsWith(" ", StringComparison.Ordinal))
+            text += " ";
+        SetInputText(text, text.Length);
+    }
+
     private void ResizeGrip_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (sender is not IInputElement grip) return;
@@ -1089,6 +1113,17 @@ public partial class ChatSessionControl : UserControl
                     return;
                 }
             }
+        }
+
+        // Ctrl+Shift+Enter asks on the side (/btw), as the button does. Here,
+        // before the text box, which would take Shift+Enter as a new line.
+        if (e.Key == Key.Enter && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)
+            && DataContext is ChatSessionViewModel side && side.CanAskSideQuestions)
+        {
+            CloseSlashPopup();
+            AskSideQuestionFromInput(side);
+            e.Handled = true;
+            return;
         }
 
         if (SlashPopup.IsOpen && HandleSlashKey(e))

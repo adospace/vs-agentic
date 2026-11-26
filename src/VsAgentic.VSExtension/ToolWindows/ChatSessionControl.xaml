@@ -1069,6 +1069,18 @@
                                                             Moniker="{x:Static catalog:KnownMonikers.CodeReview}"/>
                                     </Button>
 
+                                    <!-- /btw: asks what is in the input on the side,
+                                         or writes "/btw " into an empty input. Gone
+                                         once the CLI has refused side questions. -->
+                                    <Button x:Name="SideQuestionButton"
+                                            Style="{StaticResource IconButtonStyle}"
+                                            Click="SideQuestionButton_Click"
+                                            Visibility="{Binding CanAskSideQuestions, Converter={StaticResource BoolToVis}}"
+                                            ToolTip="Ask a side question (/btw, Ctrl+Shift+Enter).&#x0a;Claude answers without stopping its work, and the question does not join the conversation.">
+                                        <imaging:CrispImage Width="16" Height="16"
+                                                            Moniker="{x:Static catalog:KnownMonikers.Comment}"/>
+                                    </Button>
+
                                     <!-- What Claude may read from the debugger in this
                                          chat: off, the stack, or the stack and values
                                          on request. Shown whenever access is on, so

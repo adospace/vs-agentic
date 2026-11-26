@@ -40,12 +40,36 @@ public partial class ChatSessionViewModel
     /// </summary>
     public event Action<string, string?, string?>? SideQuestionAnswered;
 
+    /// <summary>
+    /// Whether side questions are offered: the button, the shortcut and the
+    /// menu row. False once the CLI has refused the request.
+    /// </summary>
+    public bool CanAskSideQuestions =>
+        _chatService is ISideQuestions { SideQuestionsSupported: not false };
+
+    /// <summary>
+    /// Asks what is in the input as a side question: the button and
+    /// Ctrl+Shift+Enter. Text that already starts with "/btw" goes as it is.
+    /// False when the input holds no question; the view then writes "/btw "
+    /// into it so the user can type one.
+    /// </summary>
+    public bool AskInputAsSideQuestion()
+    {
+        if (!CanAskSideQuestions) return false;
+        var typed = InputText.Trim();
+        if (typed.Length == 0) return false;
+
+        var match = SideQuestionRe.Match(typed);
+        if (match.Success && !match.Groups["q"].Success) return false;
+        return TryAskSideQuestion(match.Success ? typed : "/" + SideQuestionCommand + " " + typed);
+    }
+
     /// <summary>The row for /btw in the menu under "/", or null when it is not offered.</summary>
     private SlashCommandOption? SideQuestionMenuRow() =>
-        _chatService is ISideQuestions { SideQuestionsSupported: not false }
+        CanAskSideQuestions
             ? new SlashCommandOption(new ClaudeCommandInfo(
                 SideQuestionCommand,
-                "Ask a quick question on the side. Claude answers without stopping its work, and the question does not join the conversation.",
+                "Ask a quick question on the side (Ctrl+Shift+Enter). Claude answers without stopping its work, and the question does not join the conversation.",
                 "<question>",
                 IsBuiltin: true))
             : null;
@@ -101,8 +125,9 @@ public partial class ChatSessionViewModel
 
         if (answer.Unsupported)
         {
-            // The menu stops offering it.
+            // The menu, the button and the shortcut stop offering it.
             RebuildSlashCommands();
+            OnPropertyChanged(nameof(CanAskSideQuestions));
             SideQuestionAnswered?.Invoke(id, null,
                 "This version of Claude Code cannot answer side questions. Update Claude Code to use /btw.");
             return;

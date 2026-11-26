@@ -155,6 +155,49 @@ html, body {
     background: var(--bg-input);
     color: var(--text-primary);
 }
+/* Side question (/btw): over the bottom of the chat, not in it, because
+   neither the question nor the answer is part of the conversation. */
+#side-question {
+    position: fixed;
+    left: 8px;
+    right: 14px;
+    bottom: 6px;
+    z-index: 920;
+    display: none;
+    flex-direction: column;
+    max-height: 50vh;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+#side-question.visible { display: flex; }
+.side-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 4px 0 8px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.side-label { flex: 1; }
+.side-question-text {
+    padding: 0 8px 2px 8px;
+    color: var(--text-heading);
+    white-space: pre-wrap;
+    max-height: 4.5em;
+    overflow: hidden;
+}
+.side-answer {
+    padding: 0 8px 6px 8px;
+    overflow-y: auto;
+    min-height: 0;
+}
+.side-answer.side-pending { color: var(--text-muted); font-style: italic; }
+.side-answer.side-error { color: var(--error); }
+.side-answer > :first-child { margin-top: 0.2em; }
+.side-answer > :last-child { margin-bottom: 0; }
 ::highlight(find-match) { background-color: rgba(234, 179, 8, 0.35); }
 ::highlight(find-current) { background-color: rgba(249, 115, 22, 0.9); color: #000; }
 
@@ -2082,6 +2125,7 @@ function clearAll() {
     _orphanSteps = {};
     _userScrolledUp = false;
     updateScrollButton();
+    hideSideQuestion();
 }
 
 function loadMessages(jsonArray) {
@@ -2607,6 +2651,96 @@ loadMessages = function(jsonArray) {
 // --- Context menu ---
 // One menu, refilled on every right-click with what fits the target: a file
 // link gets the file actions, a selection gets Copy.
+// ── Side question (/btw) ──────────────────────────────────────────────
+// One at a time: a newer question takes the panel. An answer for a question
+// that is no longer shown is dropped. Nothing here is kept with the session.
+
+var _side = null;        // the panel, made on first use
+var _sideId = null;      // the question it shows, null while hidden
+var _sideObserver = null;
+
+function createSidePanel() {
+    _side = document.createElement('div');
+    _side.id = 'side-question';
+
+    var header = document.createElement('div');
+    header.className = 'side-header';
+    var label = document.createElement('span');
+    label.className = 'side-label';
+    label.textContent = 'Side question · not added to the conversation';
+    header.appendChild(label);
+    header.appendChild(findButton(ICON_CLOSE, 'Close (Esc)', hideSideQuestion));
+
+    var question = document.createElement('div');
+    question.className = 'side-question-text';
+    var answer = document.createElement('div');
+    answer.className = 'side-answer md-content';
+
+    _side.appendChild(header);
+    _side.appendChild(question);
+    _side.appendChild(answer);
+    document.body.appendChild(_side);
+
+    // The panel covers the bottom of the chat; room is made below the last
+    // message so it can still be scrolled into view.
+    if (window.ResizeObserver) {
+        _sideObserver = new ResizeObserver(fitSidePanel);
+        _sideObserver.observe(_side);
+    }
+}
+
+function fitSidePanel() {
+    if (!_container) return;
+    var shown = _sideId !== null;
+    var wasAtBottom = !_userScrolledUp;
+    _container.style.paddingBottom = shown ? (_side.offsetHeight + 14) + 'px' : '';
+    if (_scrollBtn) _scrollBtn.style.bottom = shown ? (_side.offsetHeight + 10) + 'px' : '';
+    if (wasAtBottom) scrollToBottom();
+}
+
+function showSideQuestion(id, question) {
+    if (!_side) createSidePanel();
+    _sideId = id;
+    _side.querySelector('.side-question-text').textContent = question;
+    var answer = _side.querySelector('.side-answer');
+    answer.className = 'side-answer side-pending';
+    answer.textContent = 'Claude is answering…';
+    _side.classList.add('visible');
+    fitSidePanel();
+}
+
+function setSideAnswer(id, markdown, error) {
+    if (!_side || id !== _sideId) return;
+    var answer = _side.querySelector('.side-answer');
+    if (error) {
+        answer.className = 'side-answer side-error';
+        answer.textContent = error;
+    } else {
+        answer.className = 'side-answer md-content';
+        answer.innerHTML = renderMd(markdown);
+        keepMarkdownSource(answer, markdown);
+        linkifyFilePaths(answer);
+        addBlockCopyButtons(answer);
+    }
+    answer.scrollTop = 0;
+    fitSidePanel();
+}
+
+function hideSideQuestion() {
+    if (!_side) return;
+    _sideId = null;
+    _side.classList.remove('visible');
+    fitSidePanel();
+}
+
+document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Escape' || _sideId === null || e.defaultPrevented) return;
+    // Esc in the find bar closes the find bar.
+    if (isFindOpen() && document.activeElement === _findInput) return;
+    e.preventDefault();
+    hideSideQuestion();
+});
+
 var _ctxMenu;
 function showCtxMenu(e, items) {
     if (!_ctxMenu) {

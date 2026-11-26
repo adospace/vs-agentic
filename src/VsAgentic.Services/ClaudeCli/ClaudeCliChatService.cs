@@ -40,7 +40,7 @@ namespace VsAgentic.Services.ClaudeCli;
 ///    part of the natural tool execution rather than via a side-channel
 ///    tool_result write.
 /// </summary>
-public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupInfo, IDisposable
+public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupInfo, ISideQuestions, IDisposable
 {
     private readonly VsAgenticOptions _options;
     private readonly IOutputListener _outputListener;
@@ -233,36 +233,9 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
         string? note;
         try
         {
-            // A pending restart waits while a turn runs: this message then
-            // joins the queue of the running process instead of killing it.
-            if (_restartBeforeNextMessage && !HasOpenTurns())
-            {
-                _restartBeforeNextMessage = false;
-                _host.Stop();
-                lock (_dispatcherLock) { _dispatcherTask = null; }
-                _permissionRestartPending = false;
-                _logger.LogInformation("[ClaudeCli] Restarting CLI to apply a settings change");
-            }
-
-            var wasRunning = _host.IsRunning;
-            _host.SetResumeSessionId(_cliSessionId);
-            await _host.EnsureStartedAsync(cancellationToken).ConfigureAwait(false);
-            if (!wasRunning)
-            {
-                _control = NewControlChannel();
-                _capabilities = CliCapabilities.None;
-                _lastInit = null;
-                lock (_reportedMcpProblems) { _reportedMcpProblems.Clear(); }
-
-                // A process that stopped mid-turn never sent the result for
-                // what was counted; the new one's first result must not be
-                // measured against it.
-                lock (_usageLock) ResetTurnUsage();
-            }
-            EnsureDispatcherStarted();
-            if (!wasRunning)
-                InitializeProcess();
-            note = TakePromptsBackNote(freshProcess: !wasRunning);
+            await StartProcessIfNeededAsync(applyPendingRestart: true, cancellationToken).ConfigureAwait(false);
+            // Prepared by the start, which may have been a side question's.
+            note = Interlocked.Exchange(ref _promptsBackNote, null);
         }
         catch (Exception ex)
         {
@@ -325,6 +298,142 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
         }
 
         ClearActiveTurn(turn);
+    }
+
+    // One start at a time. A message and a side question can both find the
+    // process down (a side question asked while a restart is pending, then
+    // Send): both would replace _control, the dispatcher would read one
+    // channel while requests go out on the other, and every control request
+    // of that process would time out.
+    private readonly SemaphoreSlim _startLock = new(1, 1);
+
+    // The note for the next message after a fresh process. A side question
+    // can start the process; the message after it still needs the note.
+    private string? _promptsBackNote;
+
+    /// <summary>
+    /// Starts the long-running process when it does not run, resuming the
+    /// session. With <paramref name="applyPendingRestart"/>, a pending restart
+    /// runs first when no turn is open; a side question leaves it to the next
+    /// message. Throws when the process cannot start.
+    /// </summary>
+    private async Task StartProcessIfNeededAsync(bool applyPendingRestart, CancellationToken cancellationToken)
+    {
+        await _startLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // A pending restart waits while a turn runs: a message then joins
+            // the queue of the running process instead of killing it.
+            if (applyPendingRestart && _restartBeforeNextMessage && !HasOpenTurns())
+            {
+                _host.Stop();
+                lock (_dispatcherLock) { _dispatcherTask = null; }
+                _logger.LogInformation("[ClaudeCli] Restarting CLI to apply a settings change");
+            }
+
+            var wasRunning = _host.IsRunning;
+            _host.SetResumeSessionId(_cliSessionId);
+            await _host.EnsureStartedAsync(cancellationToken).ConfigureAwait(false);
+            if (!wasRunning)
+            {
+                // A new process starts with the current settings, so a
+                // restart that was due is done, whoever started it.
+                _restartBeforeNextMessage = false;
+                _permissionRestartPending = false;
+
+                _control = NewControlChannel();
+                _capabilities = CliCapabilities.None;
+                _lastInit = null;
+                lock (_reportedMcpProblems) { _reportedMcpProblems.Clear(); }
+
+                // A process that stopped mid-turn never sent the result for
+                // what was counted; the new one's first result must not be
+                // measured against it.
+                lock (_usageLock) ResetTurnUsage();
+            }
+            EnsureDispatcherStarted();
+            if (!wasRunning)
+            {
+                InitializeProcess();
+                if (TakePromptsBackNote(freshProcess: true) is { } note)
+                    Volatile.Write(ref _promptsBackNote, note);
+            }
+        }
+        finally
+        {
+            _startLock.Release();
+        }
+    }
+
+    // ── Side questions (/btw) ─────────────────────────────────────────────
+
+    private volatile bool _sideQuestionsKnown;
+    private volatile bool _sideQuestionsSupported;
+
+    public bool? SideQuestionsSupported => _sideQuestionsKnown ? _sideQuestionsSupported : null;
+
+    // The answer is a model call of its own, and a long one can take a while.
+    // Measured on CLI 2.1.332: 0.5–2 s for a short answer, also mid-turn.
+    private static readonly TimeSpan SideQuestionTimeout = TimeSpan.FromMinutes(3);
+
+    public async Task<SideAnswer> AskSideQuestionAsync(string question, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // A pending restart (model, effort, permission mode) stays for the
+            // next message: the question goes to the process that runs now.
+            await StartProcessIfNeededAsync(applyPendingRestart: false, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[ClaudeCli] Failed to start CLI process for a side question");
+            return SideAnswer.Failed(DescribeStartFailure(ex));
+        }
+
+        // The CLI answers in a control_response, with no turn, no lifecycle
+        // and nothing in the transcript (2.1.332).
+        var request = _control.SendAsync(id => StreamJsonProtocol.BuildSideQuestion(id, question), SideQuestionTimeout);
+        var done = await Task.WhenAny(request, Task.Delay(Timeout.Infinite, cancellationToken)).ConfigureAwait(false);
+        if (done != request)
+            throw new OperationCanceledException(cancellationToken);
+
+        var reply = await request.ConfigureAwait(false);
+        if (!reply.Succeeded)
+        {
+            if (reply.ErrorCode == "unsupported_request")
+            {
+                _sideQuestionsSupported = false;
+                _sideQuestionsKnown = true;
+                _logger.LogInformation("[ClaudeCli] side_question is not supported by this CLI");
+                return SideAnswer.NotSupported(reply.Error ?? "unsupported_request");
+            }
+            _logger.LogWarning("[ClaudeCli] side_question failed: {Error}", reply.Error);
+            return SideAnswer.Failed(reply.Error == CliControlChannel.NoResponse
+                ? "Claude did not answer in time."
+                : reply.Error ?? "error");
+        }
+
+        _sideQuestionsSupported = true;
+        _sideQuestionsKnown = true;
+
+        string? text = null;
+        var synthetic = false;
+        if (reply.Response is { ValueKind: JsonValueKind.Object } body)
+        {
+            if (body.TryGetProperty("response", out var r) && r.ValueKind == JsonValueKind.String)
+                text = r.GetString();
+            synthetic = body.TryGetProperty("synthetic", out var s) && s.ValueKind == JsonValueKind.True;
+        }
+
+        // A synthetic answer is the CLI's own text in place of the model's,
+        // e.g. "(API error: …)".
+        if (synthetic || string.IsNullOrWhiteSpace(text))
+        {
+            _logger.LogWarning("[ClaudeCli] side_question gave no answer: {Text}", text);
+            return SideAnswer.Failed(string.IsNullOrWhiteSpace(text) ? "Claude gave no answer." : text!);
+        }
+        return SideAnswer.Answered(text!);
     }
 
     /// <summary>

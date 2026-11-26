@@ -214,6 +214,16 @@ internal static class StreamJsonProtocol
         BuildControlRequest(requestId, "get_task_output", w => w.WriteString("task_id", taskId));
 
     /// <summary>
+    /// Build the <c>side_question</c> request: <c>/btw</c> in the terminal.
+    /// The model answers from the session's context, including a turn that is
+    /// running, and neither the question nor the answer joins the
+    /// conversation. The answer comes in the <c>control_response</c> as
+    /// <c>{response, synthetic}</c>; <c>synthetic</c> marks an error text.
+    /// </summary>
+    public static string BuildSideQuestion(string requestId, string question) =>
+        BuildControlRequest(requestId, "side_question", w => w.WriteString("question", question));
+
+    /// <summary>
     /// Build the <c>interrupt</c> request, which aborts the running turn.
     /// <c>cancel_queued</c> also drops the messages still waiting in the CLI's
     /// queue, so Stop leaves nothing behind that would start on its own. A CLI

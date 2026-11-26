@@ -181,6 +181,12 @@ public partial class ChatSessionControl : UserControl
         viewModel.TurnEnded += () =>
             _ = ChatWebView.EndActivityAsync();
 
+        viewModel.SideQuestionAsked += (id, question) =>
+            _ = ChatWebView.ShowSideQuestionAsync(id, question);
+
+        viewModel.SideQuestionAnswered += (id, answer, error) =>
+            _ = ChatWebView.SetSideAnswerAsync(id, answer, error);
+
         // The dots before the status text. While a banner waits for the user,
         // Claude is not working.
         SetWorkingDots(viewModel.IsWorking);

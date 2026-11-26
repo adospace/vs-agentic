@@ -104,10 +104,21 @@ public partial class ChatSessionViewModel
             all.Insert(0, new ClaudeCommandInfo(SlashCommandOption.SetupCheckName, null, null, IsBuiltin: true));
 
         // Stable sort: within each group the CLI's own order stays.
-        _slashCommands = all
+        var options = all
             .Select(c => new SlashCommandOption(c))
             .OrderBy(c => c.Group == SlashCommandOption.CommandsGroup ? 0 : 1)
             .ToList();
+
+        // The CLI does not list /btw (2.1.332); it is a request of its own,
+        // which the input sends in place of the command. Only beside the
+        // CLI's own list: before the CLI has answered, the menu holds only
+        // the setup check.
+        if (HasReportedSlashCommands
+            && !options.Any(o => string.Equals(o.Name, SideQuestionCommand, StringComparison.OrdinalIgnoreCase))
+            && SideQuestionMenuRow() is { } btw)
+            options.Insert(options.FindLastIndex(o => o.Group == SlashCommandOption.CommandsGroup) + 1, btw);
+
+        _slashCommands = options;
         OnPropertyChanged(nameof(SlashCommands));
     }
 

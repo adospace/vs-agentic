@@ -104,12 +104,59 @@ public partial class ChatSessionViewModel
             all.Insert(0, new ClaudeCommandInfo(SlashCommandOption.SetupCheckName, null, null, IsBuiltin: true));
 
         // Stable sort: within each group the CLI's own order stays.
-        _slashCommands = all
+        var options = all
             .Select(c => new SlashCommandOption(c))
             .OrderBy(c => c.Group == SlashCommandOption.CommandsGroup ? 0 : 1)
             .ToList();
+
+        // Ours, so it is listed whatever the CLI reports. A CLI command of the
+        // same name would never run: the message does not reach the CLI.
+        if (ForkChat is not null)
+        {
+            options.RemoveAll(c => string.Equals(c.Name, ForkCommandName, StringComparison.OrdinalIgnoreCase));
+            options.Insert(0, new SlashCommandOption(new ClaudeCommandInfo(
+                ForkCommandName,
+                "Continue this conversation in a new chat; this chat stays as it is",
+                null,
+                IsBuiltin: true)));
+        }
+
+        _slashCommands = options;
         OnPropertyChanged(nameof(SlashCommands));
     }
+
+    // ── /fork ────────────────────────────────────────────────────────────
+
+    private const string ForkCommandName = "fork";
+
+    private static readonly Regex ForkCommandRe = new Regex(
+        @"^/fork\s*$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private Func<bool>? _forkChat;
+
+    /// <summary>
+    /// Opens a fork of this chat: a new chat that continues the conversation
+    /// from its last answer. False when no fork started; the host has then
+    /// told the user why. Set by the host, which owns the session list; while
+    /// it is null "/fork" goes to the CLI.
+    /// </summary>
+    public Func<bool>? ForkChat
+    {
+        get => _forkChat;
+        set
+        {
+            _forkChat = value;
+            RebuildSlashCommands();
+        }
+    }
+
+    /// <summary>
+    /// Handles a message that is only "/fork". Null when it is not one (or the
+    /// host cannot fork); otherwise whether a fork started. The input is
+    /// emptied only then: a "/fork" that did nothing stays where it was.
+    /// </summary>
+    private bool? TryRunForkCommand(string message) =>
+        ForkChat is { } fork && ForkCommandRe.IsMatch(message) ? fork() : null;
 
     // ── /model, /effort and /fast typed in full ───────────────────────────
     // Sent to the CLI, they would switch it behind the panel's back. They go

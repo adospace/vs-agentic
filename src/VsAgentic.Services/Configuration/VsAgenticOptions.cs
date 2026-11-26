@@ -59,6 +59,18 @@ public class VsAgenticOptions
     public BackgroundCommandLimit BackgroundCommandLimit { get; set; } = BackgroundCommandLimit.CliDefault;
 
     /// <summary>
+    /// The line Claude ends commit messages and pull request descriptions
+    /// with; see <see cref="Configuration.CommitAttribution"/>.
+    /// </summary>
+    public CommitAttribution CommitAttribution { get; set; } = CommitAttribution.CliSetting;
+
+    /// <summary>Commit message line when <see cref="CommitAttribution"/> is Custom.</summary>
+    public string CommitAttributionText { get; set; } = "";
+
+    /// <summary>Pull request description line when <see cref="CommitAttribution"/> is Custom.</summary>
+    public string PullRequestAttributionText { get; set; } = "";
+
+    /// <summary>
     /// Subscription the rolling usage meters are sized against. Display only —
     /// nothing here reaches the CLI.
     /// </summary>

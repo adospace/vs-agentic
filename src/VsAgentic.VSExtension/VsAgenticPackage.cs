@@ -391,6 +391,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                 options.Model = optionsPage.Model;
                 options.Effort = optionsPage.Effort;
                 options.ShowThinkingSummaries = optionsPage.ShowThinkingSummaries;
+                options.CommitAttribution = optionsPage.CommitAttribution;
+                options.CommitAttributionText = optionsPage.CommitAttributionText;
+                options.PullRequestAttributionText = optionsPage.PullRequestAttributionText;
                 options.UseClaudeMcpServers = optionsPage.UseClaudeMcpServers;
                 options.BackgroundCommandLimit = optionsPage.BackgroundCommandLimit;
                 options.UsagePlan = optionsPage.UsagePlan;

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Text.Json;
 using VsAgentic.Services.Abstractions;
 
@@ -16,13 +17,23 @@ namespace VsAgentic.Services.ClaudeCli;
 /// Two sources feed it. The <c>rate_limit_event</c> the CLI sends during a turn
 /// when the reading changes, and the answer to a <c>get_usage</c> control
 /// request sent after each turn. The second also carries the model-scoped
-/// weekly windows. Both are kept in memory only: a reading from before a
-/// restart may be hours old, and the local estimate covers the gap until the
-/// first turn.
+/// weekly windows.
+///
+/// The last reading is also saved to a file, so a new Visual Studio shows it
+/// before its first turn instead of the local estimate. The CLI is not running
+/// yet at that point, so it cannot be asked. A saved window is shown until its
+/// reset time; a window without a reset time is not restored, because nothing
+/// says whether it still applies. The file is shared by every Visual Studio on
+/// the machine. A reading saved by another instance is picked up at the next
+/// read here (a chat opened, or this instance's own usage update); there is no
+/// file watcher, as in <see cref="UsageLog"/>.
 /// </summary>
 public sealed class PlanUsageStore
 {
-    private static readonly Lazy<PlanUsageStore> LazyShared = new(() => new PlanUsageStore());
+    private const string DirectoryName = "usage";
+    private const string FileName = "plan-limits.json";
+
+    private static readonly Lazy<PlanUsageStore> LazyShared = new(() => new PlanUsageStore(DefaultPath()));
 
     /// <summary>
     /// Process-wide instance. Sessions each build their own DI container, so a
@@ -30,10 +41,31 @@ public sealed class PlanUsageStore
     /// </summary>
     public static PlanUsageStore Shared => LazyShared.Value;
 
+    private readonly string? _path;
     private readonly object _gate = new();
     private PlanLimitWindow? _fiveHour;
     private PlanLimitWindow? _sevenDay;
     private IReadOnlyList<PlanLimitWindow> _models = Array.Empty<PlanLimitWindow>();
+
+    /// <summary>
+    /// Last-write stamp of the file as of our last read or write. A different
+    /// stamp means another Visual Studio saved a newer reading.
+    /// </summary>
+    private DateTime _loadedStamp;
+    private bool _loaded;
+
+    /// <param name="path">
+    /// File that keeps the last reading across restarts, or null to keep it in
+    /// memory only.
+    /// </param>
+    public PlanUsageStore(string? path = null)
+    {
+        _path = path;
+    }
+
+    private static string DefaultPath() => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "VsAgentic", DirectoryName, FileName);
 
     /// <summary>Raised after a reading changes, on the thread that applied it.</summary>
     public event Action? Changed;
@@ -47,6 +79,8 @@ public sealed class PlanUsageStore
     {
         lock (_gate)
         {
+            EnsureLoadedLocked();
+
             var models = new List<PlanLimitWindow>();
             foreach (var m in _models)
                 if (Current(m, now) is { } current) models.Add(current);
@@ -162,6 +196,10 @@ public sealed class PlanUsageStore
     {
         lock (_gate)
         {
+            // The kept windows must be the latest ones, which may come from
+            // another Visual Studio.
+            EnsureLoadedLocked();
+
             if (keepMissingWindows)
             {
                 fiveHour ??= _fiveHour;
@@ -175,6 +213,7 @@ public sealed class PlanUsageStore
             _fiveHour = fiveHour;
             _sevenDay = sevenDay;
             _models = models;
+            SaveLocked();
         }
 
         try { Changed?.Invoke(); }
@@ -183,6 +222,128 @@ public sealed class PlanUsageStore
             // A failing meter must not take down whichever session's dispatcher
             // happened to deliver the reading.
         }
+    }
+
+    private static DateTime WriteStamp(string path)
+    {
+        try { return File.Exists(path) ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue; }
+        catch (Exception) { return DateTime.MinValue; }
+    }
+
+    /// <summary>
+    /// Reads the saved reading when the file is new to this process: at the
+    /// first use, and after another Visual Studio saved one. A missing or
+    /// unreadable file leaves the readings in memory as they are.
+    /// </summary>
+    private void EnsureLoadedLocked()
+    {
+        if (_path is null) return;
+
+        var stamp = WriteStamp(_path);
+        if (_loaded && stamp == _loadedStamp) return;
+
+        _loaded = true;
+        _loadedStamp = stamp;
+        if (stamp == DateTime.MinValue) return;
+
+        try
+        {
+            string json;
+            using (var stream = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            using (var reader = new StreamReader(stream))
+                json = reader.ReadToEnd();
+
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return;
+
+            var models = new List<PlanLimitWindow>();
+            if (root.TryGetProperty("models", out var list) && list.ValueKind == JsonValueKind.Array)
+                foreach (var row in list.EnumerateArray())
+                    if (ReadSavedWindow(row) is { } model) models.Add(model);
+
+            _fiveHour = root.TryGetProperty("fiveHour", out var five) ? ReadSavedWindow(five) : null;
+            _sevenDay = root.TryGetProperty("sevenDay", out var seven) ? ReadSavedWindow(seven) : null;
+            _models = models;
+        }
+        catch (Exception)
+        {
+            // A broken file costs the reading until the next turn, not the chat.
+        }
+    }
+
+    private static PlanLimitWindow? ReadSavedWindow(JsonElement w)
+    {
+        if (w.ValueKind != JsonValueKind.Object) return null;
+
+        var name = w.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : null;
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        if (ReadNumber(w, "percent") is not { } percent) return null;
+
+        // Without a reset time a saved reading could be from any past window.
+        return ReadIsoTime(w, "resetsAt") is { } resetsAt
+            ? new PlanLimitWindow(name!, percent, resetsAt)
+            : null;
+    }
+
+    private void SaveLocked()
+    {
+        if (_path is null) return;
+
+        string? temp = null;
+        try
+        {
+            var dir = Path.GetDirectoryName(_path);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir!);
+
+            // A name of its own, so two Visual Studio instances saving at once
+            // do not write into the same temporary file.
+            temp = _path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+            {
+                writer.WriteStartObject();
+                WriteSavedWindow(writer, "fiveHour", _fiveHour);
+                WriteSavedWindow(writer, "sevenDay", _sevenDay);
+                writer.WriteStartArray("models");
+                foreach (var m in _models) WriteSavedWindow(writer, null, m);
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+
+            // Replaced in one step, so a reader never sees half a file.
+            if (File.Exists(_path)) File.Replace(temp, _path, null);
+            else File.Move(temp, _path);
+            temp = null;
+
+            // Our own write must not look like a newer reading from elsewhere.
+            _loadedStamp = WriteStamp(_path);
+            _loaded = true;
+        }
+        catch (Exception)
+        {
+            // The reading still holds in memory for this Visual Studio.
+        }
+        finally
+        {
+            if (temp is not null)
+            {
+                try { File.Delete(temp); } catch (Exception) { }
+            }
+        }
+    }
+
+    private static void WriteSavedWindow(Utf8JsonWriter writer, string? property, PlanLimitWindow? window)
+    {
+        if (window is null) return;
+
+        if (property is null) writer.WriteStartObject();
+        else writer.WriteStartObject(property);
+        writer.WriteString("name", window.Name);
+        writer.WriteNumber("percent", window.Percent);
+        if (window.ResetsAt is { } resetsAt)
+            writer.WriteString("resetsAt", resetsAt.ToUniversalTime().ToString("o", CultureInfo.InvariantCulture));
+        writer.WriteEndObject();
     }
 
     private static bool SameList(IReadOnlyList<PlanLimitWindow> a, IReadOnlyList<PlanLimitWindow> b)

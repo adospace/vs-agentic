@@ -1388,18 +1388,47 @@
                                         <!-- Permission mode of this chat. An
                                              ItemTemplate for the same reason as the
                                              model picker: the CLI setting row renames
-                                             itself to the mode the CLI reports. -->
+                                             itself to the mode the CLI reports.
+                                             A menu row shows what the mode does
+                                             under its name and, as a tooltip, when
+                                             to choose it. The same template draws
+                                             the closed picker, which has no
+                                             ComboBoxItem above it: there only the
+                                             name shows, and the picker's own
+                                             tooltip applies. -->
                                         <ComboBox Style="{StaticResource StatusComboStyle}"
                                                   ItemContainerStyle="{StaticResource StatusComboItemStyle}"
                                                   ItemsSource="{Binding PermissionModeOptions}"
                                                   SelectedItem="{Binding SelectedPermissionMode}"
-                                                  ToolTip="{Binding PermissionModeTooltip}"
+                                                  AutomationProperties.HelpText="{Binding PermissionModeTooltip}"
                                                   Visibility="{Binding ActualWidth, ElementName=StatusInfo,
                                                                Converter={StaticResource MinWidth},
                                                                ConverterParameter=610}">
+                                            <ComboBox.ToolTip>
+                                                <TextBlock Text="{Binding PermissionModeTooltip}"
+                                                           TextWrapping="Wrap"
+                                                           MaxWidth="360"/>
+                                            </ComboBox.ToolTip>
                                             <ComboBox.ItemTemplate>
                                                 <DataTemplate>
-                                                    <TextBlock Text="{Binding DisplayName}"/>
+                                                    <StackPanel x:Name="Row"
+                                                                Background="Transparent"
+                                                                AutomationProperties.HelpText="{Binding Description}"
+                                                                ToolTip="{StaticResource RowDescriptionTip}"
+                                                                ToolTipService.Placement="Right">
+                                                        <TextBlock Text="{Binding DisplayName}"/>
+                                                        <TextBlock x:Name="Summary"
+                                                                   Text="{Binding Summary}"
+                                                                   Margin="0,1,0,0"
+                                                                   Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                    </StackPanel>
+                                                    <DataTemplate.Triggers>
+                                                        <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ComboBoxItem}, FallbackValue={x:Null}}"
+                                                                     Value="{x:Null}">
+                                                            <Setter TargetName="Summary" Property="Visibility" Value="Collapsed"/>
+                                                            <Setter TargetName="Row" Property="ToolTip" Value="{x:Null}"/>
+                                                        </DataTrigger>
+                                                    </DataTemplate.Triggers>
                                                 </DataTemplate>
                                             </ComboBox.ItemTemplate>
                                         </ComboBox>

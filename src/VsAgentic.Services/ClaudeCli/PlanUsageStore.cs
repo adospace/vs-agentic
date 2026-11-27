@@ -24,7 +24,9 @@ namespace VsAgentic.Services.ClaudeCli;
 /// yet at that point, so it cannot be asked. A saved window is shown until its
 /// reset time; a window without a reset time is not restored, because nothing
 /// says whether it still applies. The file is shared by every Visual Studio on
-/// the machine, so a turn in one instance also updates the others.
+/// the machine. A reading saved by another instance is picked up at the next
+/// read here (a chat opened, or this instance's own usage update); there is no
+/// file watcher, as in <see cref="UsageLog"/>.
 /// </summary>
 public sealed class PlanUsageStore
 {

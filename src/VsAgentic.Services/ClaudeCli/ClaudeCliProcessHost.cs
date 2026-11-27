@@ -338,6 +338,14 @@ public sealed class ClaudeCliProcessHost : IDisposable
         // with no approval step in a -p session, so opening a repository would
         // run its commands.
         sb.Append(" --permission-prompt-tool mcp__").Append(PermissionServerName).Append("__approval_prompt");
+
+        // A call that would wait for the banner is denied at once instead,
+        // and the turn carries on. The permission tool above is then not
+        // asked at all; the CLI also drops AskUserQuestion and ExitPlanMode
+        // from the model's tools.
+        if (_options.DenyPermissionPrompts)
+            sb.Append(" --permission-prompts none");
+
         sb.Append(" --strict-mcp-config");
         sb.Append(" --mcp-config ");
         sb.Append(EscapeArgument(mcpConfigPath));
@@ -357,8 +365,12 @@ public sealed class ClaudeCliProcessHost : IDisposable
         // inlining clarifying questions in plain text. The tool IS available
         // in the headless tool set (we verified via the system/init event),
         // but the default model behavior in print mode is to answer inline.
-        sb.Append(" --append-system-prompt ");
-        sb.Append(EscapeArgument(AskUserQuestionPromptNudge.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ')));
+        // Not sent when the tool is not offered (see DenyPermissionPrompts).
+        if (!_options.DenyPermissionPrompts)
+        {
+            sb.Append(" --append-system-prompt ");
+            sb.Append(EscapeArgument(AskUserQuestionPromptNudge.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ')));
+        }
 
         return sb.ToString();
     }

@@ -567,6 +567,23 @@ public partial class ChatSessionControl : UserControl
         Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() => InputTextBox.Focus()));
     }
 
+    /// <summary>
+    /// Puts a request such as "Fix this error" in the input box, with its
+    /// places attached, and leaves the caret at its end so the user can add
+    /// to it before sending.
+    /// </summary>
+    public void FillFromIde(string text, IReadOnlyList<EditorContext> locations)
+    {
+        if (DataContext is not ChatSessionViewModel vm) return;
+
+        vm.FillFromIde(text, locations);
+        Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() =>
+        {
+            InputTextBox.Focus();
+            InputTextBox.CaretIndex = InputTextBox.Text.Length;
+        }));
+    }
+
     private void AcceptEditorContext_Click(object sender, RoutedEventArgs e)
     {
         if (DataContext is ChatSessionViewModel vm &&

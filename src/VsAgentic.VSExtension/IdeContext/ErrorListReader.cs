@@ -1,5 +1,6 @@
 using Microsoft.VisualStudio.Shell.Interop;
 using Microsoft.VisualStudio.Shell.TableManager;
+using VsAgentic.Services.IdeContext;
 
 namespace VsAgentic.VSExtension.IdeContext;
 
@@ -31,6 +32,25 @@ internal sealed class ErrorListReader : IDisposable
         OnSourcesChanged(this, EventArgs.Empty);
     }
 
+    /// <summary>
+    /// Raised on any thread, often in bursts, whenever a source adds, removes
+    /// or replaces entries. Handlers must be quick and must not read the list
+    /// before the burst is over; they are called while a source is updating.
+    /// </summary>
+    public event Action? Changed;
+
+    private void RaiseChanged()
+    {
+        try
+        {
+            Changed?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Debug(ex, "[ErrorList] A change handler failed");
+        }
+    }
+
     /// <summary>All entries the Error List holds now, suppressed ones included.</summary>
     public ErrorListSnapshot Read()
     {
@@ -53,6 +73,43 @@ internal sealed class ErrorListReader : IDisposable
         }
     }
 
+    internal delegate bool ValueReader(string key, out object value);
+
+    /// <summary>
+    /// One entry from its columns, or null when the source fails on it. Also
+    /// reads the rows selected in the Error List window, which carry the same
+    /// columns.
+    /// </summary>
+    internal static ErrorListEntry? ReadEntry(ValueReader read)
+    {
+        try
+        {
+            return new ErrorListEntry(
+                Severity: Get(read, StandardTableKeyNames.ErrorSeverity) is { } severity
+                    ? (__VSERRORCATEGORY)Convert.ToInt32(severity)
+                    : __VSERRORCATEGORY.EC_MESSAGE,
+                Code: Get(read, StandardTableKeyNames.ErrorCode) as string,
+                Text: Get(read, StandardTableKeyNames.Text) as string ?? "",
+                Document: Get(read, StandardTableKeyNames.DocumentName) as string,
+                Line: Get(read, StandardTableKeyNames.Line) is int line ? line : -1,
+                Column: Get(read, StandardTableKeyNames.Column) is int column ? column : -1,
+                Project: Get(read, StandardTableKeyNames.ProjectName) as string,
+                IsBuild: Get(read, StandardTableKeyNames.ErrorSource) is ErrorSource.Build,
+                Tool: Get(read, StandardTableKeyNames.BuildTool) as string,
+                IsSuppressed: Get(read, StandardTableKeyNames.SuppressionState) is SuppressionState.Suppressed,
+                IsActiveContext: Get(read, StandardTableKeyNames.IsActiveContext) is not false);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // A source that fails on one entry should not cost the others.
+            Serilog.Log.Debug(ex, "[ErrorList] Could not read an entry");
+            return null;
+        }
+    }
+
+    private static object? Get(ValueReader read, string key)
+        => read(key, out var value) ? value : null;
+
     private void OnSourcesChanged(object sender, EventArgs e)
     {
         var current = _tableManager.Sources;
@@ -67,7 +124,7 @@ internal sealed class ErrorListReader : IDisposable
                 if (_sinks.ContainsKey(source)) continue;
                 try
                 {
-                    _sinks[source] = new SourceSink(source);
+                    _sinks[source] = new SourceSink(source, RaiseChanged);
                 }
                 catch (Exception ex)
                 {
@@ -115,10 +172,13 @@ internal sealed class ErrorListReader : IDisposable
         private readonly List<ITableEntriesSnapshot> _snapshots = new();
         private readonly List<ITableEntriesSnapshotFactory> _factories = new();
         private readonly IDisposable? _subscription;
+        private readonly Action _onChanged;
         private int _changes;
 
-        public SourceSink(ITableDataSource source)
+        public SourceSink(ITableDataSource source, Action onChanged)
         {
+            // Set before subscribing: a source hands over its entries in Subscribe.
+            _onChanged = onChanged;
             _subscription = source.Subscribe(this);
         }
 
@@ -197,36 +257,11 @@ internal sealed class ErrorListReader : IDisposable
             into.AddRange(read);
         }
 
-        private delegate bool ValueReader(string key, out object value);
-
         private static void Add(List<ErrorListEntry> into, ValueReader read)
         {
-            try
-            {
-                into.Add(new ErrorListEntry(
-                    Severity: Get(read, StandardTableKeyNames.ErrorSeverity) is { } severity
-                        ? (__VSERRORCATEGORY)Convert.ToInt32(severity)
-                        : __VSERRORCATEGORY.EC_MESSAGE,
-                    Code: Get(read, StandardTableKeyNames.ErrorCode) as string,
-                    Text: Get(read, StandardTableKeyNames.Text) as string ?? "",
-                    Document: Get(read, StandardTableKeyNames.DocumentName) as string,
-                    Line: Get(read, StandardTableKeyNames.Line) is int line ? line : -1,
-                    Column: Get(read, StandardTableKeyNames.Column) is int column ? column : -1,
-                    Project: Get(read, StandardTableKeyNames.ProjectName) as string,
-                    IsBuild: Get(read, StandardTableKeyNames.ErrorSource) is ErrorSource.Build,
-                    Tool: Get(read, StandardTableKeyNames.BuildTool) as string,
-                    IsSuppressed: Get(read, StandardTableKeyNames.SuppressionState) is SuppressionState.Suppressed,
-                    IsActiveContext: Get(read, StandardTableKeyNames.IsActiveContext) is not false));
-            }
-            catch (Exception ex) when (ex is not OutOfMemoryException)
-            {
-                // A source that fails on one entry should not cost the others.
-                Serilog.Log.Debug(ex, "[ErrorList] Could not read an entry");
-            }
+            if (ReadEntry(read) is { } entry)
+                into.Add(entry);
         }
-
-        private static object? Get(ValueReader read, string key)
-            => read(key, out var value) ? value : null;
 
         public void AddEntries(IReadOnlyList<ITableEntry> newEntries, bool removeAllEntries = false)
         {
@@ -234,7 +269,7 @@ internal sealed class ErrorListReader : IDisposable
             {
                 if (removeAllEntries) _entries.Clear();
                 _entries.AddRange(newEntries);
-                _changes++;
+                _changes++; _onChanged();
             }
         }
 
@@ -243,7 +278,7 @@ internal sealed class ErrorListReader : IDisposable
             lock (_lock)
             {
                 foreach (var entry in oldEntries) _entries.Remove(entry);
-                _changes++;
+                _changes++; _onChanged();
             }
         }
 
@@ -253,13 +288,13 @@ internal sealed class ErrorListReader : IDisposable
             {
                 foreach (var entry in oldEntries) _entries.Remove(entry);
                 _entries.AddRange(newEntries);
-                _changes++;
+                _changes++; _onChanged();
             }
         }
 
         public void RemoveAllEntries()
         {
-            lock (_lock) { _entries.Clear(); _changes++; }
+            lock (_lock) { _entries.Clear(); _changes++; _onChanged(); }
         }
 
         public void AddSnapshot(ITableEntriesSnapshot newSnapshot, bool removeAllSnapshots = false)
@@ -268,18 +303,18 @@ internal sealed class ErrorListReader : IDisposable
             {
                 if (removeAllSnapshots) _snapshots.Clear();
                 _snapshots.Add(newSnapshot);
-                _changes++;
+                _changes++; _onChanged();
             }
         }
 
         public void RemoveSnapshot(ITableEntriesSnapshot oldSnapshot)
         {
-            lock (_lock) { _snapshots.Remove(oldSnapshot); _changes++; }
+            lock (_lock) { _snapshots.Remove(oldSnapshot); _changes++; _onChanged(); }
         }
 
         public void RemoveAllSnapshots()
         {
-            lock (_lock) { _snapshots.Clear(); _changes++; }
+            lock (_lock) { _snapshots.Clear(); _changes++; _onChanged(); }
         }
 
         public void ReplaceSnapshot(ITableEntriesSnapshot oldSnapshot, ITableEntriesSnapshot newSnapshot)
@@ -288,7 +323,7 @@ internal sealed class ErrorListReader : IDisposable
             {
                 _snapshots.Remove(oldSnapshot);
                 _snapshots.Add(newSnapshot);
-                _changes++;
+                _changes++; _onChanged();
             }
         }
 
@@ -298,13 +333,13 @@ internal sealed class ErrorListReader : IDisposable
             {
                 if (removeAllFactories) _factories.Clear();
                 _factories.Add(newFactory);
-                _changes++;
+                _changes++; _onChanged();
             }
         }
 
         public void RemoveFactory(ITableEntriesSnapshotFactory oldFactory)
         {
-            lock (_lock) { _factories.Remove(oldFactory); _changes++; }
+            lock (_lock) { _factories.Remove(oldFactory); _changes++; _onChanged(); }
         }
 
         public void ReplaceFactory(ITableEntriesSnapshotFactory oldFactory, ITableEntriesSnapshotFactory newFactory)
@@ -313,16 +348,16 @@ internal sealed class ErrorListReader : IDisposable
             {
                 _factories.Remove(oldFactory);
                 _factories.Add(newFactory);
-                _changes++;
+                _changes++; _onChanged();
             }
         }
 
         // The factory itself reports the new version; Read picks it up.
-        public void FactorySnapshotChanged(ITableEntriesSnapshotFactory factory) { }
+        public void FactorySnapshotChanged(ITableEntriesSnapshotFactory factory) => _onChanged();
 
         public void RemoveAllFactories()
         {
-            lock (_lock) { _factories.Clear(); _changes++; }
+            lock (_lock) { _factories.Clear(); _changes++; _onChanged(); }
         }
 
         public void Dispose()
@@ -358,6 +393,16 @@ internal sealed class ErrorListEntry
     /// the editor shows, e.g. a second target framework.
     /// </summary>
     public bool IsActiveContext { get; }
+
+    /// <summary>The entry as a problem to fix; the line becomes 1-based.</summary>
+    public Problem ToProblem() => new(
+        Severity switch
+        {
+            __VSERRORCATEGORY.EC_ERROR => ProblemSeverity.Error,
+            __VSERRORCATEGORY.EC_WARNING => ProblemSeverity.Warning,
+            _ => ProblemSeverity.Message,
+        },
+        Code, Text, Document, Line >= 0 ? Line + 1 : null, Project);
 
     public ErrorListEntry(
         __VSERRORCATEGORY Severity, string? Code, string Text, string? Document, int Line, int Column,

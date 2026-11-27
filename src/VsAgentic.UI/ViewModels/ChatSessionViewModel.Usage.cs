@@ -615,25 +615,39 @@ public partial class ChatSessionViewModel
 
     // Each window shows the plan limit the CLI reported when there is one, and
     // the local estimate otherwise: before the first turn, with a CLI that
-    // cannot report, or after the window has reset.
+    // cannot report, or after the window has reset. When only the other window
+    // is reported, the account has plan limits and the estimate means nothing,
+    // so the meter shows a dash.
 
-    public string ShortWindowDisplay => Usage.ShortWindowLimit is { } limit
-        ? FormatPercent(limit.Percent)
+    private const string NotReportedDisplay = "—";
+
+    public string ShortWindowDisplay =>
+        Usage.ShortWindowLimit is { } limit ? FormatPercent(limit.Percent)
+        : Usage.ShortWindowNotReported ? NotReportedDisplay
         : FormatBudget(Usage.ShortWindowTokens, Usage.ShortWindowBudget);
 
-    public string ShortWindowTooltip => Usage.ShortWindowLimit is { } limit
-        ? LimitTooltip("5-hour limit", limit, Array.Empty<PlanLimitWindow>())
+    public string ShortWindowTooltip =>
+        Usage.ShortWindowLimit is { } limit ? LimitTooltip("5-hour limit", limit, Array.Empty<PlanLimitWindow>())
+        : Usage.ShortWindowNotReported ? NotReportedTooltip("5-hour limit", "5-hour")
         : WindowTooltip("Last 5 hours", Usage.ShortWindowTokens, Usage.ShortWindowBudget, Usage.ShortWindowFraction);
 
     public UsageLevel ShortWindowLevel => Usage.ShortWindowLevel;
 
-    public string LongWindowDisplay => Usage.LongWindowLimit is { } limit
-        ? FormatPercent(limit.Percent)
+    public string LongWindowDisplay =>
+        Usage.LongWindowLimit is { } limit ? FormatPercent(limit.Percent)
+        : Usage.LongWindowNotReported ? NotReportedDisplay
         : FormatBudget(Usage.LongWindowTokens, Usage.LongWindowBudget);
 
-    public string LongWindowTooltip => Usage.LongWindowLimit is { } limit
-        ? LimitTooltip("Weekly limit", limit, Usage.ModelLimits)
+    public string LongWindowTooltip =>
+        Usage.LongWindowLimit is { } limit ? LimitTooltip("Weekly limit", limit, Usage.ModelLimits)
+        : Usage.LongWindowNotReported ? NotReportedTooltip("Weekly limit", "weekly")
         : WindowTooltip("Last 7 days", Usage.LongWindowTokens, Usage.LongWindowBudget, Usage.LongWindowFraction);
+
+    private static string NotReportedTooltip(string title, string window) =>
+        title + "\n"
+        + $"Claude Code reports no {window} reading for your account right now. "
+        + "This happens when the window is not active, or has just reset.\n"
+        + "The meter shows a value again when Claude Code reports one.";
 
     public UsageLevel LongWindowLevel => Usage.LongWindowLevel;
 

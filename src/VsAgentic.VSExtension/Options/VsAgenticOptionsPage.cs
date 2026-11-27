@@ -38,14 +38,17 @@ public class VsAgenticOptionsPage : DialogPage
 
     [Category("Claude CLI")]
     [DisplayName("CLI Permission Mode")]
-    // The same texts as the menu under the chat input, which calls Default "Manual".
-    [Description("The permission mode a new chat starts in. The dropdown under the chat input changes it for one chat.\r\n"
-        + "Default (Manual in the dropdown, the default): " + PermissionModeOption.ManualSummary + ". " + PermissionModeOption.ManualAdvice + "\r\n"
-        + "AcceptEdits: " + PermissionModeOption.AcceptEditsSummary + ". " + PermissionModeOption.AcceptEditsAdvice + "\r\n"
-        + "Plan: " + PermissionModeOption.PlanSummary + ". " + PermissionModeOption.PlanAdvice + "\r\n"
-        + "Auto: " + PermissionModeOption.AutoSummary + ". " + PermissionModeOption.AutoAdvice + "\r\n"
-        + "BypassPermissions: " + PermissionModeOption.BypassSummary + ". " + PermissionModeOption.BypassAdvice + "\r\n"
-        + "CliSetting: " + PermissionModeOption.CliSettingSummary + " (permissions.defaultMode). " + PermissionModeOption.CliSettingAdvice)]
+    // The short texts of the menu under the chat input, which calls Default
+    // "Manual". One paragraph: the description pane shows about two lines and
+    // cuts each line break off with an ellipsis. The longer advice is in the
+    // menu's tooltips.
+    [Description("The permission mode a new chat starts in. The dropdown under the chat input changes it for one chat. "
+        + "Default (Manual): " + PermissionModeOption.ManualSummary + ". "
+        + "AcceptEdits: " + PermissionModeOption.AcceptEditsSummary + ". "
+        + "Plan: " + PermissionModeOption.PlanSummary + ". "
+        + "Auto: " + PermissionModeOption.AutoSummary + ". "
+        + "BypassPermissions: " + PermissionModeOption.BypassSummary + ". "
+        + "CliSetting: " + PermissionModeOption.CliSettingSummary + ", which a repository's .claude/settings.json can also set.")]
     [DefaultValue(CliPermissionMode.Default)]
     public CliPermissionMode CliPermissionMode { get; set; } = CliPermissionMode.Default;
 

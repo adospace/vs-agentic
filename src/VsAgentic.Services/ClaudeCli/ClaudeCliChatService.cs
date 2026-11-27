@@ -126,10 +126,18 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
     // takes the flag with it. Guarded by _activeTurnLock.
     private bool _scheduledWakeupPending;
 
-    // The last task that ended (task_notification) since a turn last started.
-    // The CLI wakes the model with the task's end and starts a turn for it.
-    // Guarded by _activeTurnLock.
+    // The last task that ended (task_notification) since the CLI last began a
+    // turn (system/init, sent at the start of every turn). The CLI wakes the
+    // model with the task's end and begins a turn for it at once (measured on
+    // 2.1.332: init 12 ms after the notification). A task stopped with
+    // stop_task gets no turn, so it is not kept. Guarded by _activeTurnLock.
     private CliTask? _endedTaskPending;
+
+    // The task that ended just before the turn now beginning: taken from
+    // _endedTaskPending at system/init, so a task whose end started no turn
+    // cannot label a later one. The CLI's turn opens on its first output and
+    // takes it from here. Guarded by _activeTurnLock.
+    private CliTask? _endedTaskForTurn;
 
     // ── Subagents ─────────────────────────────────────────────────────────
     // One stream of steps per subagent, keyed by the id of the Agent step that
@@ -474,8 +482,8 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
             _cliTurn = turn;
             scheduled = _scheduledWakeupPending;
             _scheduledWakeupPending = false;
-            endedTask = _endedTaskPending;
-            _endedTaskPending = null;
+            endedTask = _endedTaskForTurn;
+            _endedTaskForTurn = null;
         }
 
         var source = scheduled ? UnsolicitedTurn.ScheduledCheck : BackgroundTaskTurn(endedTask);
@@ -596,7 +604,7 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
             // Process exited unexpectedly; tear down every open turn so callers unblock.
             TurnState[] turns;
             TurnState? cliTurn;
-            lock (_activeTurnLock) { turns = _turns.ToArray(); _turns.Clear(); cliTurn = _cliTurn; _scheduledWakeupPending = false; _endedTaskPending = null; }
+            lock (_activeTurnLock) { turns = _turns.ToArray(); _turns.Clear(); cliTurn = _cliTurn; _scheduledWakeupPending = false; _endedTaskPending = null; _endedTaskForTurn = null; }
             foreach (var turn in turns)
                 FinalizeOpenBlocks(turn);
 
@@ -980,6 +988,14 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
         switch (CliProcessInfo.ReadString(evt, "subtype"))
         {
             case "init":
+                // A turn begins: a task that ended since the last one is what
+                // the CLI begins it for, if no turn of ours takes it.
+                lock (_activeTurnLock)
+                {
+                    _endedTaskForTurn = _endedTaskPending;
+                    _endedTaskPending = null;
+                }
+
                 // A start-up hook with no end yet runs on without the CLI
                 // waiting for it (an async hook): it holds up nothing now.
                 EndRunningHooks(_control, "still runs in the background");
@@ -1176,8 +1192,9 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
         }
 
         // The CLI tells the model and starts a turn for it, unless a turn of
-        // ours runs and takes the news in.
-        if (task is { IsNested: false })
+        // ours runs and takes the news in. A task stopped with stop_task (the
+        // Stop on the strip) starts none: the CLI does not tell the model.
+        if (task is { IsNested: false } && CliProcessInfo.ReadString(evt, "status") != "stopped")
             lock (_activeTurnLock) { _endedTaskPending = task; }
 
         var toolUseId = CliProcessInfo.ReadString(evt, "tool_use_id");
@@ -2728,7 +2745,7 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
             _scheduledWakeupPending = false;
             // Nor a task that ended while one of our turns ran: the CLI told
             // the model in that turn.
-            if (ended.Length > 0) _endedTaskPending = null;
+            if (ended.Length > 0) { _endedTaskPending = null; _endedTaskForTurn = null; }
         }
         if (ended.Length == 0)
         {

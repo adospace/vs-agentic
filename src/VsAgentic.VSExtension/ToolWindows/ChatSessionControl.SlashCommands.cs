@@ -109,30 +109,32 @@ public partial class ChatSessionControl
             return;
         }
 
-        if (vm.SlashCommands.Count == 0)
-        {
-            // Nothing reported yet. Said once, for the bare slash only, so a
-            // message that merely starts with "/" is not covered by a note.
-            SlashList.ItemsSource = null;
-            SlashList.Visibility = Visibility.Collapsed;
-            SlashHint.Visibility = Visibility.Visible;
-            SlashPopup.IsOpen = typed.Length == 0;
-            return;
-        }
+        // Nothing reported yet: the list holds only the setup check. The note
+        // is said for the bare slash only, so a message that merely starts
+        // with "/" is not covered by it.
+        var showHint = !vm.HasReportedSlashCommands && typed.Length == 0;
 
         var results = vm.FilterSlashCommands(typed);
-        if (results.Count == 0)
+        if (results.Count == 0 && !showHint)
         {
             CloseSlashPopup();
             return;
         }
 
-        var view = new ListCollectionView(results.ToList());
-        view.GroupDescriptions.Add(new PropertyGroupDescription(nameof(SlashCommandOption.Group)));
-        SlashList.ItemsSource = view;
-        SlashList.SelectedIndex = 0;
-        SlashList.Visibility = Visibility.Visible;
-        SlashHint.Visibility = Visibility.Collapsed;
+        if (results.Count > 0)
+        {
+            var view = new ListCollectionView(results.ToList());
+            view.GroupDescriptions.Add(new PropertyGroupDescription(nameof(SlashCommandOption.Group)));
+            SlashList.ItemsSource = view;
+            SlashList.SelectedIndex = 0;
+            SlashList.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            SlashList.ItemsSource = null;
+            SlashList.Visibility = Visibility.Collapsed;
+        }
+        SlashHint.Visibility = showHint ? Visibility.Visible : Visibility.Collapsed;
         SlashPopup.IsOpen = true;
     }
 

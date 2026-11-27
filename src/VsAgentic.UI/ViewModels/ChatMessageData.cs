@@ -20,6 +20,13 @@ public class ChatMessageData
     public bool IsStreaming { get; init; }
 
     /// <summary>
+    /// For an assistant-type row that VsAgentic wrote itself, not Claude: the
+    /// heading it gets in place of Claude's bullet (as "YOU" on a prompt).
+    /// Null for Claude's own text.
+    /// </summary>
+    public string? Label { get; init; }
+
+    /// <summary>
     /// The id of the Agent step a subagent's step goes under. Null for the
     /// main conversation.
     /// </summary>

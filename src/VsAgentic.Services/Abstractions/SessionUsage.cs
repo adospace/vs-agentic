@@ -104,6 +104,17 @@ public record SessionUsage
     /// <summary>Weekly windows that apply to one model only, e.g. Fable.</summary>
     public IReadOnlyList<PlanLimitWindow> ModelLimits { get; init; } = Array.Empty<PlanLimitWindow>();
 
+    // When the CLI reports one window and not the other, the account has plan
+    // limits but no reading for the missing window (the server sends null for
+    // it, or it has reset). The local estimate would then sit next to a real
+    // reading and look like an exceeded limit, so the meter shows no value.
+
+    /// <summary>The weekly limit is reported, the 5-hour one is not.</summary>
+    public bool ShortWindowNotReported => ShortWindowLimit is null && LongWindowLimit is not null;
+
+    /// <summary>The 5-hour limit is reported, the weekly one is not.</summary>
+    public bool LongWindowNotReported => LongWindowLimit is null && ShortWindowLimit is not null;
+
     /// <summary>
     /// Only a reported limit warns. The estimate has no colour: its budget is a
     /// guess, and a guess should not turn the status bar red.

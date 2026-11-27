@@ -1391,11 +1391,12 @@
                                              itself to the mode the CLI reports.
                                              A menu row shows what the mode does
                                              under its name and, as a tooltip, when
-                                             to choose it. The same template draws
-                                             the closed picker, which has no
-                                             ComboBoxItem above it: there only the
-                                             name shows, and the picker's own
-                                             tooltip applies. -->
+                                             to choose it. Bypass adds "(not
+                                             recommended)" after its name. The same
+                                             template draws the closed picker, which
+                                             has no ComboBoxItem above it: there
+                                             only the name shows, and the picker's
+                                             own tooltip applies. -->
                                         <ComboBox Style="{StaticResource StatusComboStyle}"
                                                   ItemContainerStyle="{StaticResource StatusComboItemStyle}"
                                                   ItemsSource="{Binding PermissionModeOptions}"
@@ -1416,7 +1417,12 @@
                                                                 AutomationProperties.HelpText="{Binding Description}"
                                                                 ToolTip="{StaticResource RowDescriptionTip}"
                                                                 ToolTipService.Placement="Right">
-                                                        <TextBlock Text="{Binding DisplayName}"/>
+                                                        <StackPanel Orientation="Horizontal">
+                                                            <TextBlock Text="{Binding DisplayName}"/>
+                                                            <TextBlock x:Name="NameNote"
+                                                                       Text="{Binding NameNote}"
+                                                                       Margin="4,0,0,0"/>
+                                                        </StackPanel>
                                                         <TextBlock x:Name="Summary"
                                                                    Text="{Binding Summary}"
                                                                    Margin="0,1,0,0"
@@ -1426,6 +1432,7 @@
                                                         <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ComboBoxItem}, FallbackValue={x:Null}}"
                                                                      Value="{x:Null}">
                                                             <Setter TargetName="Summary" Property="Visibility" Value="Collapsed"/>
+                                                            <Setter TargetName="NameNote" Property="Visibility" Value="Collapsed"/>
                                                             <Setter TargetName="Row" Property="ToolTip" Value="{x:Null}"/>
                                                         </DataTrigger>
                                                     </DataTemplate.Triggers>

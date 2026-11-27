@@ -48,7 +48,7 @@ public class VsAgenticOptionsPage : DialogPage
         + "AcceptEdits: " + PermissionModeOption.AcceptEditsSummary + ". "
         + "Plan: " + PermissionModeOption.PlanSummary + ". "
         + "Auto: " + PermissionModeOption.AutoSummary + ". "
-        + "BypassPermissions: " + PermissionModeOption.BypassSummary + ". "
+        + "BypassPermissions " + PermissionModeOption.NotRecommended + ": " + PermissionModeOption.BypassSummary + ". "
         + "CliSetting: " + PermissionModeOption.CliSettingSummary + ".")]
     [DefaultValue(CliPermissionMode.Default)]
     public CliPermissionMode CliPermissionMode { get; set; } = CliPermissionMode.Default;

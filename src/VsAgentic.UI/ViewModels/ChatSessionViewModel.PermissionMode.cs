@@ -138,6 +138,12 @@ public partial class PermissionModeOption : ObservableObject
     /// <summary>What the mode does, in a few words, under the name in the menu.</summary>
     public string Summary => SummaryFor(Mode);
 
+    /// <summary>
+    /// After the name in the menu, not on the closed picker, which has little
+    /// room. Null for a mode without one.
+    /// </summary>
+    public string? NameNote => Mode == CliPermissionMode.BypassPermissions ? NotRecommended : null;
+
     /// <summary>When to choose the mode. The row's tooltip, so it is named as the shared row tooltip expects.</summary>
     public string Description => AdviceFor(Mode);
 
@@ -147,7 +153,8 @@ public partial class PermissionModeOption : ObservableObject
     public const string AcceptEditsSummary = "Edits files on its own, asks before commands";
     public const string PlanSummary = "Only reads and proposes a plan";
     public const string AutoSummary = "Asks only before risky actions";
-    public const string BypassSummary = "Never asks. Not recommended";
+    public const string BypassSummary = "Never asks";
+    public const string NotRecommended = "(not recommended)";
     public const string CliSettingSummary = "Uses your Claude Code setting";
 
     public const string ManualAdvice =

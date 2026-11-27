@@ -69,6 +69,52 @@ jobs:
           echo "asset=$($vsixPath.FullName.Replace('\', '/'))" >> $env:GITHUB_OUTPUT
           Write-Host "Found VSIX: $($vsixPath.Name)"
 
+      # The windows-2025-vs2026 image of 2026-11-11 ships a VsixPublisher.exe.config
+      # without a redirect for Microsoft.Identity.Client, so the publisher, built
+      # against 4.85.2, fails to load the 4.87 in its lib folder (VsixPub0031).
+      - name: Align VsixPublisher binding redirects with its lib folder
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $bin = Join-Path $vs "VSSDK\VisualStudioIntegration\Tools\Bin"
+          $configPath = Join-Path $bin "VsixPublisher.exe.config"
+          [xml]$config = Get-Content $configPath
+          $asmNs = "urn:schemas-microsoft-com:asm.v1"
+          $ns = New-Object Xml.XmlNamespaceManager $config.NameTable
+          $ns.AddNamespace("asm", $asmNs)
+          $binding = $config.SelectSingleNode("//asm:assemblyBinding", $ns)
+
+          # Redirect every strong-named assembly the publisher ships to the
+          # version it ships, the way generated binding redirects would.
+          $dlls = Get-ChildItem "$bin\lib\vsixpublisher", "$bin\lib" -Filter *.dll -ErrorAction SilentlyContinue
+          $seen = @{}
+          foreach ($dll in $dlls) {
+            try { $asm = [Reflection.AssemblyName]::GetAssemblyName($dll.FullName) } catch { continue }
+            $token = -join ($asm.GetPublicKeyToken() | ForEach-Object { $_.ToString("x2") })
+            if (-not $token -or $seen.ContainsKey($asm.Name)) { continue }
+            $seen[$asm.Name] = $true
+            $actual = $asm.Version.ToString()
+            $range = "0.0.0.0-$actual"
+
+            $identity = $config.SelectSingleNode("//asm:assemblyIdentity[@name='$($asm.Name)']", $ns)
+            if ($identity) {
+              $redirect = $identity.ParentNode.SelectSingleNode("asm:bindingRedirect", $ns)
+              if ($redirect -and $redirect.GetAttribute("oldVersion") -eq $range -and $redirect.GetAttribute("newVersion") -eq $actual) { continue }
+              if (-not $redirect) { $redirect = $identity.ParentNode.AppendChild($config.CreateElement("bindingRedirect", $asmNs)) }
+            } else {
+              $dep = $binding.AppendChild($config.CreateElement("dependentAssembly", $asmNs))
+              $identity = $dep.AppendChild($config.CreateElement("assemblyIdentity", $asmNs))
+              $identity.SetAttribute("name", $asm.Name)
+              $identity.SetAttribute("publicKeyToken", $token)
+              $identity.SetAttribute("culture", "neutral")
+              $redirect = $dep.AppendChild($config.CreateElement("bindingRedirect", $asmNs))
+            }
+            $redirect.SetAttribute("oldVersion", $range)
+            $redirect.SetAttribute("newVersion", $actual)
+            Write-Host "Redirect $($asm.Name) $range -> $actual"
+          }
+          $config.Save($configPath)
+
       - name: Publish to VS Marketplace
         shell: pwsh
         run: |

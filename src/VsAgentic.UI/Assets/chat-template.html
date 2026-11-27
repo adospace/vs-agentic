@@ -653,9 +653,13 @@ html, body {
 .md-content h3 { font-size: 1.2em; margin: 0.3em 0; color: var(--text-heading); }
 .md-content h4, .md-content h5, .md-content h6 { font-size: 1.05em; margin: 0.3em 0; color: var(--text-heading); }
 .md-content p { margin: 0.4em 0; }
-.md-content a { color: var(--accent); text-decoration: none; }
-.md-content a:hover { text-decoration: underline; }
-.md-content a.file-link { cursor: pointer; text-decoration: underline dotted; }
+/* Links anywhere in the chat, not only in message text: a notice's
+   "Open output" kept the browser's default blue, which is hard to read on a
+   dark background. :where() keeps these at zero specificity, so a component
+   that styles its own links still wins. */
+:where(a) { color: var(--accent); text-decoration: none; }
+:where(a:hover) { text-decoration: underline; }
+:where(a.file-link) { cursor: pointer; text-decoration: underline dotted; }
 .md-content strong { color: var(--text-heading); }
 .md-content code {
     background: var(--code-bg);

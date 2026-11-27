@@ -22,6 +22,7 @@ using VsAgentic.Services.Diagnostics;
 using VsAgentic.Services.IdeContext;
 using VsAgentic.VSExtension.Editor;
 using VsAgentic.VSExtension.IdeContext;
+using VsAgentic.VSExtension.Notifications;
 using VsAgentic.VSExtension.Options;
 using VsAgentic.VSExtension.ToolWindows;
 using Task = System.Threading.Tasks.Task;
@@ -53,6 +54,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     private Action<double>? _persistZoom;
     private DispatcherTimer? _zoomSaveTimer;
     private EditorContextTracker? _editorContext;
+    private AttentionNotifier? _attention;
 
     // Shared by every chat: each one's MCP server offers these providers' tools.
     private readonly List<IIdeContextProvider> _ideContextProviders = new();
@@ -130,6 +132,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         ChatWebView.FileLinkRequested += OnFileLinkRequested;
 
         InitializeZoom();
+        InitializeAttentionNotifier();
 
         if (await GetServiceAsync(typeof(SVsShellMonitorSelection)) is IVsMonitorSelection monitorSelection)
         {
@@ -276,6 +279,85 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             _zoomSaveTimer.Start();
         };
         ChatZoom.Changed += _persistZoom;
+    }
+
+    /// <summary>
+    /// Sets up the Windows notifications and taskbar flash that call the user
+    /// back to a session while they work outside Visual Studio, for example in
+    /// another Visual Studio on another virtual desktop.
+    /// </summary>
+    private void InitializeAttentionNotifier()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        if (GetDialogPage(typeof(VsAgenticOptionsPage)) is not VsAgenticOptionsPage optionsPage) return;
+
+        void LogFailure(string message, Exception? ex) =>
+            Log.Warning(ex, "[Notifications] {Message}", message);
+
+        WindowsToast? toast = null;
+        if (GetToastAppId() is { } appId)
+        {
+            // One group per process: every Visual Studio of the same install
+            // shows its toasts under the same ID.
+            toast = new WindowsToast(appId, "vsagentic-" + System.Diagnostics.Process.GetCurrentProcess().Id, LogFailure);
+            if (!toast.IsAvailable)
+            {
+                LogFailure("Windows notifications are not available on this system", null);
+                toast = null;
+            }
+        }
+        else
+        {
+            LogFailure("No AppUserModelID for Visual Studio; Windows notifications are off", null);
+        }
+
+        _attention = new AttentionNotifier(
+            optionsPage,
+            toast,
+            GetSolutionName,
+            session => OpenOrActivateSessionAsync(session),
+            LogFailure);
+    }
+
+    /// <summary>
+    /// The AppUserModelID of this Visual Studio's Start menu entry, which
+    /// Windows needs to show a toast and uses to name it. Visual Studio's own
+    /// when it set one, otherwise built from the install's instance id the same
+    /// way the Start menu entry is ("VisualStudio.1d546afb").
+    /// </summary>
+    private string? GetToastAppId()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        if (MainWindowAttention.GetProcessAppId() is { } processAppId)
+            return processAppId;
+
+        // "Software\Microsoft\VisualStudio\18.0_1d546afb" plus the root
+        // suffix, e.g. "Exp".
+        if (GetService(typeof(SVsShell)) is IVsShell shell
+            && Microsoft.VisualStudio.ErrorHandler.Succeeded(
+                shell.GetProperty((int)__VSSPROPID.VSSPROPID_VirtualRegistryRoot, out var root))
+            && root is string registryRoot
+            && Regex.Match(registryRoot, @"_([0-9a-fA-F]{8})") is { Success: true } match)
+        {
+            return "VisualStudio." + match.Groups[1].Value.ToLowerInvariant();
+        }
+
+        return null;
+    }
+
+    private string? GetSolutionName()
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        if (GetService(typeof(SVsSolution)) is IVsSolution solution)
+        {
+            solution.GetSolutionInfo(out _, out string solutionFile, out _);
+            if (!string.IsNullOrEmpty(solutionFile))
+                return Path.GetFileNameWithoutExtension(solutionFile);
+        }
+        return null;
     }
 
     private void SaveZoomSetting(VsAgenticOptionsPage optionsPage)
@@ -682,6 +764,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                     // Link the view model to its session entry so cost updates flow back to the list
                     viewModel.SessionInfo = session;
                     viewModel.HasCustomTitle = session.HasCustomTitle;
+                    _instance._attention?.Track(viewModel, session);
 
                     // A rename in the session list flows into the open window:
                     // caption and generated-title suppression follow the new name.
@@ -726,6 +809,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                             _instance._lastActiveSessionId = null;
                         session.PropertyChanged -= onSessionChanged;
                         session.IsActive = false;
+                        _instance?._attention?.Untrack(viewModel);
                         viewModel.Dispose();
                     };
                 }
@@ -1032,6 +1116,9 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
             _editorContext?.Dispose();
             _editorContext = null;
+
+            _attention?.Dispose();
+            _attention = null;
 
             _debuggerState?.Dispose();
             _debuggerState = null;

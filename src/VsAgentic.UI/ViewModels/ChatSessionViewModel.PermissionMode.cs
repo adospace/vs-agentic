@@ -98,10 +98,14 @@ public partial class ChatSessionViewModel
                     ? selected.DisplayName
                     : "not reported yet";
 
+            // No hard line breaks inside a paragraph: the tooltip wraps.
+            var advice = SelectedPermissionMode is { } option ? option.Description + "\n\n" : "";
+
             return $"Permission mode: {inForce}\n"
-                + "Takes effect at once, also during a reply. CLI setting and Bypass\n"
-                + "apply after a restart before the next message; the conversation is kept.\n"
-                + "Changes this chat only. New chats start in the mode set under\n"
+                + advice
+                + "Takes effect at once, also during a reply. CLI setting and Bypass "
+                + "apply after a restart before the next message; the conversation is kept. "
+                + "Changes this chat only. New chats start in the mode set under "
                 + "Tools → Options → VsAgentic.";
         }
     }
@@ -130,6 +134,61 @@ public partial class PermissionModeOption : ObservableObject
 
     [ObservableProperty]
     private string _displayName;
+
+    /// <summary>What the mode does, in a few words, under the name in the menu.</summary>
+    public string Summary => SummaryFor(Mode);
+
+    /// <summary>
+    /// After the name in the menu, not on the closed picker, which has little
+    /// room. Null for a mode without one.
+    /// </summary>
+    public string? NameNote => Mode == CliPermissionMode.BypassPermissions ? NotRecommended : null;
+
+    /// <summary>When to choose the mode. The row's tooltip, so it is named as the shared row tooltip expects.</summary>
+    public string Description => AdviceFor(Mode);
+
+    // Constants so that the Tools → Options description can be built from
+    // the same text: an attribute argument has to be a constant.
+    public const string ManualSummary = "Asks before every change and command";
+    public const string AcceptEditsSummary = "Edits files on its own, asks before commands";
+    public const string PlanSummary = "Only reads and proposes a plan";
+    public const string AutoSummary = "Asks only before risky actions";
+    public const string BypassSummary = "Never asks";
+    public const string NotRecommended = "(not recommended)";
+    public const string CliSettingSummary = "Uses your Claude Code setting";
+
+    public const string ManualAdvice =
+        "Choose it when you want to see and approve every change. The safe choice to start with.";
+    public const string AcceptEditsAdvice =
+        "Choose it when you trust Claude to edit code but want the last word on commands. The most common choice for everyday work.";
+    public const string PlanAdvice =
+        "Choose it when you are not sure yet what you want. Claude first looks at the code and proposes a plan, and changes nothing until you approve it.";
+    public const string AutoAdvice =
+        "Choose it when you do not want to answer every question. Claude decides what is safe and asks only before risky actions.";
+    public const string BypassAdvice =
+        "Almost never. Claude does everything without asking, also commands that can delete files. Only a rule set to ask in your Claude Code settings still asks.";
+    public const string CliSettingAdvice =
+        "For those who already use Claude Code in a terminal and have a default mode set there. A repository's own .claude/settings.json can set the mode too, so an unfamiliar repository can start the chat in a mode that edits without asking.";
+
+    public static string SummaryFor(CliPermissionMode mode) => mode switch
+    {
+        CliPermissionMode.CliSetting => CliSettingSummary,
+        CliPermissionMode.AcceptEdits => AcceptEditsSummary,
+        CliPermissionMode.Plan => PlanSummary,
+        CliPermissionMode.Auto => AutoSummary,
+        CliPermissionMode.BypassPermissions => BypassSummary,
+        _ => ManualSummary,
+    };
+
+    public static string AdviceFor(CliPermissionMode mode) => mode switch
+    {
+        CliPermissionMode.CliSetting => CliSettingAdvice,
+        CliPermissionMode.AcceptEdits => AcceptEditsAdvice,
+        CliPermissionMode.Plan => PlanAdvice,
+        CliPermissionMode.Auto => AutoAdvice,
+        CliPermissionMode.BypassPermissions => BypassAdvice,
+        _ => ManualAdvice,
+    };
 
     /// <summary>
     /// "Manual" rather than "Default" for the CLI's default mode: the model

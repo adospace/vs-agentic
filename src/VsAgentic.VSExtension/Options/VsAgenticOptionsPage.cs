@@ -43,7 +43,7 @@ public class VsAgenticOptionsPage : DialogPage
     // lines and cuts off the rest with an ellipsis. That the dropdown changes
     // one chat only is in its tooltip, the repository settings warning in the
     // tooltip of the CLI setting row.
-    [Description("The mode a new chat starts in. "
+    [Description("For new chats. "
         + "Default (Manual): " + PermissionModeOption.ManualSummary + ". "
         + "AcceptEdits: " + PermissionModeOption.AcceptEditsSummary + ". "
         + "Plan: " + PermissionModeOption.PlanSummary + ". "

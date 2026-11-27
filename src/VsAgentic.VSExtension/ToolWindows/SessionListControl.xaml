@@ -82,6 +82,60 @@
             </Setter>
         </Style>
 
+        <!-- Small borderless button inside the search box. It does not take
+             focus, so the caret stays in the box after a click. -->
+        <Style x:Key="SearchClearButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border"
+                                Background="{TemplateBinding Background}"
+                                Padding="3"
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseOverBackgroundGradientKey}}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Background"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.CommandBarMouseDownBackgroundGradientKey}}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Text link in the shell's link colour, without the button chrome. -->
+        <Style x:Key="LinkButtonStyle" TargetType="Button">
+            <Setter Property="Foreground" Value="{DynamicResource {x:Static vs:VsBrushes.ControlLinkTextKey}}" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <TextBlock x:Name="text"
+                                   Text="{TemplateBinding Content}"
+                                   Foreground="{TemplateBinding Foreground}"
+                                   Background="Transparent" />
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="text" Property="TextDecorations" Value="Underline" />
+                                <Setter Property="Foreground"
+                                        Value="{DynamicResource {x:Static vs:VsBrushes.ControlLinkTextHoverKey}}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Fluent-rounded ListBox (transparent, unbordered by default) -->
         <Style TargetType="ListBox">
             <Setter Property="Background" Value="Transparent" />
@@ -295,6 +349,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -308,13 +363,32 @@
 
         <!-- Search Box -->
         <Grid Grid.Row="1" Margin="4,2,4,4">
+            <!-- Escape empties the box, like the clear button. -->
             <TextBox x:Name="SearchBox"
-                     Style="{StaticResource FluentTextBoxStyle}"
                      Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
-                     Padding="10,2,4,2"
                      Background="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBackgroundKey}}"
-                     Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"
-                     BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}" />
+                     Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}">
+                <TextBox.InputBindings>
+                    <KeyBinding Key="Escape" Command="{Binding ClearSearchCommand}" />
+                </TextBox.InputBindings>
+                <!-- While a term filters the list, the box takes the accent
+                     colour and a thicker edge. The padding shrinks by the
+                     same amount, so the text does not move. The right
+                     padding keeps the text clear of the clear button. -->
+                <TextBox.Style>
+                    <Style TargetType="TextBox" BasedOn="{StaticResource FluentTextBoxStyle}">
+                        <Setter Property="Padding" Value="10,2,26,2" />
+                        <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsFiltered}" Value="True">
+                                <Setter Property="BorderThickness" Value="2" />
+                                <Setter Property="Padding" Value="9,1,25,1" />
+                                <Setter Property="BorderBrush" Value="{DynamicResource {x:Static vs:VsBrushes.HighlightKey}}" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBox.Style>
+            </TextBox>
             <imaging:CrispImage Width="14" Height="14"
                                 Moniker="{x:Static catalog:KnownMonikers.Search}"
                                 HorizontalAlignment="Left"
@@ -337,10 +411,61 @@
                     </Style>
                 </TextBlock.Style>
             </TextBlock>
+            <Button ToolTip="Clear search (Esc)"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Center"
+                    Margin="0,0,4,0"
+                    Command="{Binding ClearSearchCommand}">
+                <Button.Style>
+                    <Style TargetType="Button" BasedOn="{StaticResource SearchClearButtonStyle}">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Text, ElementName=SearchBox}" Value="">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+                <imaging:CrispImage Width="12" Height="12"
+                                    Moniker="{x:Static catalog:KnownMonikers.Close}" />
+            </Button>
         </Grid>
 
+        <!-- Says that the list below is filtered and by how much. A term
+             typed earlier is easy to forget, and the list then looks as if
+             sessions were missing. -->
+        <DockPanel Grid.Row="2" Margin="10,0,8,4">
+            <DockPanel.Style>
+                <Style TargetType="DockPanel">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsFiltered}" Value="True">
+                            <Setter Property="Visibility" Value="Visible" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DockPanel.Style>
+            <imaging:CrispImage DockPanel.Dock="Left"
+                                Width="12" Height="12"
+                                Margin="0,0,6,0"
+                                VerticalAlignment="Center"
+                                Moniker="{x:Static catalog:KnownMonikers.Filter}"
+                                IsHitTestVisible="False" />
+            <Button DockPanel.Dock="Right"
+                    Content="Clear filter"
+                    FontSize="11"
+                    VerticalAlignment="Center"
+                    Margin="8,0,0,0"
+                    Style="{StaticResource LinkButtonStyle}"
+                    Command="{Binding ClearSearchCommand}" />
+            <TextBlock Text="{Binding FilterSummary}"
+                       FontSize="11"
+                       FontWeight="SemiBold"
+                       VerticalAlignment="Center"
+                       TextTrimming="CharacterEllipsis" />
+        </DockPanel>
+
         <!-- Session List -->
-        <ListBox Grid.Row="2"
+        <ListBox Grid.Row="3"
                  ItemsSource="{Binding FilteredSessions}"
                  SelectedItem="{Binding SelectedSession}"
                  SelectionChanged="ListBox_SelectionChanged"

@@ -75,7 +75,7 @@ public partial class ConflictBannerViewModel : ObservableObject
 
         // Visual Studio 18.11 offers no side to pick for these, so the notice does.
         DeleteConflicts = open
-            .Where(f => f.IsDeleteConflict)
+            .Where(f => f.IsKeepOrDeleteConflict)
             .Select(f => new DeleteConflictItem(f, canAct, onSettleDelete))
             .ToList();
 
@@ -93,7 +93,7 @@ public partial class ConflictBannerViewModel : ObservableObject
     public string MarkResolvedLabel { get; }
     public bool ShowResolve { get; }
     public bool ShowMarkResolved { get; }
-    /// <summary>The files one side deleted, each with Keep and Delete.</summary>
+    /// <summary>The files only one side has, each with Keep and Delete.</summary>
     public IReadOnlyList<DeleteConflictItem> DeleteConflicts { get; }
     public bool HasDeleteConflicts => DeleteConflicts.Count > 0;
     public bool MarkResolvedIsMain => ShowMarkResolved && !ShowResolve;
@@ -128,7 +128,7 @@ public partial class ConflictBannerViewModel : ObservableObject
     [RelayCommand]
     private void Dismiss() => _onDismiss();
 
-    /// <summary>One file that one side deleted and the other changed.</summary>
+    /// <summary>One file that only one side has: deleted, or renamed away, on the other.</summary>
     public partial class DeleteConflictItem : ObservableObject
     {
         private readonly GitConflictFile _file;
@@ -147,6 +147,9 @@ public partial class ConflictBannerViewModel : ObservableObject
                 "DU" => "deleted in current, changed in incoming",
                 "UD" => "changed in current, deleted in incoming",
                 "DD" => "deleted in both",
+                // Rename/delete and rename/rename: Git writes no markers.
+                "AU" => "only in current; incoming renamed or deleted it",
+                "UA" => "only in incoming; current renamed or deleted it",
                 _ => file.Kind,
             };
             CanKeep = file.CanKeep;

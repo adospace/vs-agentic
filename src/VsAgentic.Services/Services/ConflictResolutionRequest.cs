@@ -25,9 +25,9 @@ public static class ConflictResolutionRequest
         sb.AppendLine("For each file:");
         sb.AppendLine("1. Find out what each side changed and why. Read the versions with `git show :1:<path>` (common base), `:2:<path>` (ours) and `:3:<path>` (theirs), and the commits behind them, for example `git log --merge --oneline -- <path>` and `git log -p` of the commits that touch the conflicting lines.");
         sb.AppendLine("2. Edit the file in the working folder so that it keeps what both sides meant, and remove every conflict marker. Keep the rest of the file as it is.");
-        sb.AppendLine("3. When one side deleted the file, do not edit or delete it. Recommend keeping it or deleting it, and say why.");
+        sb.AppendLine("3. When only one side has the file (deleted by us or them, added by us or them), do not edit or delete it. Recommend keeping it or deleting it, and say why.");
         sb.AppendLine();
-        sb.AppendLine("Do not stage or finish anything unless I ask: no `git add`, `git rm`, `git commit`, `git reset`, `git stash`, and no `--continue`, `--skip` or `--abort`. I review your changes and mark the files as resolved myself, in Visual Studio; do not give me git commands for that.");
+        sb.AppendLine("Do not stage or finish anything unless I ask: no `git add`, `git rm`, `git commit`, `git reset`, `git stash`, and no `--continue`, `--skip` or `--abort`. Do not replace a file with one side either: no `git checkout --ours`/`--theirs`, `git checkout -- <path>` or `git restore`, which throw away the other side and my uncommitted edits. I review your changes and mark the files as resolved myself, in Visual Studio; do not give me git commands for that.");
         sb.AppendLine();
         sb.AppendLine("When you are done, write one short section per file: what each side changed, what you kept and why. Mark each file where you are not sure. Then list the files you did not resolve.");
 

@@ -239,7 +239,7 @@ public partial class ChatSessionViewModel
         });
     }
 
-    /// <summary>Keeps or deletes a file one side deleted. The click is the confirmation.</summary>
+    /// <summary>Keeps or deletes a file only one side has. The click is the confirmation.</summary>
     private async Task SettleDeleteConflictAsync(GitConflictFile file, bool keep)
     {
         bool done;

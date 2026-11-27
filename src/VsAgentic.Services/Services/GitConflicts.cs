@@ -36,15 +36,20 @@ public sealed class GitConflictFile
     /// </summary>
     public bool HasMarkers { get; }
 
-    /// <summary>One side deleted the file. There is no block to edit; the choice is keep or delete.</summary>
-    public bool IsDeleteConflict => Code.IndexOf('D') >= 0;
+    /// <summary>
+    /// Only one side has the file: one side deleted it (DU, UD, DD), or added
+    /// it while the other side renamed or deleted it (AU, UA). There is no
+    /// block to edit; the choice is keep or delete. Git writes no markers into
+    /// such a file, so an untouched one would otherwise look resolved.
+    /// </summary>
+    public bool IsKeepOrDeleteConflict => Code is "DU" or "UD" or "DD" or "AU" or "UA";
 
     /// <summary>
     /// True until someone has made a choice for the file. An edited file whose
     /// blocks are all gone is resolved in the working folder, though Git still
     /// lists it as unmerged until the user accepts the merge.
     /// </summary>
-    public bool NeedsResolving => IsDeleteConflict || HasMarkers;
+    public bool NeedsResolving => IsKeepOrDeleteConflict || HasMarkers;
 
     /// <summary>The kind of conflict in the words of <c>git status</c>.</summary>
     public string Kind => GitConflicts.DescribeCode(Code);
@@ -107,8 +112,10 @@ public sealed class GitConflictState
 
 /// <summary>
 /// Reads the conflicts Git left in the working folder. Everything comes from
-/// <c>git</c> on the PATH and from the files themselves. Nothing here is fatal:
-/// a folder that is not a repository, or a missing git, reads as no conflicts.
+/// <c>git</c> on the PATH and from the files themselves. A folder that is not
+/// a repository, or a missing git, reads as no conflicts. A git that does not
+/// answer in time, or fails inside a repository, throws instead: that is not
+/// a sign the conflicts are gone.
 /// </summary>
 public static class GitConflicts
 {
@@ -147,18 +154,25 @@ public static class GitConflicts
         if (repo is null) return null;
         var (root, gitDir) = repo.Value;
 
-        var status = await RunGitAsync(root, ct, "status", "--porcelain=v1", "-z", "--untracked-files=no").ConfigureAwait(false);
-        if (status is null) return null;
+        var status = await RunGitAsync(root, ct, "status", "--porcelain=v1", "-z", "--untracked-files=no").ConfigureAwait(false)
+            ?? throw new InvalidOperationException("git status failed in " + root);
 
         var entries = ParseStatus(status);
         if (entries.Count == 0) return null;
+
+        // Only both-modified and both-added files get blocks.
+        var withBlocks = entries.Where(e => e.Code is "UU" or "AA").Select(e => e.Path).ToList();
+        var markerSizes = withBlocks.Count == 0
+            ? new Dictionary<string, int>()
+            : await ReadMarkerSizesAsync(root, withBlocks, ct).ConfigureAwait(false);
 
         var files = new List<GitConflictFile>(entries.Count);
         foreach (var (code, path) in entries)
         {
             ct.ThrowIfCancellationRequested();
             var full = Path.Combine(root, path.Replace('/', Path.DirectorySeparatorChar));
-            var markers = code is "UU" or "AA" && FileHasMarkers(full);
+            var markers = code is "UU" or "AA"
+                && FileHasMarkers(full, markerSizes.TryGetValue(path, out var size) ? size : DefaultMarkerSize);
             files.Add(new GitConflictFile(path, code, markers) { CanKeep = File.Exists(full) });
         }
 
@@ -191,8 +205,8 @@ public static class GitConflicts
     }
 
     /// <summary>
-    /// Settles a conflict where one side deleted the file: keeps the file as it
-    /// is in the working folder (<c>git add</c>) or deletes it (<c>git rm</c>).
+    /// Settles a conflict where only one side has the file: keeps the file as
+    /// it is in the working folder (<c>git add</c>) or deletes it (<c>git rm</c>).
     /// Done only when the file is still in that conflict at this moment. Returns
     /// false when it is not, or when git failed.
     /// </summary>
@@ -200,7 +214,7 @@ public static class GitConflicts
         string folder, string path, bool keep, CancellationToken ct = default)
     {
         var state = await ReadAsync(folder, ct).ConfigureAwait(false);
-        var file = state?.Files.FirstOrDefault(f => f.Path == path && f.IsDeleteConflict);
+        var file = state?.Files.FirstOrDefault(f => f.Path == path && f.IsKeepOrDeleteConflict);
         if (state is null || file is null) return false;
         if (keep && !File.Exists(Path.Combine(state.RepositoryRoot, path.Replace('/', Path.DirectorySeparatorChar)))) return false;
 
@@ -245,39 +259,66 @@ public static class GitConflicts
         _ => code,
     };
 
+    /// <summary>Git's marker length when <c>conflict-marker-size</c> is not set for a file.</summary>
+    public const int DefaultMarkerSize = 7;
+
     /// <summary>
-    /// True when the text holds a conflict block: a line that starts with
-    /// seven '&lt;', followed later by a line of seven '=' and a line that
-    /// starts with seven '&gt;'.
+    /// True when the text holds any line of a conflict block, not only a whole
+    /// block: an agent that removed the <c>&lt;&lt;&lt;&lt;&lt;&lt;&lt;</c> line
+    /// and stopped leaves a file that is not resolved. A marker is exactly
+    /// <paramref name="markerSize"/> '&lt;', '|' or '&gt;', then the end of the
+    /// line or a space; or a line of exactly that many '=' alone.
     /// </summary>
-    public static bool HasConflictMarkers(string text)
+    public static bool HasConflictMarkers(string text, int markerSize = DefaultMarkerSize)
     {
-        var stage = 0;
         using var reader = new StringReader(text);
         string? line;
         while ((line = reader.ReadLine()) is not null)
         {
-            switch (stage)
-            {
-                case 0 when IsMarker(line, '<'):
-                    stage = 1;
-                    break;
-                case 1 when line.StartsWith("=======", StringComparison.Ordinal) && (line.Length == 7 || char.IsWhiteSpace(line[7])):
-                    stage = 2;
-                    break;
-                case 2 when IsMarker(line, '>'):
-                    return true;
-            }
+            if (IsMarker(line, '<') || IsMarker(line, '|') || IsMarker(line, '>') || IsSeparator(line))
+                return true;
         }
         return false;
 
-        static bool IsMarker(string line, char c) =>
-            line.Length >= 7
-            && line.Take(7).All(ch => ch == c)
-            && (line.Length == 7 || line[7] == ' ');
+        bool IsMarker(string line, char c) =>
+            line.Length >= markerSize
+            && RunOf(line, c) == markerSize
+            && (line.Length == markerSize || line[markerSize] == ' ');
+
+        bool IsSeparator(string line) =>
+            line.TrimEnd().Length == markerSize && RunOf(line, '=') == markerSize;
+
+        static int RunOf(string line, char c)
+        {
+            var n = 0;
+            while (n < line.Length && line[n] == c) n++;
+            return n;
+        }
     }
 
-    private static bool FileHasMarkers(string fullPath)
+    /// <summary>
+    /// <c>conflict-marker-size</c> for each path that sets it in
+    /// <c>.gitattributes</c>; paths without it are left out.
+    /// </summary>
+    private static async Task<Dictionary<string, int>> ReadMarkerSizesAsync(
+        string root, IReadOnlyList<string> paths, CancellationToken ct)
+    {
+        var sizes = new Dictionary<string, int>(StringComparer.Ordinal);
+        var output = await RunGitAsync(root, ct,
+            new[] { "check-attr", "-z", "conflict-marker-size", "--" }.Concat(paths).ToArray()).ConfigureAwait(false);
+        if (output is null) return sizes;
+
+        // "path\0attribute\0value\0" per path.
+        var fields = output.Split('\0');
+        for (var i = 0; i + 2 < fields.Length; i += 3)
+        {
+            if (int.TryParse(fields[i + 2], out var size) && size > 0)
+                sizes[fields[i]] = size;
+        }
+        return sizes;
+    }
+
+    private static bool FileHasMarkers(string fullPath, int markerSize)
     {
         try
         {
@@ -290,7 +331,7 @@ public static class GitConflicts
             // A binary file gets no blocks; it stays unresolved until a side is chosen.
             if (Array.IndexOf(bytes, (byte)0, 0, Math.Min(bytes.Length, 8000)) >= 0) return true;
 
-            return HasConflictMarkers(Encoding.UTF8.GetString(bytes));
+            return HasConflictMarkers(Encoding.UTF8.GetString(bytes), markerSize);
         }
         catch (IOException)
         {
@@ -374,10 +415,14 @@ public static class GitConflicts
         Path.DirectorySeparatorChar == '\\' ? path.Replace('/', '\\') : path;
 
     /// <summary>
-    /// Runs git and returns its output, or null when it cannot start, fails,
-    /// or takes too long. Prompts are off: there is no terminal to answer
-    /// them. Optional locks are off as well, so reading the status does not
-    /// rewrite the index, which the watcher would take for a change.
+    /// Runs git and returns its output, or null when it cannot start or fails.
+    /// Throws <see cref="TimeoutException"/> when it takes too long: the caller
+    /// must not read that as "no conflicts". Prompts are off: there is no
+    /// terminal to answer them. Optional locks are off as well, so reading the
+    /// status does not rewrite the index, which the watcher would take for a
+    /// change. Paths are literal, not patterns: <c>[</c>, <c>]</c>, <c>?</c>
+    /// and <c>*</c> are legal in Windows file names (<c>pages/[id].tsx</c>),
+    /// and as a pattern <c>git rm</c> would also delete <c>pages/i.tsx</c>.
     /// </summary>
     private static async Task<string?> RunGitAsync(string folder, CancellationToken ct, params string[] args)
     {
@@ -398,6 +443,7 @@ public static class GitConflicts
         psi.EnvironmentVariables["GIT_TERMINAL_PROMPT"] = "0";
         psi.EnvironmentVariables["GIT_OPTIONAL_LOCKS"] = "0";
         psi.EnvironmentVariables["NO_COLOR"] = "1";
+        psi.EnvironmentVariables["GIT_LITERAL_PATHSPECS"] = "1";
 
         Process? process;
         try
@@ -430,7 +476,8 @@ public static class GitConflicts
             if (!done)
             {
                 try { process.Kill(); } catch { }
-                return null;
+                ct.ThrowIfCancellationRequested();
+                throw new TimeoutException($"git {string.Join(" ", args.Take(2))} did not finish in {GitTimeout.TotalSeconds:0} seconds");
             }
 
             await Task.WhenAll(stdout, stderr).ConfigureAwait(false);

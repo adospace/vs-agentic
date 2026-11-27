@@ -39,16 +39,17 @@ public class VsAgenticOptionsPage : DialogPage
     [Category("Claude CLI")]
     [DisplayName("CLI Permission Mode")]
     // The short texts of the menu under the chat input, which calls Default
-    // "Manual". One paragraph: the description pane shows about two lines and
-    // cuts each line break off with an ellipsis. The longer advice is in the
-    // menu's tooltips.
-    [Description("The permission mode a new chat starts in. The dropdown under the chat input changes it for one chat. "
+    // "Manual". One short paragraph: the description pane shows about two
+    // lines and cuts off the rest with an ellipsis. That the dropdown changes
+    // one chat only is in its tooltip, the repository settings warning in the
+    // tooltip of the CLI setting row.
+    [Description("The mode a new chat starts in. "
         + "Default (Manual): " + PermissionModeOption.ManualSummary + ". "
         + "AcceptEdits: " + PermissionModeOption.AcceptEditsSummary + ". "
         + "Plan: " + PermissionModeOption.PlanSummary + ". "
         + "Auto: " + PermissionModeOption.AutoSummary + ". "
         + "BypassPermissions: " + PermissionModeOption.BypassSummary + ". "
-        + "CliSetting: " + PermissionModeOption.CliSettingSummary + ", which a repository's .claude/settings.json can also set.")]
+        + "CliSetting: " + PermissionModeOption.CliSettingSummary + ".")]
     [DefaultValue(CliPermissionMode.Default)]
     public CliPermissionMode CliPermissionMode { get; set; } = CliPermissionMode.Default;
 

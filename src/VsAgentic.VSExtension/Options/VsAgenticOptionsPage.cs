@@ -71,6 +71,24 @@ public class VsAgenticOptionsPage : DialogPage
     [DefaultValue(BackgroundCommandLimit.CliDefault)]
     public BackgroundCommandLimit BackgroundCommandLimit { get; set; } = BackgroundCommandLimit.CliDefault;
 
+    [Category("Commits and pull requests")]
+    [DisplayName("Attribution")]
+    [Description("The line Claude adds at the end of a commit message (Co-Authored-By: Claude …) and of a pull request description (Generated with Claude Code). CliSetting (default): VsAgentic sends nothing, so the attribution setting from your Claude Code settings applies, and Claude Code's own lines without one. Off: no line in either. Custom: the two texts below; an empty text leaves that line out. Off and Custom also override an attribution setting in a repository's .claude/settings.json. Applies to sessions started after the change.")]
+    [DefaultValue(CommitAttribution.CliSetting)]
+    public CommitAttribution CommitAttribution { get; set; } = CommitAttribution.CliSetting;
+
+    [Category("Commits and pull requests")]
+    [DisplayName("Attribution - commit text")]
+    [Description("Used only when Attribution is Custom. The last line of every commit message Claude writes, for example 'Co-Authored-By: Claude <noreply@anthropic.com>'. Type \\n between lines to add more than one. Empty: no line.")]
+    [DefaultValue("")]
+    public string CommitAttributionText { get; set; } = "";
+
+    [Category("Commits and pull requests")]
+    [DisplayName("Attribution - pull request text")]
+    [Description("Used only when Attribution is Custom. The last line of every pull request description Claude writes. Type \\n between lines to add more than one. Empty: no line.")]
+    [DefaultValue("")]
+    public string PullRequestAttributionText { get; set; } = "";
+
     [Category("Claude CLI")]
     [DisplayName("Check for CLI updates")]
     [Description("On startup, compare the Claude Code CLI against the latest release published on the npm registry and show a banner when a newer one exists. The banner offers to run 'claude update' in a console window. Nothing is installed without a click.")]

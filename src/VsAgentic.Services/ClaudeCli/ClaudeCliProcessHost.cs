@@ -53,6 +53,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
     private ProcessTreeJob? _processTree;
     private string? _resumeSessionId;
     private string? _mcpConfigTempPath;
+    private string? _settingsTempPath;
 
     // The shutdown of the previous run. A new run waits for it, because the
     // old CLI may still be writing the conversation the new one resumes.
@@ -147,7 +148,17 @@ public sealed class ClaudeCliProcessHost : IDisposable
         File.WriteAllText(_mcpConfigTempPath, mcpConfigJson, new UTF8Encoding(false));
         _logger.LogInformation("[ClaudeCli] MCP config written to: {Path}", _mcpConfigTempPath);
 
-        var args = BuildArguments(_mcpConfigTempPath);
+        // Same reason for a file: a JSON string loses its quotes on the way
+        // through cmd.exe when the CLI is a .cmd shim.
+        var settingsJson = _options.CommitAttribution.ToSettingsJson(
+            _options.CommitAttributionText, _options.PullRequestAttributionText);
+        if (settingsJson is not null)
+        {
+            _settingsTempPath = Path.Combine(Path.GetTempPath(), $"vsagentic-settings-{Guid.NewGuid():N}.json");
+            File.WriteAllText(_settingsTempPath, settingsJson, new UTF8Encoding(false));
+        }
+
+        var args = BuildArguments(_mcpConfigTempPath, _settingsTempPath);
         _logger.LogInformation("[ClaudeCli] Launching: {Exe} {Args}", _options.ClaudeCliPath, args);
 
         var psi = new ProcessStartInfo
@@ -263,7 +274,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
             _logger.LogWarning("[ClaudeCli] CLI ended on its own (exit code {Code})", exitCode);
     }
 
-    private string BuildArguments(string mcpConfigPath)
+    private string BuildArguments(string mcpConfigPath, string? settingsPath)
     {
         var sb = new StringBuilder();
         // -p (print mode) is required for --permission-prompt-tool to take effect.
@@ -311,6 +322,14 @@ public sealed class ClaudeCliProcessHost : IDisposable
         // already accepts the flag.
         sb.Append(" --thinking-display ");
         sb.Append(_options.ShowThinkingSummaries ? "summarized" : "omitted");
+
+        // Settings from Options that rank above the user's and the project's
+        // settings files: only the commit attribution so far.
+        if (settingsPath is not null)
+        {
+            sb.Append(" --settings ");
+            sb.Append(EscapeArgument(settingsPath));
+        }
 
         // Wire the MCP permission tool so the CLI asks us before running gated tools.
         // --strict-mcp-config limits the session to the servers in our config
@@ -636,18 +655,19 @@ public sealed class ClaudeCliProcessHost : IDisposable
         var process = _process;
         var processTree = _processTree;
         var pipeServer = _pipeServer;
-        var mcpConfigPath = _mcpConfigTempPath;
-        if (process != null || pipeServer != null || mcpConfigPath != null)
+        var tempFiles = new[] { _mcpConfigTempPath, _settingsTempPath };
+        if (process != null || pipeServer != null || tempFiles.Any(p => p != null))
         {
             var previous = _shutdown;
             _shutdown = Task.Run(async () =>
             {
                 await previous.ConfigureAwait(false);
-                ShutDown(process, processTree, pipeServer, mcpConfigPath);
+                ShutDown(process, processTree, pipeServer, tempFiles);
             });
         }
 
         _mcpConfigTempPath = null;
+        _settingsTempPath = null;
         _process = null;
         _processTree = null;
         _pipeServer = null;
@@ -659,7 +679,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
         _stdoutChannel = null;
     }
 
-    private void ShutDown(Process? process, ProcessTreeJob? processTree, PermissionPipeServer? pipeServer, string? mcpConfigPath)
+    private void ShutDown(Process? process, ProcessTreeJob? processTree, PermissionPipeServer? pipeServer, string?[] tempFiles)
     {
         if (process != null)
         {
@@ -687,12 +707,15 @@ public sealed class ClaudeCliProcessHost : IDisposable
         }
 
         try { pipeServer?.Dispose(); } catch { }
-        try
+        foreach (var path in tempFiles)
         {
-            if (!string.IsNullOrEmpty(mcpConfigPath) && File.Exists(mcpConfigPath))
-                File.Delete(mcpConfigPath);
+            try
+            {
+                if (!string.IsNullOrEmpty(path) && File.Exists(path))
+                    File.Delete(path);
+            }
+            catch { }
         }
-        catch { }
     }
 
     public void Dispose() => Stop();

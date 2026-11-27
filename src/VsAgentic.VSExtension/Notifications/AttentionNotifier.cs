@@ -94,7 +94,13 @@ internal sealed class AttentionNotifier : IDisposable
         UpdateFlash();
     }
 
-    private void OnApplicationDeactivated(object? sender, EventArgs e)
+    // Windows raises Deactivated inside WM_ACTIVATEAPP, an input-synchronous
+    // call in which COM calls fail with RPC_E_CANTCALLOUT_ININPUTSYNCCALL, and
+    // building a toast is one. The announcement waits until that call returns.
+    private void OnApplicationDeactivated(object? sender, EventArgs e) =>
+        Application.Current?.Dispatcher.BeginInvoke(new Action(AnnounceWaiting));
+
+    private void AnnounceWaiting()
     {
         foreach (var watch in _watches.Values)
         {

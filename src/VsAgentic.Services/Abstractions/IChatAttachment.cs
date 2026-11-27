@@ -15,7 +15,8 @@ public interface IChatAttachment
     /// Where the attachment came from on disk, or null when it came from
     /// nowhere — a screenshot has no path. Every attachment that has one is
     /// named in the message, so the model can tell which is which, and the same
-    /// path is only attached once.
+    /// path is only attached once. A commit, branch or pull request has no
+    /// path; it gives its reference here, so it too is only attached once.
     /// </summary>
     string? SourcePath { get; }
 }

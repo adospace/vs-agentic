@@ -402,6 +402,56 @@
             </Border>
         </DataTemplate>
 
+        <!-- A commit, the changes of a branch, or a pull request, picked in the
+             @ menu. The chip shows the size; the tooltip the subject or title. -->
+        <DataTemplate DataType="{x:Type svc:ChatGitAttachment}">
+            <Border Margin="0,0,6,6"
+                    BorderThickness="1"
+                    CornerRadius="3"
+                    Padding="6,3"
+                    VerticalAlignment="Top"
+                    BorderBrush="{DynamicResource {x:Static vs:VsBrushes.ComboBoxBorderKey}}"
+                    ToolTip="{Binding Title}">
+                <StackPanel Orientation="Horizontal">
+                    <imaging:CrispImage Width="14" Height="14"
+                                        VerticalAlignment="Center"
+                                        Margin="0,0,6,0">
+                        <imaging:CrispImage.Style>
+                            <Style TargetType="imaging:CrispImage">
+                                <Setter Property="Moniker" Value="{x:Static catalog:KnownMonikers.Commit}"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Kind}" Value="Branch">
+                                        <Setter Property="Moniker" Value="{x:Static catalog:KnownMonikers.Branch}"/>
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Kind}" Value="PullRequest">
+                                        <Setter Property="Moniker" Value="{x:Static catalog:KnownMonikers.PullRequest}"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </imaging:CrispImage.Style>
+                    </imaging:CrispImage>
+                    <TextBlock Text="{Binding DisplayName}"
+                               VerticalAlignment="Center"
+                               MaxWidth="220"
+                               TextTrimming="CharacterEllipsis"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                    <TextBlock Text="{Binding Scope}"
+                               VerticalAlignment="Center"
+                               Margin="6,0,0,0"
+                               Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                    <Button Content="&#xE10A;"
+                            FontFamily="Segoe MDL2 Assets"
+                            FontSize="9"
+                            Width="16" Height="16"
+                            Padding="0"
+                            Margin="6,0,0,0"
+                            VerticalAlignment="Center"
+                            ToolTip="Remove"
+                            Click="RemoveAttachment_Click"/>
+                </StackPanel>
+            </Border>
+        </DataTemplate>
+
         <!-- The file open in the editor, or the lines selected in it, once the
              user has attached it: a chip like a pasted file. The tooltip is the
              path with the lines, which is what the message names. -->
@@ -718,10 +768,13 @@
                                                                         Moniker="{Binding Moniker}"/>
                                                     <TextBlock Grid.Column="1"
                                                                VerticalAlignment="Center"
-                                                               Text="{Binding RelativePath}"
                                                                TextTrimming="CharacterEllipsis"
                                                                FontSize="12"
-                                                               Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}"/>
+                                                               Foreground="{DynamicResource {x:Static vs:VsBrushes.WindowTextKey}}">
+                                                        <Run Text="{Binding Text, Mode=OneWay}"/>
+                                                        <Run Text="{Binding Detail, Mode=OneWay}"
+                                                             Foreground="{DynamicResource {x:Static vs:VsBrushes.GrayTextKey}}"/>
+                                                    </TextBlock>
                                                 </Grid>
                                             </DataTemplate>
                                         </ListBox.ItemTemplate>

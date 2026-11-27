@@ -898,6 +898,19 @@
                                                             Moniker="{x:Static catalog:KnownMonikers.AddAttachment}"/>
                                     </Button>
 
+                                    <!-- Sends a review request for the uncommitted
+                                         changes; the findings go to the Error List.
+                                         Text in the message box goes with it. Hidden
+                                         when the host has no Error List. -->
+                                    <Button x:Name="ReviewChangesButton"
+                                            Style="{StaticResource IconButtonStyle}"
+                                            Command="{Binding ReviewChangesCommand}"
+                                            Visibility="{Binding ShowReviewChanges, Converter={StaticResource BoolToVis}}"
+                                            ToolTip="Review the uncommitted changes.&#x0a;The findings appear in the Error List. Text in the message box tells Claude what to focus on.">
+                                        <imaging:CrispImage Width="16" Height="16"
+                                                            Moniker="{x:Static catalog:KnownMonikers.CodeReview}"/>
+                                    </Button>
+
                                     <!-- What Claude may read from the debugger in this
                                          chat: off, the stack, or the stack and values
                                          on request. Shown whenever access is on, so

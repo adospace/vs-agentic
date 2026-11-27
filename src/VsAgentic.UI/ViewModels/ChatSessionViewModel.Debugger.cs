@@ -42,6 +42,8 @@ public partial class ChatSessionViewModel
         {
             _ideContext = value;
             ApplyDebuggerAccess();
+            OnPropertyChanged(nameof(ShowReviewChanges));
+            ReviewChangesCommand.NotifyCanExecuteChanged();
         }
     }
     private IdeContextRegistry? _ideContext;

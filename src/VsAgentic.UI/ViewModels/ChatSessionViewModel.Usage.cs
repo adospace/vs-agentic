@@ -650,11 +650,15 @@ public partial class ChatSessionViewModel
 
             if (Usage.ShortWindowLimit is { } shortLimit)
                 rows.Add(LimitRow("5-hour limit", shortLimit));
+            else if (Usage.ShortWindowNotReported)
+                rows.Add(NotReportedRow("5-hour limit"));
             else if (Usage.ShortWindowBudget > 0)
                 rows.Add(EstimateRow("Last 5 hours", Usage.ShortWindowTokens, Usage.ShortWindowBudget));
 
             if (Usage.LongWindowLimit is { } longLimit)
                 rows.Add(LimitRow("Weekly · all models", longLimit));
+            else if (Usage.LongWindowNotReported)
+                rows.Add(NotReportedRow("Weekly · all models"));
             else if (Usage.LongWindowBudget > 0)
                 rows.Add(EstimateRow("Last 7 days", Usage.LongWindowTokens, Usage.LongWindowBudget));
 
@@ -680,8 +684,8 @@ public partial class ChatSessionViewModel
         get
         {
             var reported = Usage.ShortWindowLimit is not null || Usage.LongWindowLimit is not null || Usage.ModelLimits.Count > 0;
-            var estimated = (Usage.ShortWindowLimit is null && Usage.ShortWindowBudget > 0)
-                            || (Usage.LongWindowLimit is null && Usage.LongWindowBudget > 0);
+            var estimated = (Usage.ShortWindowLimit is null && !Usage.ShortWindowNotReported && Usage.ShortWindowBudget > 0)
+                            || (Usage.LongWindowLimit is null && !Usage.LongWindowNotReported && Usage.LongWindowBudget > 0);
 
             var notes = new List<string>();
             if (reported)
@@ -743,6 +747,17 @@ public partial class ChatSessionViewModel
         limit.Fraction,
         SessionUsage.LevelOf(limit.Fraction),
         showBar: true);
+
+    // Claude Code reports the other window but not this one: no bar, no estimate.
+    private static UsageLimitRow NotReportedRow(string title) => new(
+        title,
+        // Short, so the row title is not cut off; the note below the rows
+        // already says the limits come from Claude Code.
+        "Not reported",
+        NotReportedDisplay,
+        0d,
+        UsageLevel.Normal,
+        showBar: false);
 
     private static UsageLimitRow EstimateRow(string title, long used, long budget) => new(
         title,

@@ -28,6 +28,7 @@ public class PermissionRuleBuilderTests
     [MemberData(nameof(SubcommandCases))]
     [MemberData(nameof(NoPrefixForBuildCases))]
     [MemberData(nameof(MisreadLineCases))]
+    [MemberData(nameof(SensitivePathCases))]
     public void Shell_command_grants_only_what_the_banner_shows(string tool, string command, string expected)
         => Assert.Equal(expected, Rules(tool, "command", command));
 
@@ -289,6 +290,68 @@ public class PermissionRuleBuilderTests
         // A Windows line end still does.
         { "Bash", "git status\r\nls", "Bash(git status:*) | Bash(ls:*)" },
     };
+
+    /// <summary>
+    /// A22: the CLI asks again for a line that touches .git, .claude and the
+    /// like, whatever rule it holds (measured on 2.1.325), so no button.
+    /// The lines that were measured are marked.
+    /// </summary>
+    public static TheoryData<string, string, string> SensitivePathCases => new()
+    {
+        // Measured: asked again despite the session rule.
+        { "Bash", "cp a.txt .claude/b.txt", "" },
+        { "Bash", "cp a.txt .git/b.txt", "" },
+        { "Bash", "cp a.txt .vscode/b.txt", "" },
+        { "Bash", "cp a.txt .husky/b.txt", "" },
+        { "Bash", "cp a.txt sub/.claude/b.txt", "" },
+        { "Bash", "cp a.txt C:/src/app/.claude/b.txt", "" },
+        { "Bash", "cp a.txt .envrc", "" },
+        { "Bash", "cp .claude/settings.json sub/x.json", "" },
+        { "Bash", "touch .git/b.txt", "" },
+        { "Bash", "mkdir .claude/newdir", "" },
+        { "Bash", "rm -f .claude/b.txt", "" },
+        { "PowerShell", "Copy-Item a.txt .claude/b.txt", "" },
+
+        // Not measured: the same paths in other spellings.
+        { "Bash", "cp a.txt '.claude/b.txt'", "" },
+        { "Bash", "cp a.txt \".git/hooks/pre-commit\"", "" },
+        { "PowerShell", "Copy-Item a.txt C:\\src\\.claude\\settings.json", "" },
+        { "Bash", "cp a.txt .CLAUDE/b.txt", "" },
+        { "Bash", "cp a.txt ~/.bashrc", "" },
+        { "Bash", "cp x.json .mcp.json", "" },
+        { "Bash", "cp a.txt .idea/b.txt", "" },
+        { "Bash", "ls && cp a.txt .git/b.txt", "" },
+        { "Bash", "tool --out=.git/x", "" },
+
+        // Measured: the session rule stops the next prompt.
+        { "Bash", "cp a.txt sub/b.txt", "Bash(cp a.txt sub/b.txt)" },
+        { "Bash", "cp a.txt .github/b.txt", "Bash(cp a.txt .github/b.txt)" },
+        { "Bash", "cp a.txt .foo/b.txt", "Bash(cp a.txt .foo/b.txt)" },
+        { "Bash", "cp a.txt .myfile", "Bash(cp a.txt .myfile)" },
+        { "Bash", "git config user.name x", "Bash(git config user.name x)" },
+        { "Bash", "git -C . config user.name x", "Bash(git -C . config user.name x)" },
+
+        // Names that only start like a protected one.
+        { "Bash", "cp a.txt .gitignore", "Bash(cp a.txt .gitignore)" },
+        { "Bash", "cp a.txt .claude-test/b.txt", "Bash(cp a.txt .claude-test/b.txt)" },
+        { "Bash", "cp a.txt my.git/b.txt", "Bash(cp a.txt my.git/b.txt)" },
+    };
+
+    /// <summary>
+    /// A22: measured on 2.1.325, a second Write into .claude or .git was asked
+    /// again with an Edit rule for the file, while the same into sub was not.
+    /// </summary>
+    [Theory]
+    [InlineData("Write", @"C:\no-such-dir\.claude\n.md", "")]
+    [InlineData("Write", @"C:\no-such-dir\.git\n.md", "")]
+    [InlineData("Edit", @"C:\no-such-dir\.claude\settings.json", "")]
+    [InlineData("Edit", @"C:\no-such-dir\.vscode\settings.json", "")]
+    [InlineData("Edit", @"C:\no-such-dir\.envrc", "")]
+    [InlineData("NotebookEdit", @"C:\no-such-dir\.git\x.ipynb", "")]
+    [InlineData("Write", @"C:\no-such-dir\sub\n.md", "Edit(//c/no-such-dir/sub/n.md)")]
+    [InlineData("Edit", @"C:\no-such-dir\.github\ci.yml", "Edit(//c/no-such-dir/.github/ci.yml)")]
+    public void File_edit_in_a_protected_path_gets_no_rule(string tool, string path, string expected)
+        => Assert.Equal(expected, Rules(tool, tool == "NotebookEdit" ? "notebook_path" : "file_path", path));
 
     [Fact]
     public void Read_of_a_directory_gets_no_rule()

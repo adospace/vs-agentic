@@ -643,6 +643,9 @@
         <DataTemplate DataType="{x:Type bvm:QuestionCardViewModel}">
             <bv:QuestionCardControl/>
         </DataTemplate>
+        <DataTemplate DataType="{x:Type bvm:ConflictBannerViewModel}">
+            <bv:ConflictBannerControl/>
+        </DataTemplate>
 
         <!-- Borderless icon button used inside the input status bar -->
         <Style x:Key="IconButtonStyle" TargetType="Button">
@@ -1813,6 +1816,25 @@
                         x:Name="BannerHost"
                         LayoutTransform="{StaticResource ChromeZoom}"
                         Content="{Binding ActiveBanner}"
+                        Focusable="False">
+            <ContentControl.Style>
+                <Style TargetType="ContentControl">
+                    <Setter Property="Visibility" Value="Visible"/>
+                    <Style.Triggers>
+                        <Trigger Property="Content" Value="{x:Null}">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                        </Trigger>
+                    </Style.Triggers>
+                </Style>
+            </ContentControl.Style>
+        </ContentControl>
+
+        <!-- The Git conflicts notice. Its own host above the prompts: it does
+             not wait for an answer, so a prompt can come while it is shown. -->
+        <ContentControl DockPanel.Dock="Bottom"
+                        x:Name="ConflictBannerHost"
+                        LayoutTransform="{StaticResource ChromeZoom}"
+                        Content="{Binding ConflictBanner}"
                         Focusable="False">
             <ContentControl.Style>
                 <Style TargetType="ContentControl">

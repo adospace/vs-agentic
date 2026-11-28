@@ -169,6 +169,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             _isSessionFocused = value;
             // Refreshes the flash, the caption and the timer behind it.
             UpdateActivityIndicator();
+            if (value) OnFocusedForConflicts();
         }
     }
 
@@ -347,6 +348,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         _currentStep = null;
         _currentStepId = null;
         UpdateActivityIndicator();
+        OnBusyChangedForConflicts(value);
     }
 
     partial void OnActiveBannerChanged(IBannerViewModel? value) => UpdateActivityIndicator();
@@ -602,6 +604,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         InitializeUsage(chatService, options.Value);
         InitializeSlashCommands();
         InitializePermissionMode(chatService);
+        InitializeConflicts();
     }
 
     // True while a turn the CLI started on its own is running. It holds the
@@ -2185,6 +2188,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         try { _activityTimer?.Stop(); } catch { }
         try { EditorContextProvider = null; } catch { }
         try { DebuggerModeSource = null; } catch { }
+        DisposeConflicts();
 
         // Closing the window kills the CLI, so the row must not go on claiming
         // the session works or waits.

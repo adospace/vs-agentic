@@ -39,6 +39,7 @@ public static class RiskNotes
     public const string DeletesOnRemote = "Deletes a branch or tag on the remote";
     public const string Pushes = "Sends commits to a remote";
     public const string RunsDownloadedCode = "Runs code downloaded from the internet";
+    public const string RunsEncodedCommand = "Runs an encoded command";
     public const string RunsAsAdministrator = "Runs as administrator";
     public const string StopsProcesses = "Stops running processes";
     public const string Publishes = "Publishes outside this computer";
@@ -103,10 +104,24 @@ public static class RiskNotes
     {
         var segments = Split(command, posix);
 
+        // "$(…)" and, in bash, "`…`" run inside double quotes too:
+        // git commit -m "$(rm -rf ~)", iex "& { $(irm https://…) }".
+        // The splitter keeps a quoted string whole, so they are read here.
+        var substitutions = depth < 3 ? QuotedSubstitutions(command, posix) : new List<string>();
+
         // A download feeds the commands after it in the same pipeline.
         var pipelineDownloads = false;
-        var lineDownloads = segments.Any(s => IsDownload(s));
+        var lineDownloads = segments.Any(s => IsDownload(s)) ||
+                            substitutions.Any(s => Split(s, posix).Any(IsDownload));
         var lineEvaluates = false;
+
+        // The files a download on this line writes, by file name: curl -o
+        // i.sh, wget -O i.sh, iwr -OutFile i.ps1, curl … > i.sh.
+        var downloaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in segments.Where(IsDownload))
+            foreach (var w in Words(s.Text))
+                if (FileName(w.TrimStart('>')) is { } file && file.IndexOf('.') > 0 && !w.Contains("://"))
+                    downloaded.Add(file);
 
         for (var i = 0; i < segments.Count; i++)
         {
@@ -114,7 +129,7 @@ public static class RiskNotes
             if (!segment.Piped) pipelineDownloads = false;
 
             var words = Words(segment.Text);
-            var (name, args) = Program(words, notes);
+            var (name, args, programWord) = Program(words, notes, posix);
             if (name is null) continue;
 
             if (Evaluates.Contains(name)) lineEvaluates = true;
@@ -127,6 +142,13 @@ public static class RiskNotes
             if (segment.OpensGroup && RunsInput.Contains(name) && i + 1 < segments.Count && IsDownload(segments[i + 1]))
                 notes.Add(RunsDownloadedCode);
 
+            // curl -o i.sh … && sh i.sh, … && ./i.sh: the file the download
+            // wrote is run, by a shell or by itself.
+            if (downloaded.Count > 0 && !IsDownload(segment) &&
+                ((RunsInput.Contains(name) && args.Any(a => FileName(a) is { } f && downloaded.Contains(f))) ||
+                 (FileName(programWord) is { } run && downloaded.Contains(run))))
+                notes.Add(RunsDownloadedCode);
+
             if (IsDownload(segment)) pipelineDownloads = true;
 
             Check(name, args, posix, notes);
@@ -135,12 +157,96 @@ public static class RiskNotes
             // is in a string. Read it as a command line of its own.
             if (depth < 3 && Shells.TryGetValue(name, out var innerPosix))
             {
-                var inline = InlineCommand(args);
+                var inline = InlineCommand(name, args, notes);
                 if (inline is not null) Collect(inline, innerPosix, notes, depth + 1);
             }
         }
 
+        foreach (var inner in substitutions)
+            Collect(inner, posix, notes, depth + 1);
+
         if (lineDownloads && lineEvaluates) notes.Add(RunsDownloadedCode);
+    }
+
+    /// <summary>
+    /// The commands in <c>$(…)</c> (and, in bash, <c>`…`</c>) inside double
+    /// quotes. Single quotes run nothing, in bash and in PowerShell.
+    /// </summary>
+    private static List<string> QuotedSubstitutions(string command, bool posix)
+    {
+        var found = new List<string>();
+        var escape = posix ? '\\' : '`';
+        var quote = '\0';
+
+        for (var i = 0; i < command.Length; i++)
+        {
+            var c = command[i];
+            if (c == escape && quote != '\'' && i + 1 < command.Length)
+            {
+                i++;
+                continue;
+            }
+
+            if (quote == '\0')
+            {
+                if (c == '"' || c == '\'') quote = c;
+                continue;
+            }
+
+            if (c == quote)
+            {
+                quote = '\0';
+                continue;
+            }
+
+            if (quote != '"') continue;
+
+            if (c == '$' && i + 1 < command.Length && command[i + 1] == '(')
+            {
+                // To the matching parenthesis; quotes inside belong to the
+                // inner command.
+                var depth = 0;
+                var start = i + 2;
+                var j = i + 1;
+                var innerQuote = '\0';
+                for (; j < command.Length; j++)
+                {
+                    var d = command[j];
+                    if (innerQuote != '\0')
+                    {
+                        if (d == innerQuote) innerQuote = '\0';
+                        continue;
+                    }
+                    // "$(echo "x")": inside $( ) quotes start afresh.
+                    if (d == '\'' || d == '"') { innerQuote = d; continue; }
+                    if (d == '(') depth++;
+                    else if (d == ')' && --depth == 0) break;
+                }
+                if (j > start) found.Add(command.Substring(start, Math.Min(j, command.Length) - start));
+                i = j;
+                continue;
+            }
+
+            if (posix && c == '`')
+            {
+                var end = command.IndexOf('`', i + 1);
+                if (end > i + 1) found.Add(command.Substring(i + 1, end - i - 1));
+                if (end < 0) break;
+                i = end;
+            }
+        }
+
+        return found;
+    }
+
+    /// <summary>The file name of a path-like word, or null for a flag or an empty word.</summary>
+    private static string? FileName(string word)
+    {
+        if (string.IsNullOrEmpty(word) || word.StartsWith("-", StringComparison.Ordinal)) return null;
+        var p = word.Replace('\\', '/');
+        var slash = p.LastIndexOf('/');
+        var name = slash >= 0 ? p.Substring(slash + 1) : p;
+        return name.Length == 0 ? null : name;
     }
 
     private static void Check(string name, List<string> args, bool posix, List<string> notes)
@@ -210,11 +316,13 @@ public static class RiskNotes
 
     private static void CheckGit(List<string> args, List<string> notes)
     {
-        // Global options come before the subcommand; -C and -c take a value.
+        // Global options come before the subcommand; -C, -c and the long
+        // ones below take the next word as their value (--git-dir x push).
         var i = 0;
         while (i < args.Count && args[i].StartsWith("-", StringComparison.Ordinal))
         {
-            if (args[i] == "-C" || args[i] == "-c") i++;
+            if (args[i] is "-C" or "-c" or "--git-dir" or "--work-tree" or "--namespace" or "--super-prefix" or "--config-env")
+                i++;
             i++;
         }
 
@@ -233,7 +341,8 @@ public static class RiskNotes
         switch (sub)
         {
             case "push":
-                if (Has("--delete") || HasShort('d') || rest.Any(a => a.StartsWith(":", StringComparison.Ordinal) && a.Length > 1))
+                // --prune deletes remote branches that have no local branch.
+                if (Has("--delete", "--prune") || HasShort('d') || rest.Any(a => a.StartsWith(":", StringComparison.Ordinal) && a.Length > 1))
                     notes.Add(DeletesOnRemote);
                 if (Has("--force", "--force-with-lease", "--force-if-includes", "--mirror") || HasShort('f') ||
                     rest.Any(a => a.StartsWith("+", StringComparison.Ordinal) && a.Length > 1))
@@ -247,7 +356,13 @@ public static class RiskNotes
                 break;
 
             case "checkout":
-                if (rest.Contains("--") || rest.Contains(".") || Has("--force") || HasShort('f'))
+                // git checkout HEAD a.cs: a commit and then paths, without "--",
+                // overwrites the files too. With -b, -B or --orphan the words
+                // are a new branch and its start.
+                var positional = rest.Count(a => !a.StartsWith("-", StringComparison.Ordinal));
+                var makesBranch = rest.Any(a => a is "-b" or "-B" or "--orphan");
+                if (rest.Contains("--") || rest.Contains(".") || Has("--force") || HasShort('f') ||
+                    (positional >= 2 && !makesBranch))
                     notes.Add(DiscardsChanges);
                 break;
 
@@ -333,10 +448,10 @@ public static class RiskNotes
 
     /// <summary>
     /// The program a command runs, after assignments in front of it and
-    /// wrappers such as sudo or env, with the words that follow it. A wrapper
-    /// that raises rights adds its own note.
+    /// wrappers such as sudo or env, with the words that follow it and the
+    /// word it was named by. A wrapper that raises rights adds its own note.
     /// </summary>
-    private static (string? Name, List<string> Args) Program(List<string> words, List<string> notes)
+    private static (string? Name, List<string> Args, string ProgramWord) Program(List<string> words, List<string> notes, bool posix)
     {
         var i = 0;
         while (i < words.Count)
@@ -348,21 +463,63 @@ public static class RiskNotes
                 continue;
             }
 
+            // PowerShell: $null = Remove-Item …, $r = Invoke-Expression ….
+            if (!posix && word.StartsWith("$", StringComparison.Ordinal) && i + 1 < words.Count &&
+                (words[i + 1] == "=" || words[i + 1] == "+="))
+            {
+                i += 2;
+                continue;
+            }
+
             var name = Leaf(word);
             if (!Wrappers.Contains(name)) break;
 
             if (Elevators.Contains(name)) notes.Add(RunsAsAdministrator);
             i++;
 
-            // The wrapper's own options and values: sudo -u x, timeout 10.
-            while (i < words.Count && (words[i].StartsWith("-", StringComparison.Ordinal) || IsAssignment(words[i]) ||
-                                        words[i].All(char.IsDigit)))
-                i++;
+            // The wrapper's own options and their values: sudo -u bob,
+            // timeout 10s, timeout -k 5 10, env -u NAME, nice -n 10.
+            WrapperValueOptions.TryGetValue(name, out var takesValue);
+            while (i < words.Count)
+            {
+                var w = words[i];
+                if (w.StartsWith("-", StringComparison.Ordinal))
+                {
+                    i++;
+                    if (takesValue is not null && takesValue.Contains(w) && i < words.Count) i++;
+                    continue;
+                }
+                if (IsAssignment(w) || IsDuration(w))
+                {
+                    i++;
+                    continue;
+                }
+                break;
+            }
         }
 
-        if (i >= words.Count) return (null, new List<string>());
-        return (Leaf(words[i]), words.Skip(i + 1).ToList());
+        if (i >= words.Count) return (null, new List<string>(), "");
+        return (Leaf(words[i]), words.Skip(i + 1).ToList(), words[i]);
     }
+
+    /// <summary>10, 10s, 1.5m, 2h: the duration timeout and sleep take.</summary>
+    private static bool IsDuration(string word)
+    {
+        var digits = word.TrimEnd('s', 'm', 'h', 'd');
+        return digits.Length > 0 && digits.Length >= word.Length - 1 &&
+               digits.All(c => char.IsDigit(c) || c == '.') && char.IsDigit(digits[0]);
+    }
+
+    /// <summary>Wrapper options that take the next word as their value.</summary>
+    private static readonly Dictionary<string, HashSet<string>> WrapperValueOptions = new(StringComparer.Ordinal)
+    {
+        ["sudo"] = new(StringComparer.Ordinal) { "-u", "-g", "-p", "-C", "-D", "-h", "-r", "-t", "-U", "-T" },
+        ["doas"] = new(StringComparer.Ordinal) { "-u", "-C" },
+        ["env"] = new(StringComparer.Ordinal) { "-u", "-C", "-S", "--unset", "--chdir" },
+        ["timeout"] = new(StringComparer.Ordinal) { "-s", "-k", "--signal", "--kill-after" },
+        ["nice"] = new(StringComparer.Ordinal) { "-n", "--adjustment" },
+        ["runas"] = new(StringComparer.OrdinalIgnoreCase),
+    };
 
     private static bool IsAssignment(string word)
     {
@@ -370,20 +527,63 @@ public static class RiskNotes
         return eq > 0 && word.Take(eq).All(c => char.IsLetterOrDigit(c) || c == '_');
     }
 
-    /// <summary>The command in <c>bash -c "…"</c> or <c>pwsh -Command "…"</c>.</summary>
-    private static string? InlineCommand(List<string> args)
+    /// <summary>
+    /// The command in <c>bash -c "…"</c>, <c>bash -lc "…"</c>,
+    /// <c>pwsh -Command "…"</c> or <c>cmd /c …</c>. For
+    /// <c>powershell -EncodedCommand …</c> it adds a note and returns the
+    /// decoded command, so what it does is read as well.
+    /// </summary>
+    private static string? InlineCommand(string shell, List<string> args, List<string> notes)
     {
+        var powershell = shell is "pwsh" or "powershell";
         for (var i = 0; i < args.Count - 1; i++)
         {
             var a = args[i];
-            // -c for bash, /c and /k for cmd, -Command or any prefix of it for
-            // PowerShell.
-            if (a.Equals("/c", StringComparison.OrdinalIgnoreCase) || a.Equals("/k", StringComparison.OrdinalIgnoreCase) ||
-                (a.Length >= 2 && "-command".StartsWith(a.ToLowerInvariant(), StringComparison.Ordinal)))
+            var lower = a.ToLowerInvariant();
+
+            if (shell == "cmd")
+            {
+                if (lower is "/c" or "/k") return string.Join(" ", args.Skip(i + 1));
+                continue;
+            }
+
+            if (powershell)
+            {
+                if (lower.Length < 2 || lower[0] != '-') continue;
+
+                // -Command, or any prefix of it: -c, -co, -com.
+                if ("-command".StartsWith(lower, StringComparison.Ordinal))
+                    return string.Join(" ", args.Skip(i + 1));
+
+                // -EncodedCommand, or a prefix of it: -e, -ec, -enc.
+                // PowerShell reads -e as -EncodedCommand.
+                if ("-encodedcommand".StartsWith(lower, StringComparison.Ordinal) || lower == "-ec")
+                {
+                    notes.Add(RunsEncodedCommand);
+                    return DecodeCommand(args[i + 1]);
+                }
+                continue;
+            }
+
+            // bash: -c alone, or in a cluster of short flags: -lc, -ec, -xc.
+            if (a.Length >= 2 && a[0] == '-' && a[1] != '-' && a.Skip(1).All(char.IsLetter) && a.IndexOf('c', 1) > 0)
                 return string.Join(" ", args.Skip(i + 1));
         }
 
         return null;
+    }
+
+    /// <summary>The base64 UTF-16 text of -EncodedCommand, or null when it is not one.</summary>
+    private static string? DecodeCommand(string encoded)
+    {
+        try
+        {
+            return Encoding.Unicode.GetString(Convert.FromBase64String(encoded));
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
     }
 
     private static bool HasVerbRunAs(List<string> args)
@@ -516,6 +716,29 @@ public static class RiskNotes
                 quote = c;
                 current.Append(c);
                 wordStart = false;
+                continue;
+            }
+
+            // ${name}, ${#array[@]}: a variable, not a group. Its braces would
+            // otherwise end the command and its # start a comment that hides
+            // the rest of the line.
+            if (c == '$' && next == '{')
+            {
+                var close = command.IndexOf('}', i + 2);
+                var end = close < 0 ? command.Length - 1 : close;
+                current.Append(command, i, end - i + 1);
+                i = end;
+                wordStart = false;
+                continue;
+            }
+
+            // PowerShell's block comment <# … #> ends where it says, not at the
+            // end of the line.
+            if (!posix && c == '<' && next == '#')
+            {
+                var close = command.IndexOf("#>", i + 2, StringComparison.Ordinal);
+                i = close < 0 ? command.Length : close + 1;
+                wordStart = true;
                 continue;
             }
 

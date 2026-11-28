@@ -756,6 +756,31 @@ html, body {
     padding-right: 36px;
 }
 .quote-block:hover .quote-copy-btn { opacity: 1; }
+/* Copy button for inline code. One button for the whole page, placed after the
+   code span under the pointer, so the text around the span does not move. */
+.inline-copy-btn {
+    position: fixed;
+    display: none;
+    width: 18px;
+    height: 18px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-muted);
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    z-index: 20;
+    padding: 0;
+    line-height: 1;
+}
+.inline-copy-btn.visible { display: flex; }
+.inline-copy-btn svg { width: 12px; height: 12px; }
+.inline-copy-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-input);
+}
+.inline-copy-btn.copied { color: var(--success); }
 .md-content ul, .md-content ol { margin: 0.4em 0; padding-left: 1.6em; }
 .md-content li { margin: 0.15em 0; }
 .md-content table { border-collapse: collapse; margin: 0.5em 0; width: 100%; }
@@ -2604,6 +2629,99 @@ loadMessages = function(jsonArray) {
     }
 };
 
+// --- Inline code copy ---
+// A reply names a path, a command or a prompt as inline code. Pointing at one
+// shows a copy button after it, so the value can be taken without selecting it
+// by hand. One shared button follows the pointer; nothing is added to the
+// rendered markdown, so a streaming reply that is rendered again keeps working.
+var _inlineCopyBtn = null;
+var _inlineCopyCode = null;
+var _inlineCopyHideTimer = null;
+
+function inlineCodeAt(target) {
+    if (!target || !target.closest) return null;
+    var code = target.closest('.md-content code');
+    if (!code || code.closest('pre')) return null;
+    return code.textContent.trim() ? code : null;
+}
+
+function inlineCodeText(code) {
+    return code.textContent.replace(/\n$/, '');
+}
+
+function ensureInlineCopyButton() {
+    if (_inlineCopyBtn) return _inlineCopyBtn;
+    var btn = document.createElement('button');
+    btn.className = 'inline-copy-btn';
+    btn.title = 'Copy to clipboard';
+    btn.innerHTML = ICON_COPY;
+    btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        e.preventDefault();
+        if (!_inlineCopyCode) return;
+        copyToClipboard(inlineCodeText(_inlineCopyCode));
+        flashCopied(btn);
+    });
+    btn.addEventListener('mouseenter', cancelInlineCopyHide);
+    btn.addEventListener('mouseleave', scheduleInlineCopyHide);
+    document.body.appendChild(btn);
+    _inlineCopyBtn = btn;
+    return btn;
+}
+
+function showInlineCopy(code) {
+    cancelInlineCopyHide();
+    var btn = ensureInlineCopyButton();
+    if (_inlineCopyCode !== code) {
+        // A check mark left from the previous span would say this one is copied.
+        btn.innerHTML = ICON_COPY;
+        btn.classList.remove('copied');
+    }
+    _inlineCopyCode = code;
+    // A span that wraps has one box per line; the button goes after the last.
+    var rects = code.getClientRects();
+    if (!rects.length) return;
+    var r = rects[rects.length - 1];
+    var size = 18;
+    var left = r.right + 2;
+    if (left + size > window.innerWidth - 2) left = Math.max(2, r.right - size);
+    btn.style.left = left + 'px';
+    btn.style.top = Math.round(r.top + (r.height - size) / 2) + 'px';
+    btn.classList.add('visible');
+}
+
+function hideInlineCopy() {
+    cancelInlineCopyHide();
+    _inlineCopyCode = null;
+    if (_inlineCopyBtn) _inlineCopyBtn.classList.remove('visible');
+}
+
+function cancelInlineCopyHide() {
+    if (_inlineCopyHideTimer) {
+        clearTimeout(_inlineCopyHideTimer);
+        _inlineCopyHideTimer = null;
+    }
+}
+
+// The pointer crosses a small gap between the span and the button, so leaving
+// the span waits a moment before the button goes away.
+function scheduleInlineCopyHide() {
+    cancelInlineCopyHide();
+    _inlineCopyHideTimer = setTimeout(hideInlineCopy, 300);
+}
+
+document.addEventListener('mouseover', function(e) {
+    if (_inlineCopyBtn && _inlineCopyBtn.contains(e.target)) return;
+    var code = inlineCodeAt(e.target);
+    if (code) showInlineCopy(code);
+    else if (_inlineCopyCode) scheduleInlineCopyHide();
+});
+
+// The button is fixed to the window, so it would stay behind when the chat
+// scrolls under it.
+document.addEventListener('scroll', hideInlineCopy, true);
+window.addEventListener('resize', hideInlineCopy);
+
 // --- Context menu ---
 // One menu, refilled on every right-click with what fits the target: a file
 // link gets the file actions, a selection gets Copy.
@@ -2653,6 +2771,14 @@ document.addEventListener('contextmenu', function(e) {
     var sel = window.getSelection().toString();
     if (sel) {
         items.push({ label: 'Copy', run: function() { copyToClipboard(sel); } });
+    } else {
+        // Inline code is copied whole without a selection. A path link already
+        // has Copy path; Copy here takes the text exactly as written.
+        var code = inlineCodeAt(e.target);
+        if (code) {
+            var codeText = inlineCodeText(code);
+            items.push({ label: 'Copy', run: function() { copyToClipboard(codeText); } });
+        }
     }
 
     if (items.length) {

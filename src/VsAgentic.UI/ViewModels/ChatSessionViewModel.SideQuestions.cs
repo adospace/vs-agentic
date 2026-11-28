@@ -64,6 +64,14 @@ public partial class ChatSessionViewModel
         return TryAskSideQuestion(match.Success ? typed : "/" + SideQuestionCommand + " " + typed);
     }
 
+    /// <summary>
+    /// "/btw …" typed into the input and sent while Send is off (a turn runs
+    /// on a CLI without message lifecycles, or Stop is pending): a side
+    /// question needs no free turn. False for any other text.
+    /// </summary>
+    public bool TryAskTypedSideQuestion() =>
+        CanAskSideQuestions && TryAskSideQuestion(InputText.Trim());
+
     /// <summary>The row for /btw in the menu under "/", or null when it is not offered.</summary>
     private SlashCommandOption? SideQuestionMenuRow() =>
         CanAskSideQuestions

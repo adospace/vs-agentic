@@ -802,10 +802,17 @@ public partial class ChatSessionControl : UserControl
         if (e.Key == Key.Enter &&
             (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
         {
-            if (DataContext is ChatSessionViewModel vm && vm.SendCommand.CanExecute(null))
+            if (DataContext is ChatSessionViewModel vm)
             {
-                vm.SendCommand.Execute(null);
-                e.Handled = true;
+                if (vm.SendCommand.CanExecute(null))
+                {
+                    vm.SendCommand.Execute(null);
+                    e.Handled = true;
+                }
+                else if (vm.TryAskTypedSideQuestion())
+                {
+                    e.Handled = true;
+                }
             }
         }
 

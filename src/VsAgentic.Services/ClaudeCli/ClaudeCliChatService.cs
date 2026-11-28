@@ -322,9 +322,12 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
         await _startLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            // A pending restart waits while a turn runs: a message then joins
-            // the queue of the running process instead of killing it.
-            if (applyPendingRestart && _restartBeforeNextMessage && !HasOpenTurns())
+            // A pending restart waits while a turn runs, and while a side
+            // question waits for its answer: a message then joins the queue
+            // of the running process instead of killing it, and the restart
+            // goes to the next message.
+            if (applyPendingRestart && _restartBeforeNextMessage && !HasOpenTurns()
+                && Volatile.Read(ref _sideQuestionsInFlight) == 0)
             {
                 _host.Stop();
                 lock (_dispatcherLock) { _dispatcherTask = null; }
@@ -376,7 +379,26 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
     // Measured on CLI 2.1.332: 0.5–2 s for a short answer, also mid-turn.
     private static readonly TimeSpan SideQuestionTimeout = TimeSpan.FromMinutes(3);
 
+    // Side questions waiting for their answer. A pending restart waits for them.
+    private int _sideQuestionsInFlight;
+
+    // What every open control request gets when its process ends.
+    private const string ProcessExitedReason = "process exited";
+
     public async Task<SideAnswer> AskSideQuestionAsync(string question, CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref _sideQuestionsInFlight);
+        try
+        {
+            return await AskSideQuestionCoreAsync(question, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _sideQuestionsInFlight);
+        }
+    }
+
+    private async Task<SideAnswer> AskSideQuestionCoreAsync(string question, CancellationToken cancellationToken)
     {
         try
         {
@@ -409,9 +431,13 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
                 return SideAnswer.NotSupported(reply.Error ?? "unsupported_request");
             }
             _logger.LogWarning("[ClaudeCli] side_question failed: {Error}", reply.Error);
-            return SideAnswer.Failed(reply.Error == CliControlChannel.NoResponse
-                ? "Claude did not answer in time."
-                : reply.Error ?? "error");
+            return SideAnswer.Failed(reply.Error switch
+            {
+                CliControlChannel.NoResponse => "Claude did not answer in time.",
+                // FailAll when the process ends: Stop with a restart, or a crash.
+                ProcessExitedReason => "Claude Code stopped before it answered. Ask again.",
+                _ => reply.Error ?? "error",
+            });
         }
 
         _sideQuestionsSupported = true;
@@ -742,7 +768,7 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
 
             // So is any answer it still owed us. Only this process's channel:
             // a new process may already be running with requests of its own.
-            control.FailAll("process exited");
+            control.FailAll(ProcessExitedReason);
         }
     }
 

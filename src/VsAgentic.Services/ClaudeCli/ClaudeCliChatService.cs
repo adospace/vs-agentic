@@ -715,7 +715,7 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
     // (memoryFiles). That list already reflects CLAUDE.md, its imports and the
     // user's settings, so nothing here has to repeat the CLI's rules.
 
-    public event Action<string>? SharedInstructionsNotLoaded;
+    public event Action<SharedInstructionsNotLoaded>? SharedInstructionsNotLoaded;
 
     // Once per conversation: a restart or a resumed process does not ask
     // again. Clear starts a new conversation, which asks again.
@@ -768,8 +768,13 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
                 return;
             }
 
-            _logger.LogInformation("[ClaudeCli] {File} is not loaded; CLAUDE.md does not import it", missing);
-            SharedInstructionsNotLoaded?.Invoke(missing);
+            // A CLAUDE.md the CLI cannot read (UTF-16, an ANSI code page) would
+            // not read an import line either: the notice says so up front and
+            // offers no Import.
+            var cannot = SharedInstructionsFile.WhyImportCannotHelp(SharedInstructionsFile.ChooseClaudeMd(folder), missing);
+            _logger.LogInformation("[ClaudeCli] {File} is not loaded; CLAUDE.md does not import it{Reason}",
+                missing, cannot is null ? "" : " and cannot take an import: " + cannot);
+            SharedInstructionsNotLoaded?.Invoke(new SharedInstructionsNotLoaded(missing, cannot));
         }
         catch (Exception ex)
         {

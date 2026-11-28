@@ -12,10 +12,10 @@ namespace VsAgentic.Services.Abstractions;
 public interface ISharedInstructions
 {
     /// <summary>
-    /// Raised at most once per chat, when the folder has a shared instruction
-    /// file that the agent did not load. The argument is the file's full path.
+    /// Raised at most once per conversation, when the folder has a shared
+    /// instruction file that the agent did not load.
     /// </summary>
-    event Action<string>? SharedInstructionsNotLoaded;
+    event Action<SharedInstructionsNotLoaded>? SharedInstructionsNotLoaded;
 
     /// <summary>
     /// Makes the agent read the file from the next message on. Returns the
@@ -25,3 +25,12 @@ public interface ISharedInstructions
     /// <exception cref="UnauthorizedAccessException">The file could not be written.</exception>
     Task<string> LoadSharedInstructionsAsync(string path);
 }
+
+/// <summary>A shared instruction file the agent did not load.</summary>
+/// <param name="Path">The file's full path.</param>
+/// <param name="CannotLoad">
+/// Why <see cref="ISharedInstructions.LoadSharedInstructionsAsync"/> cannot
+/// help, in words for the user (the agent's own instruction file is in an
+/// encoding the agent cannot read, say); null when it can.
+/// </param>
+public sealed record SharedInstructionsNotLoaded(string Path, string? CannotLoad);

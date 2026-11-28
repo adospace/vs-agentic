@@ -936,15 +936,17 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         });
     }
 
-    private void OnSharedInstructionsNotLoaded(string path)
+    private void OnSharedInstructionsNotLoaded(SharedInstructionsNotLoaded notice)
     {
         if (_chatService is not ISharedInstructions shared) return;
+        var path = notice.Path;
 
         Dispatch(() =>
         {
             SharedInstructionsBannerViewModel? banner = null;
             banner = new SharedInstructionsBannerViewModel(
                 AgentName,
+                notice.CannotLoad,
                 onImport: () => _ = ImportSharedInstructionsAsync(shared, path, banner!),
                 onDismiss: () =>
                 {

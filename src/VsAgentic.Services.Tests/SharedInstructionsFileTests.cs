@@ -179,6 +179,23 @@ public sealed class SharedInstructionsFileTests : IDisposable
     }
 
     [Fact]
+    public void WhyImportCannotHelp_NamesAnUnreadableClaudeMd()
+    {
+        File.WriteAllText(Agents, "x");
+        // Missing: Import creates it.
+        Assert.Null(SharedInstructionsFile.WhyImportCannotHelp(RootClaude, Agents));
+
+        File.WriteAllText(RootClaude, "# Rules\n", new UTF8Encoding(true));
+        Assert.Null(SharedInstructionsFile.WhyImportCannotHelp(RootClaude, Agents));
+
+        File.WriteAllText(RootClaude, "# Navodila\r\n", new UnicodeEncoding(false, true));
+        Assert.Contains("UTF-16", SharedInstructionsFile.WhyImportCannotHelp(RootClaude, Agents));
+
+        File.WriteAllBytes(RootClaude, new byte[] { (byte)'#', (byte)' ', 0xE8, (byte)' ', 0x9A });
+        Assert.Contains("not UTF-8", SharedInstructionsFile.WhyImportCannotHelp(RootClaude, Agents));
+    }
+
+    [Fact]
     public void HasClaudeMd_InFolderOrDotClaude()
     {
         Assert.False(SharedInstructionsFile.HasClaudeMd(_folder));

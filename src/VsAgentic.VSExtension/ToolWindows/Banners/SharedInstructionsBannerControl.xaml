@@ -7,6 +7,7 @@
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="/VsAgentic.VSExtension;component/ToolWindows/Banners/BannerStyles.xaml"/>
             </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         </ResourceDictionary>
     </UserControl.Resources>
 
@@ -35,9 +36,12 @@
             <!-- Wraps in a narrow chat window instead of cutting off a button. -->
             <WrapPanel HorizontalAlignment="Right"
                        Margin="6,0,12,10">
+                <!-- Hidden when CLAUDE.md is in an encoding Claude cannot read:
+                     an import line in it would not be read either. -->
                 <Button Content="Import AGENTS.md"
                         Style="{StaticResource PrimaryButtonStyle}"
                         Command="{Binding ImportCommand}"
+                        Visibility="{Binding CanImport, Converter={StaticResource BoolToVis}}"
                         ToolTip="Add @AGENTS.md to CLAUDE.md"/>
                 <Button Content="Dismiss"
                         Style="{StaticResource SecondaryButtonStyle}"

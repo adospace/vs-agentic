@@ -135,6 +135,32 @@ public static class SharedInstructionsFile
     }
 
     /// <summary>
+    /// Why an import line in <paramref name="claudeMdPath"/> would not help,
+    /// in words for the user; null when <see cref="AddImport"/> can add one
+    /// that the CLI reads. A missing file is fine: it is created.
+    /// </summary>
+    public static string? WhyImportCannotHelp(string claudeMdPath, string agentsMdPath)
+    {
+        if (!File.Exists(claudeMdPath)) return null;
+        if (SameFile(claudeMdPath, agentsMdPath))
+            return $"{Path.GetFileName(claudeMdPath)} is a link to {FileName}.";
+        try
+        {
+            ReadText(claudeMdPath, out _);
+            return null;
+        }
+        catch (InvalidDataException ex)
+        {
+            return ex.Message;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Not readable now; Import reports it if it fails too.
+            return null;
+        }
+    }
+
+    /// <summary>
     /// The file as text, and the encoding to write it back with: UTF-8, with
     /// a byte order mark when the file has one. That is the only encoding the
     /// CLI reads CLAUDE.md in (2.1.332): a UTF-16 file reaches the model as
@@ -161,7 +187,7 @@ public static class SharedInstructionsFile
         {
             if (bytes.Length >= bom.Length && bom.SequenceEqual(bytes.Take(bom.Length)))
                 throw new InvalidDataException(
-                    $"{name} is saved as {kind}, and Claude Code reads it only as UTF-8, so it cannot read this file or an import in it. Save it as UTF-8 and try again.");
+                    $"{name} is saved as {kind}, and Claude Code reads it only as UTF-8, so it cannot read this file or an import in it. Save it as UTF-8.");
         }
 
         var hasBom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
@@ -174,7 +200,7 @@ public static class SharedInstructionsFile
         catch (DecoderFallbackException ex)
         {
             throw new InvalidDataException(
-                $"{name} is not UTF-8, so VsAgentic does not change it, and Claude Code cannot read its other characters either. Save it as UTF-8 and try again.", ex);
+                $"{name} is not UTF-8, so VsAgentic does not change it, and Claude Code cannot read its other characters either. Save it as UTF-8.", ex);
         }
     }
 

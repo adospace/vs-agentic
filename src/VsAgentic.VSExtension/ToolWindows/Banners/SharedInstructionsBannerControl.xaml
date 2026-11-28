@@ -1,0 +1,53 @@
+<UserControl x:Class="VsAgentic.VSExtension.ToolWindows.Banners.SharedInstructionsBannerControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vs="clr-namespace:Microsoft.VisualStudio.Shell;assembly=Microsoft.VisualStudio.Shell.15.0">
+    <UserControl.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="/VsAgentic.VSExtension;component/ToolWindows/Banners/BannerStyles.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        </ResourceDictionary>
+    </UserControl.Resources>
+
+    <!-- Not a prompt: the chat goes on while it is shown. -->
+    <Border Style="{StaticResource BannerCardBorderStyle}">
+        <StackPanel>
+            <TextBlock Text="{Binding Title}"
+                       FontWeight="SemiBold"
+                       FontSize="13"
+                       Foreground="{DynamicResource {x:Static vs:VsBrushes.ToolWindowTextKey}}"
+                       Margin="12,10,12,4"
+                       TextWrapping="Wrap"/>
+
+            <TextBlock Text="{Binding DetailMessage}"
+                       FontSize="12"
+                       Foreground="{DynamicResource {x:Static vs:VsBrushes.CommandBarTextInactiveKey}}"
+                       Margin="12,0,12,4"
+                       TextWrapping="Wrap"/>
+
+            <TextBlock Text="{Binding SubText}"
+                       FontSize="11"
+                       Foreground="{DynamicResource {x:Static vs:VsBrushes.CommandBarTextInactiveKey}}"
+                       Margin="12,0,12,8"
+                       TextWrapping="Wrap"/>
+
+            <!-- Wraps in a narrow chat window instead of cutting off a button. -->
+            <WrapPanel HorizontalAlignment="Right"
+                       Margin="6,0,12,10">
+                <!-- Hidden when CLAUDE.md is in an encoding Claude cannot read:
+                     an import line in it would not be read either. -->
+                <Button Content="Import AGENTS.md"
+                        Style="{StaticResource PrimaryButtonStyle}"
+                        Command="{Binding ImportCommand}"
+                        Visibility="{Binding CanImport, Converter={StaticResource BoolToVis}}"
+                        ToolTip="Add @AGENTS.md to CLAUDE.md"/>
+                <Button Content="Dismiss"
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        Command="{Binding DismissCommand}"
+                        ToolTip="Leave CLAUDE.md as it is"/>
+            </WrapPanel>
+        </StackPanel>
+    </Border>
+</UserControl>

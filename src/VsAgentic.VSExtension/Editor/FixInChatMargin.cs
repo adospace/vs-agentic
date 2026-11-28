@@ -26,15 +26,11 @@ internal sealed class FixInChatMarginProvider : IWpfTextViewMarginProvider
     [Import]
     internal ITextDocumentFactoryService TextDocumentFactory { get; set; } = null!;
 
+    // Every document view gets the margin, also one whose buffer has no file
+    // yet: a new file saved later gets its path then, and the margin reads
+    // the path each time it draws. Without a path it takes no width.
     public IWpfTextViewMargin? CreateMargin(IWpfTextViewHost wpfTextViewHost, IWpfTextViewMargin marginContainer)
-    {
-        // A buffer with no file (a diff, a peek, a new file not yet saved)
-        // has no Error List entries.
-        if (!TextDocumentFactory.TryGetTextDocument(wpfTextViewHost.TextView.TextDataModel.DocumentBuffer, out var document))
-            return null;
-
-        return new FixInChatMargin(wpfTextViewHost.TextView, document);
-    }
+        => new FixInChatMargin(wpfTextViewHost.TextView, TextDocumentFactory);
 }
 
 internal sealed class FixInChatMargin : Canvas, IWpfTextViewMargin
@@ -45,15 +41,16 @@ internal sealed class FixInChatMargin : Canvas, IWpfTextViewMargin
     private const double MarginWidth = 16;
 
     private readonly IWpfTextView _view;
-    private readonly ITextDocument _document;
+    private readonly ITextDocumentFactoryService _documents;
+    private ITextDocument? _document;
     private bool _disposed;
 
-    public FixInChatMargin(IWpfTextView view, ITextDocument document)
+    public FixInChatMargin(IWpfTextView view, ITextDocumentFactoryService documents)
     {
         _view = view;
-        _document = document;
+        _documents = documents;
 
-        Width = MarginWidth;
+        Width = 0;
         ClipToBounds = true;
         // Transparent rather than null, so the margin keeps its mouse events
         // between icons too and a click there does nothing.
@@ -82,11 +79,33 @@ internal sealed class FixInChatMargin : Canvas, IWpfTextViewMargin
         Redraw();
     });
 
+    /// <summary>
+    /// The file behind the view, or null for a buffer with none (a diff, a
+    /// peek, a new file not yet saved). Looked up again until there is one,
+    /// and read each time: Save As changes the path.
+    /// </summary>
+    private string? FilePath()
+    {
+        if (_document is null &&
+            _documents.TryGetTextDocument(_view.TextDataModel.DocumentBuffer, out var document))
+        {
+            _document = document;
+        }
+        return _document?.FilePath is { Length: > 0 } path && System.IO.Path.IsPathRooted(path) ? path : null;
+    }
+
     private void Redraw()
     {
         if (_disposed || _view.IsClosed || _view.InLayout) return;
 
         Children.Clear();
+
+        // No file, no Error List entries: the margin takes no room.
+        if (FilePath() is not { } path)
+        {
+            Width = 0;
+            return;
+        }
 
         // The editor zooms the text but not this margin, and the lines'
         // positions are in the unzoomed space of the text. The margin scales
@@ -104,7 +123,7 @@ internal sealed class FixInChatMargin : Canvas, IWpfTextViewMargin
                 if (!line.IsFirstTextViewLineForSnapshotLine) continue;
 
                 var number = line.Start.GetContainingLine().LineNumber;
-                var problems = ErrorListProblems.OnLines(_document.FilePath, number, number);
+                var problems = ErrorListProblems.OnLines(path, number, number);
                 if (problems.Count == 0) continue;
 
                 var icon = FixInChat.CreateIcon(size);

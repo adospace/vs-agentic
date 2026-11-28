@@ -530,11 +530,45 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             return;
         }
 
-        var locations = FixRequest.Locations(distinct)
-            .Select(l => new EditorContext(l.FilePath, l.Line, l.Line, _instance.ReadLineText(l.FilePath, l.Line), isLocation: true))
+        var places = FixRequest.Locations(distinct);
+
+        // Open documents are read from their buffers here, on the UI thread;
+        // the others from disk on a background thread. A place known only
+        // from the last build may have moved since, so it goes without code.
+        var texts = places.Select(p => !p.LineIsCurrent ? null
+                                       : _instance.ReadOpenLineText(p.FilePath, p.Line, out var open) ? new LineText(open)
+                                       : new LineText(null, fromDisk: true))
+                          .ToList();
+
+        if (texts.Any(t => t is { FromDisk: true }))
+        {
+            await Task.Run(() =>
+            {
+                for (var i = 0; i < places.Count; i++)
+                {
+                    if (texts[i] is { FromDisk: true })
+                        texts[i] = new LineText(ReadDiskLineText(places[i].FilePath, places[i].Line));
+                }
+            });
+        }
+
+        var locations = places
+            .Select((p, i) => new EditorContext(p.FilePath, p.Line, p.Line, texts[i]?.Text, isLocation: true))
             .ToList();
 
         await DeliverToChatAsync(chat => chat.FillFromIde(text, locations));
+    }
+
+    private sealed class LineText
+    {
+        public LineText(string? text, bool fromDisk = false)
+        {
+            Text = text;
+            FromDisk = fromDisk;
+        }
+
+        public string? Text { get; }
+        public bool FromDisk { get; }
     }
 
     /// <summary>The same, without waiting: for callers that must return at once, like the light bulb.</summary>
@@ -633,42 +667,60 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         delivery(window.ChatControl);
     }
 
+    private const int MaxLineTextLength = 2000;
+
     /// <summary>
-    /// The text of one line (1-based) as the editor holds it, saved or not;
-    /// from disk when the file is not open. Null when it cannot be read or is
-    /// too long to be worth sending.
+    /// The text of one line (1-based) as the editor holds it, saved or not.
+    /// False when the file is not open in an editor; the caller then reads it
+    /// from disk, off the UI thread. <paramref name="text"/> is null when the
+    /// line is empty or too long to be worth sending.
     /// </summary>
-    private string? ReadLineText(string filePath, int line)
+    private bool ReadOpenLineText(string filePath, int line, out string? text)
     {
         ThreadHelper.ThrowIfNotOnUIThread();
 
-        const int MaxLength = 2000;
+        text = null;
         try
         {
-            string? text = null;
-            if (VsShellUtilities.IsDocumentOpen(this, filePath, Guid.Empty, out _, out _, out var frame) &&
-                frame is not null &&
-                VsShellUtilities.GetTextView(frame) is { } view &&
-                view.GetBuffer(out var lines) == Microsoft.VisualStudio.VSConstants.S_OK &&
-                lines.GetLengthOfLine(line - 1, out var length) == Microsoft.VisualStudio.VSConstants.S_OK &&
-                lines.GetLineText(line - 1, 0, line - 1, length, out var bufferText) == Microsoft.VisualStudio.VSConstants.S_OK)
+            if (!VsShellUtilities.IsDocumentOpen(this, filePath, Guid.Empty, out _, out _, out var frame) ||
+                frame is null ||
+                VsShellUtilities.GetTextView(frame) is not { } view ||
+                view.GetBuffer(out var lines) != Microsoft.VisualStudio.VSConstants.S_OK)
             {
-                text = bufferText;
-            }
-            else if (File.Exists(filePath))
-            {
-                text = File.ReadLines(filePath).Skip(line - 1).FirstOrDefault();
+                return false;
             }
 
-            return string.IsNullOrWhiteSpace(text) || text!.Length > MaxLength ? null : text;
+            if (lines.GetLengthOfLine(line - 1, out var length) == Microsoft.VisualStudio.VSConstants.S_OK &&
+                lines.GetLineText(line - 1, 0, line - 1, length, out var bufferText) == Microsoft.VisualStudio.VSConstants.S_OK)
+            {
+                text = Usable(bufferText);
+            }
+            return true;
         }
         catch (Exception ex)
         {
             // The place goes without its code; the agent can read the file.
             System.Diagnostics.Debug.WriteLine($"VsAgentic: Could not read line {line} of {filePath}: {ex.Message}");
+            return true;
+        }
+    }
+
+    /// <summary>One line (1-based) of a file on disk. Not on the UI thread.</summary>
+    private static string? ReadDiskLineText(string filePath, int line)
+    {
+        try
+        {
+            return File.Exists(filePath) ? Usable(File.ReadLines(filePath).Skip(line - 1).FirstOrDefault()) : null;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"VsAgentic: Could not read line {line} of {filePath}: {ex.Message}");
             return null;
         }
     }
+
+    private static string? Usable(string? text) =>
+        string.IsNullOrWhiteSpace(text) || text!.Length > MaxLineTextLength ? null : text;
 
     private static async Task OpenOrActivateSessionAsync(SessionInfo session)
     {

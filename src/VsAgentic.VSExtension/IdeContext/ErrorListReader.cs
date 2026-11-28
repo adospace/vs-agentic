@@ -402,7 +402,7 @@ internal sealed class ErrorListEntry
             __VSERRORCATEGORY.EC_WARNING => ProblemSeverity.Warning,
             _ => ProblemSeverity.Message,
         },
-        Code, Text, Document, Line >= 0 ? Line + 1 : null, Project);
+        Code, Text, Document, Line >= 0 ? Line + 1 : null, Project, IsBuild);
 
     public ErrorListEntry(
         __VSERRORCATEGORY Severity, string? Code, string Text, string? Document, int Line, int Column,

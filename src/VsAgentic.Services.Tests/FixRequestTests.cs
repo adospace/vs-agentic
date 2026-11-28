@@ -123,7 +123,49 @@ public class FixRequestTests
             Error("CS1503", "Cannot convert", Bar, 40),
         ]);
 
-        Assert.Equal(new[] { (Foo, 12), (Bar, 40) }, locations.ToArray());
+        Assert.Equal(new[] { new FixLocation(Foo, 12, true), new FixLocation(Bar, 40, true) }, locations.ToArray());
+    }
+
+    [Fact]
+    public void ALineKnownOnlyFromTheBuildIsNotCurrent()
+    {
+        var locations = FixRequest.Locations(
+        [
+            new Problem(ProblemSeverity.Error, "CS0246", "Type not found", Foo, 12, "App", isFromBuild: true),
+            new Problem(ProblemSeverity.Error, "CS1503", "Cannot convert", Bar, 40, "App", isFromBuild: true),
+            Error("CS0168", "Unused", Bar, 40),
+        ]);
+
+        // Foo:12 only from the build; Bar:40 also from live analysis, which follows the edits.
+        Assert.Equal(new[] { new FixLocation(Foo, 12, false), new FixLocation(Bar, 40, true) }, locations.ToArray());
+    }
+
+    [Fact]
+    public void TheCopyFromLiveAnalysisIsKept()
+    {
+        var problems = FixRequest.Distinct(
+        [
+            new Problem(ProblemSeverity.Error, "CS0246", "Type not found", Foo, 12, "App", isFromBuild: true),
+            Error("CS0246", "Type not found"),
+        ]);
+
+        Assert.False(Assert.Single(problems).IsFromBuild);
+        Assert.True(Assert.Single(FixRequest.Locations(problems)).LineIsCurrent);
+    }
+
+    [Fact]
+    public void ATextWithAngleBracketsIsACodeSpan()
+    {
+        // Rendered as Markdown, "<string>" would be taken for an HTML tag and dropped.
+        Assert.Equal(
+            "Fix this error:\nCS1503: `Argument 1: cannot convert from 'List<string>' to 'string'`",
+            FixRequest.BuildPrompt([Error("CS1503", "Argument 1: cannot convert from 'List<string>' to 'string'")]));
+        Assert.Equal(
+            "Fix this error:\nCS0000: ``Use `x<y>` here``",
+            FixRequest.BuildPrompt([Error("CS0000", "Use `x<y>` here")]));
+        Assert.Equal(
+            "Fix this error:\nCS0000: `` `T<U>` ``",
+            FixRequest.BuildPrompt([Error("CS0000", "`T<U>`")]));
     }
 
     [Fact]

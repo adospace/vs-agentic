@@ -34,7 +34,14 @@ public sealed class Problem
 
     public string? Project { get; }
 
-    public Problem(ProblemSeverity severity, string? code, string text, string? filePath, int? line, string? project)
+    /// <summary>
+    /// From the last build. Its line stays as it was at the build, while live
+    /// analysis follows the edits; after an edit above it the line is off.
+    /// </summary>
+    public bool IsFromBuild { get; }
+
+    public Problem(ProblemSeverity severity, string? code, string text, string? filePath, int? line, string? project,
+        bool isFromBuild = false)
     {
         Severity = severity;
         Code = string.IsNullOrWhiteSpace(code) ? null : code!.Trim();
@@ -42,8 +49,19 @@ public sealed class Problem
         FilePath = string.IsNullOrWhiteSpace(filePath) ? null : filePath;
         Line = FilePath is null || line is null or < 1 ? null : line;
         Project = string.IsNullOrWhiteSpace(project) ? null : project;
+        IsFromBuild = isFromBuild;
     }
 }
+
+/// <summary>A place to attach for a fix request.</summary>
+/// <param name="FilePath">Absolute path.</param>
+/// <param name="Line">1-based.</param>
+/// <param name="LineIsCurrent">
+/// True when live analysis reports a problem on this line, so the line is the
+/// one in the editor now. False when only the last build does: the code at
+/// that line may be a different line by now, and is better left out.
+/// </param>
+public sealed record FixLocation(string FilePath, int Line, bool LineIsCurrent);
 
 /// <summary>
 /// The text "Fix in VsAgentic Chat" puts in the input box, and the places it
@@ -61,12 +79,13 @@ public static class FixRequest
     /// <summary>
     /// The same problem once. The Error List can hold a problem twice: from
     /// the last build and from live analysis, or once per target framework.
+    /// The copy from live analysis is kept: its line follows the edits.
     /// </summary>
     public static IReadOnlyList<Problem> Distinct(IEnumerable<Problem> problems) =>
         problems
             .Where(p => p.Text.Length > 0)
             .GroupBy(p => (p.Severity, p.Code, p.Text, Path: p.FilePath?.ToUpperInvariant(), p.Line))
-            .Select(g => g.First())
+            .Select(g => g.FirstOrDefault(p => !p.IsFromBuild) ?? g.First())
             .ToList();
 
     /// <summary>The request text, or null when there is nothing to fix.</summary>
@@ -94,13 +113,12 @@ public static class FixRequest
     }
 
     /// <summary>The distinct places to attach, in the order of the request.</summary>
-    public static IReadOnlyList<(string FilePath, int Line)> Locations(IReadOnlyList<Problem> problems) =>
+    public static IReadOnlyList<FixLocation> Locations(IReadOnlyList<Problem> problems) =>
         problems
             .Take(MaxProblems)
             .Where(p => p.FilePath is not null && p.Line is not null)
-            .Select(p => (FilePath: p.FilePath!, Line: p.Line!.Value))
-            .GroupBy(l => (Path: l.FilePath.ToUpperInvariant(), l.Line))
-            .Select(g => g.First())
+            .GroupBy(p => (Path: p.FilePath!.ToUpperInvariant(), Line: p.Line!.Value))
+            .Select(g => new FixLocation(g.First().FilePath!, g.Key.Line, g.Any(p => !p.IsFromBuild)))
             .Take(MaxLocations)
             .ToList();
 
@@ -138,7 +156,31 @@ public static class FixRequest
         if (text.Length > 0)
             text.Append(": ");
 
-        return text.Append(problem.Text).ToString();
+        return text.Append(ShownAsWritten(problem.Text)).ToString();
+    }
+
+    /// <summary>
+    /// The chat renders a sent message as Markdown, which passes HTML through:
+    /// <c>List&lt;string&gt;</c> showed as "List" with the type argument gone.
+    /// A message with '&lt;' goes into a code span, which shows it as it is
+    /// and reads the same to the agent. Others stay plain text.
+    /// </summary>
+    private static string ShownAsWritten(string text)
+    {
+        if (text.IndexOf('<') < 0) return text;
+
+        // A fence longer than any run of backticks in the text, and a space
+        // inside it when the text starts or ends with one.
+        var longest = 0;
+        var run = 0;
+        foreach (var c in text)
+        {
+            run = c == '`' ? run + 1 : 0;
+            if (run > longest) longest = run;
+        }
+        var fence = new string('`', longest + 1);
+        var pad = text.StartsWith("`", StringComparison.Ordinal) || text.EndsWith("`", StringComparison.Ordinal) ? " " : "";
+        return fence + pad + text + pad + fence;
     }
 
     private static string SafeFileName(string path)

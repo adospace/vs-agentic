@@ -108,6 +108,11 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
 
         _sessionListViewModel = new SessionListViewModel();
         _sessionListViewModel.ConfirmDelete = ConfirmSessionDelete;
+        // Stateless, and the session list is one for all chats, while each
+        // chat builds its own service provider; so it is made here.
+        _sessionListViewModel.Forker = new VsAgentic.Services.ClaudeCli.ClaudeCliConversationForker();
+        _sessionListViewModel.ReportForkProblem = ReportForkProblem;
+        _sessionListViewModel.FlushSessionWrites = FlushSessionWritesAsync;
 
         // Initialize persistence and load saved sessions
         await InitializeSessionPersistenceAsync();
@@ -467,6 +472,32 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         return answer == (int)Microsoft.VisualStudio.VSConstants.MessageBoxResult.IDYES;
     }
 
+    /// <summary>The open chat of a session finishes its pending writes; a closed one has none.</summary>
+    private async Task FlushSessionWritesAsync(SessionInfo session)
+    {
+        await JoinableTaskFactory.SwitchToMainThreadAsync();
+        if (_chatWindows.TryGetValue(session.Id, out var window)
+            && window.ChatControl.DataContext is ChatSessionViewModel vm)
+        {
+            await vm.FlushPersistenceAsync();
+        }
+    }
+
+    private void ReportForkProblem(string message)
+    {
+        _ = JoinableTaskFactory.RunAsync(async () =>
+        {
+            await JoinableTaskFactory.SwitchToMainThreadAsync();
+            VsShellUtilities.ShowMessageBox(
+                this,
+                message,
+                "The chat was not forked",
+                OLEMSGICON.OLEMSGICON_INFO,
+                OLEMSGBUTTON.OLEMSGBUTTON_OK,
+                OLEMSGDEFBUTTON.OLEMSGDEFBUTTON_FIRST);
+        });
+    }
+
     private ChatSessionViewModel CreateChatViewModel()
     {
         ThreadHelper.ThrowIfNotOnUIThread();
@@ -765,6 +796,22 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
                     viewModel.SessionInfo = session;
                     viewModel.HasCustomTitle = session.HasCustomTitle;
                     _instance._attention?.Track(viewModel, session);
+
+                    // "/fork" typed in the chat does what Fork in the list does.
+                    viewModel.ForkChat = () =>
+                    {
+                        var list = _instance?._sessionListViewModel;
+                        if (list is null) return false;
+                        // What the command checks before any work, said here,
+                        // so "/fork" never ends without a word.
+                        if (list.WhyCannotFork(session) is { } reason)
+                        {
+                            _instance!.ReportForkProblem(reason);
+                            return false;
+                        }
+                        list.ForkSessionCommand.Execute(session);
+                        return true;
+                    };
 
                     // A rename in the session list flows into the open window:
                     // caption and generated-title suppression follow the new name.

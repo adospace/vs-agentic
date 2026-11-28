@@ -1492,6 +1492,14 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             return;
         }
 
+        // "/fork" opens a new chat in the session list, which the CLI knows
+        // nothing about.
+        if (PendingAttachments.Count == 0 && TryRunForkCommand(typed) is { } forked)
+        {
+            if (forked) InputText = "";
+            return;
+        }
+
         InputText = "";
 
         var attachments = PendingAttachments.ToList();
@@ -2114,7 +2122,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
         if (store is null || folder is null || !sessionId.HasValue || _chatService is null) return;
 
         var historyJson = _chatService.SerializeHistory();
-        _ = Task.Run(async () =>
+        var write = Task.Run(async () =>
         {
             try
             {
@@ -2130,6 +2138,20 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             }
             catch { /* best effort */ }
         });
+        lock (_messageWriteLock) { _historyWrites = Task.WhenAll(_historyWrites, write); }
+    }
+
+    // The history writes still running; FlushPersistenceAsync waits for them.
+    private Task _historyWrites = Task.CompletedTask;
+
+    /// <summary>
+    /// Completes when every write of this chat's messages and history asked
+    /// for so far is on disk. A fork reads both right after a turn, when the
+    /// last writes may still run.
+    /// </summary>
+    public Task FlushPersistenceAsync()
+    {
+        lock (_messageWriteLock) return Task.WhenAll(_messageWriteTail, _historyWrites);
     }
 
     private void PersistTitleUpdateFireAndForget(string title)

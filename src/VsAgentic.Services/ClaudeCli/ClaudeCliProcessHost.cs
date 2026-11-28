@@ -52,6 +52,7 @@ public sealed class ClaudeCliProcessHost : IDisposable
     private PermissionPipeServer? _pipeServer;
     private ProcessTreeJob? _processTree;
     private string? _resumeSessionId;
+    private bool _forkSession;
     private string? _mcpConfigTempPath;
     private string? _settingsTempPath;
 
@@ -90,12 +91,19 @@ public sealed class ClaudeCliProcessHost : IDisposable
 
     /// <summary>
     /// Set the session id to resume on the next start. Call before
-    /// <see cref="EnsureStartedAsync"/>.
+    /// <see cref="EnsureStartedAsync"/>. With <paramref name="fork"/> the CLI
+    /// continues a copy of that conversation under a new id; with
+    /// <paramref name="forkAtMessageUuid"/> the copy ends at that message, so
+    /// what the original said after it stays out.
     /// </summary>
-    public void SetResumeSessionId(string? sessionId)
+    public void SetResumeSessionId(string? sessionId, bool fork = false, string? forkAtMessageUuid = null)
     {
         _resumeSessionId = sessionId;
+        _forkSession = fork && !string.IsNullOrEmpty(sessionId);
+        _forkAtMessageUuid = _forkSession && !string.IsNullOrEmpty(forkAtMessageUuid) ? forkAtMessageUuid : null;
     }
+
+    private string? _forkAtMessageUuid;
 
     public async Task EnsureStartedAsync(CancellationToken cancellationToken)
     {
@@ -359,6 +367,21 @@ public sealed class ClaudeCliProcessHost : IDisposable
         {
             sb.Append(" --resume ");
             sb.Append(EscapeArgument(_resumeSessionId!));
+
+            // The CLI copies the conversation under a new id and leaves the
+            // one it was given as it is.
+            if (_forkSession)
+                sb.Append(" --fork-session");
+
+            // Not in --help, but read by the CLI (the Agent SDK's
+            // resumeSessionAt): the copy ends at this message. Measured on
+            // 2.1.332: with turn 2 said after the fork point, the fork knew
+            // turn 1 only; without the flag it knew both.
+            if (_forkAtMessageUuid is not null)
+            {
+                sb.Append(" --resume-session-at ");
+                sb.Append(EscapeArgument(_forkAtMessageUuid));
+            }
         }
 
         // Nudge Claude to actually use the AskUserQuestion tool instead of

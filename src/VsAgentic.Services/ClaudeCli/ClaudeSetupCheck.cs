@@ -196,6 +196,9 @@ public static class ClaudeSetupCheck
 
             if (await Task.WhenAny(connected, Task.Delay(HelperTimeout, ct)).ConfigureAwait(false) != connected)
             {
+                // The delay also ends when the check is cancelled; that is not
+                // a helper that failed to connect.
+                ct.ThrowIfCancellationRequested();
                 var exited = process.HasExited ? $" It exited with code {process.ExitCode}." : "";
                 return new SetupCheckItem(SetupCheckStatus.Error, title,
                     $"Started, but did not connect back to Visual Studio in {HelperTimeout.TotalSeconds:0} seconds.{exited}{logHint}");

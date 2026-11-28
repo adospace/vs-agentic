@@ -111,13 +111,6 @@ internal sealed class UpdateChecker : IVsInfoBarUIEvents
         }
     }
 
-    /// <summary>
-    /// Returns two versions: the one currently loaded (manifest next to the running
-    /// assembly) and the highest version found across all sibling extension folders
-    /// that share our Identity Id. When VS leaves a stale folder behind after an
-    /// update, the two diverge — the older one keeps loading because its files were
-    /// locked at cleanup time.
-    /// </summary>
     /// <summary>The version in this build's own manifest; null when it cannot be read.</summary>
     internal static Version? ReadRunningVersion()
     {
@@ -127,6 +120,13 @@ internal sealed class UpdateChecker : IVsInfoBarUIEvents
         return File.Exists(ownManifest) ? TryReadVersionFromManifest(ownManifest, extensionId: null) : null;
     }
 
+    /// <summary>
+    /// Returns two versions: the one currently loaded (manifest next to the running
+    /// assembly) and the highest version found across all sibling extension folders
+    /// that share our Identity Id. When VS leaves a stale folder behind after an
+    /// update, the two diverge — the older one keeps loading because its files were
+    /// locked at cleanup time.
+    /// </summary>
     private static (Version? running, Version? bestOnDisk) ReadVersions()
     {
         Version? running = null;

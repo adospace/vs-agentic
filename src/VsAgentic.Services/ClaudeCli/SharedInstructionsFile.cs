@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
 
 namespace VsAgentic.Services.ClaudeCli;
 
@@ -12,6 +14,10 @@ namespace VsAgentic.Services.ClaudeCli;
 /// AGENTS.md is left out unless CLAUDE.md imports it with an <c>@</c> line.
 /// A running CLI does not read CLAUDE.md again; the import takes effect in
 /// the next process (CLI 2.1.325).
+///
+/// Paths are compared as files, not as text: a common setup has CLAUDE.md as
+/// a link to AGENTS.md (<c>ln -s AGENTS.md CLAUDE.md</c>). The CLI then
+/// reports the CLAUDE.md path, and AGENTS.md is loaded all the same.
 /// </summary>
 public static class SharedInstructionsFile
 {
@@ -19,7 +25,8 @@ public static class SharedInstructionsFile
 
     /// <summary>
     /// The AGENTS.md in <paramref name="workingDirectory"/> when it exists and
-    /// is not among the files the CLI loaded; null otherwise.
+    /// is not among the files the CLI loaded, under its own name or through a
+    /// link; null otherwise.
     /// </summary>
     public static string? FindNotLoaded(string workingDirectory, IEnumerable<string> loadedPaths)
     {
@@ -28,11 +35,13 @@ public static class SharedInstructionsFile
         var path = Path.Combine(workingDirectory, FileName);
         if (!File.Exists(path)) return null;
 
-        var full = Normalize(path);
-        return loadedPaths.Any(p => string.Equals(Normalize(p), full, StringComparison.OrdinalIgnoreCase))
-            ? null
-            : path;
+        return loadedPaths.Any(p => SameFile(p, path)) ? null : path;
     }
+
+    /// <summary>Whether the folder has a CLAUDE.md the CLI reads: in the folder or in <c>.claude</c>.</summary>
+    public static bool HasClaudeMd(string workingDirectory) =>
+        File.Exists(Path.Combine(workingDirectory, "CLAUDE.md"))
+        || File.Exists(Path.Combine(workingDirectory, ".claude", "CLAUDE.md"));
 
     /// <summary>
     /// The project CLAUDE.md to import AGENTS.md from: <c>CLAUDE.md</c> in the
@@ -58,19 +67,41 @@ public static class SharedInstructionsFile
         return "@" + Uri.UnescapeDataString(from.MakeRelativeUri(to).ToString());
     }
 
-    /// <summary>Whether the file already has the import line.</summary>
+    /// <summary>
+    /// Whether the file already has the import line. False when it cannot be
+    /// read as text (see <see cref="ReadText"/>).
+    /// </summary>
     public static bool HasImport(string claudeMdPath, string agentsMdPath)
     {
         if (!File.Exists(claudeMdPath)) return false;
         var line = ImportLine(claudeMdPath, agentsMdPath);
-        return File.ReadAllLines(claudeMdPath).Any(l => string.Equals(l.Trim(), line, StringComparison.OrdinalIgnoreCase));
+        string text;
+        try
+        {
+            text = ReadText(claudeMdPath, out _);
+        }
+        catch (InvalidDataException)
+        {
+            return false;
+        }
+        return text.Split('\n').Any(l => string.Equals(l.Trim(), line, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
     /// Adds the import line at the end of <paramref name="claudeMdPath"/>, or
-    /// creates the file with only that line. Keeps the file's line endings
-    /// and byte order mark. Returns false when the line is already there.
+    /// creates the file with only that line. Keeps the file's encoding, byte
+    /// order mark and line endings. Returns false when the line is already
+    /// there.
     /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// CLAUDE.md is AGENTS.md itself, through a link: the line would end up in
+    /// AGENTS.md, where every other agent reads it.
+    /// </exception>
+    /// <exception cref="InvalidDataException">
+    /// The file has no byte order mark and is not valid UTF-8 (an ANSI code
+    /// page, say). It is left as it is rather than rewritten with its
+    /// non-ASCII characters lost.
+    /// </exception>
     public static bool AddImport(string claudeMdPath, string agentsMdPath)
     {
         var line = ImportLine(claudeMdPath, agentsMdPath);
@@ -82,11 +113,13 @@ public static class SharedInstructionsFile
             return true;
         }
 
-        if (HasImport(claudeMdPath, agentsMdPath)) return false;
+        if (SameFile(claudeMdPath, agentsMdPath))
+            throw new InvalidOperationException(
+                $"{Path.GetFileName(claudeMdPath)} is a link to {FileName}, so Claude already reads it. Nothing was changed.");
 
-        var bytes = File.ReadAllBytes(claudeMdPath);
-        var hasBom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
-        var text = new UTF8Encoding(false).GetString(bytes, hasBom ? 3 : 0, bytes.Length - (hasBom ? 3 : 0));
+        var text = ReadText(claudeMdPath, out var encoding);
+        if (text.Split('\n').Any(l => string.Equals(l.Trim(), line, StringComparison.OrdinalIgnoreCase)))
+            return false;
 
         var newline = text.Contains("\r\n") ? "\r\n" : text.Contains("\n") ? "\n" : Environment.NewLine;
         var builder = new StringBuilder(text);
@@ -97,8 +130,109 @@ public static class SharedInstructionsFile
         }
         builder.Append(line).Append(newline);
 
-        File.WriteAllText(claudeMdPath, builder.ToString(), new UTF8Encoding(hasBom));
+        File.WriteAllText(claudeMdPath, builder.ToString(), encoding);
         return true;
+    }
+
+    /// <summary>
+    /// The file as text, and the encoding to write it back with. A byte order
+    /// mark decides: UTF-8, UTF-16 or UTF-32, little or big endian. Without
+    /// one the file must be valid UTF-8, which is what the CLI reads it as.
+    /// </summary>
+    /// <exception cref="InvalidDataException">No byte order mark and not valid UTF-8.</exception>
+    public static string ReadText(string path, out Encoding encoding)
+    {
+        var bytes = File.ReadAllBytes(path);
+
+        // UTF-32 LE starts like UTF-16 LE (FF FE), so it goes first.
+        (byte[] Bom, Encoding Encoding)[] boms =
+        {
+            (new byte[] { 0xFF, 0xFE, 0x00, 0x00 }, new UTF32Encoding(bigEndian: false, byteOrderMark: true, throwOnInvalidCharacters: true)),
+            (new byte[] { 0x00, 0x00, 0xFE, 0xFF }, new UTF32Encoding(bigEndian: true, byteOrderMark: true, throwOnInvalidCharacters: true)),
+            (new byte[] { 0xEF, 0xBB, 0xBF }, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true, throwOnInvalidBytes: true)),
+            (new byte[] { 0xFF, 0xFE }, new UnicodeEncoding(bigEndian: false, byteOrderMark: true, throwOnInvalidBytes: true)),
+            (new byte[] { 0xFE, 0xFF }, new UnicodeEncoding(bigEndian: true, byteOrderMark: true, throwOnInvalidBytes: true)),
+        };
+
+        foreach (var (bom, withBom) in boms)
+        {
+            if (bytes.Length < bom.Length || !bom.SequenceEqual(bytes.Take(bom.Length))) continue;
+            try
+            {
+                encoding = withBom;
+                return withBom.GetString(bytes, bom.Length, bytes.Length - bom.Length);
+            }
+            catch (DecoderFallbackException ex)
+            {
+                throw new InvalidDataException($"{Path.GetFileName(path)} is not valid {withBom.WebName}.", ex);
+            }
+        }
+
+        var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+        try
+        {
+            encoding = utf8;
+            return utf8.GetString(bytes);
+        }
+        catch (DecoderFallbackException ex)
+        {
+            throw new InvalidDataException(
+                $"{Path.GetFileName(path)} is not UTF-8, so VsAgentic does not change it. Save it as UTF-8 and try again.", ex);
+        }
+    }
+
+    /// <summary>
+    /// Whether two paths name the same file: the same volume and file index,
+    /// which a symbolic link, a hard link or a different spelling of the path
+    /// all share. Falls back to comparing full paths when a file cannot be
+    /// opened.
+    /// </summary>
+    public static bool SameFile(string a, string b)
+    {
+        if (string.Equals(Normalize(a), Normalize(b), StringComparison.OrdinalIgnoreCase)) return true;
+        return FileId(a) is { } idA && FileId(b) is { } idB && idA == idB;
+    }
+
+    private static (uint Volume, uint High, uint Low)? FileId(string path)
+    {
+        try
+        {
+            // Opening follows a symbolic link to its target. No access is
+            // asked for, so a file open elsewhere still answers.
+            using var handle = CreateFile(path, 0, FileShare.ReadWrite | FileShare.Delete, IntPtr.Zero,
+                FileMode.Open, FileFlagBackupSemantics, IntPtr.Zero);
+            if (handle.IsInvalid) return null;
+            if (!GetFileInformationByHandle(handle, out var info)) return null;
+            return (info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow);
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    private const uint FileFlagBackupSemantics = 0x02000000;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(string fileName, uint desiredAccess, FileShare shareMode,
+        IntPtr securityAttributes, FileMode creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(SafeFileHandle file, out ByHandleFileInformation info);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
     }
 
     private static string Normalize(string path)

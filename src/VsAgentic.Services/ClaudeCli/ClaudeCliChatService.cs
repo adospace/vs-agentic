@@ -717,7 +717,8 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
 
     public event Action<string>? SharedInstructionsNotLoaded;
 
-    // Once per chat: a restart or a resumed process does not ask again.
+    // Once per conversation: a restart or a resumed process does not ask
+    // again. Clear starts a new conversation, which asks again.
     private int _sharedInstructionsChecked;
 
     private async Task CheckSharedInstructionsAsync(CliControlChannel control)
@@ -749,6 +750,15 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
 
             var missing = SharedInstructionsFile.FindNotLoaded(folder, loaded);
             if (missing is null) return;
+
+            // With no CLAUDE.md the CLI reads AGENTS.md by itself. Not loaded
+            // then means the user's settings leave project files out, and a
+            // new CLAUDE.md with an import would be left out the same way.
+            if (!SharedInstructionsFile.HasClaudeMd(folder))
+            {
+                _logger.LogInformation("[ClaudeCli] {File} is not loaded and there is no CLAUDE.md: project instruction files are off", missing);
+                return;
+            }
 
             // Imported but still not loaded: the user's settings leave project
             // files out, and another import line would not change that.
@@ -4157,6 +4167,7 @@ public sealed partial class ClaudeCliChatService : IChatService, ISessionSetupIn
     {
         _cliSessionId = null;
         _cumulativeCostUsd = 0;
+        Interlocked.Exchange(ref _sharedInstructionsChecked, 0);
 
         lock (_usageLock)
         {

@@ -1484,6 +1484,10 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
     {
         var typed = InputText.Trim();
 
+        // "/btw …" asks on the side; it never goes out as a message.
+        // Attachments stay for the next message: a side question has none.
+        if (TryAskSideQuestion(typed)) return;
+
         // "/doctor" is VsAgentic's setup check, which does not go to the CLI.
         // "/model", "/effort" and "/fast" change the panel, not go to the CLI.
         if (PendingAttachments.Count == 0 && (TryStartSetupCheck(typed) || TryRunPanelCommand(typed)))
@@ -2220,6 +2224,7 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
             ClaudeCommandCatalog.ReportedChanged -= OnReportedCommandsChanged;
         }
         catch { }
+        DisposeSideQuestions();
         try { (_chatService as IDisposable)?.Dispose(); } catch { }
         try { _serviceScope?.Dispose(); } catch { }
     }

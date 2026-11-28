@@ -661,6 +661,27 @@ public partial class ChatWebView : UserControl
             $"completeMessage({JsonSerializer.Serialize(id)})");
     }
 
+    /// <summary>
+    /// Shows a side question in the panel over the bottom of the chat, with
+    /// a placeholder until <see cref="SetSideAnswerAsync"/> brings its answer.
+    /// Replaces the question shown before.
+    /// </summary>
+    public Task ShowSideQuestionAsync(string id, string question)
+    {
+        return ExecuteOrQueueAsync(
+            $"showSideQuestion({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(question)})");
+    }
+
+    /// <summary>
+    /// Puts the answer (Markdown) or the error into the panel, if it still
+    /// shows the question with this id.
+    /// </summary>
+    public Task SetSideAnswerAsync(string id, string? markdown, string? error)
+    {
+        return ExecuteOrQueueAsync(
+            $"setSideAnswer({JsonSerializer.Serialize(id)}, {JsonSerializer.Serialize(markdown)}, {JsonSerializer.Serialize(error)})");
+    }
+
     public Task ClearAllAsync()
     {
         return ExecuteOrQueueAsync("clearAll()");

@@ -1612,6 +1612,18 @@
                                      works: the message then waits until Claude
                                      reads it at its next step. -->
                                 <StackPanel Grid.Column="2" Margin="2" Orientation="Horizontal">
+                                    <!-- /btw, beside Send because it is the other way
+                                         to send what is in the input: asks it on the
+                                         side, or writes "/btw " into an empty input.
+                                         Gone once the CLI has refused side questions. -->
+                                    <Button x:Name="SideQuestionButton"
+                                            Style="{StaticResource IconButtonStyle}"
+                                            Click="SideQuestionButton_Click"
+                                            Visibility="{Binding CanAskSideQuestions, Converter={StaticResource BoolToVis}}"
+                                            ToolTip="Ask a side question (/btw, Ctrl+Shift+Enter).&#x0a;Claude answers without stopping its work, and the question does not join the conversation.&#x0a;The answer costs a model call: the session cost includes it after the next reply, the token counts do not.">
+                                        <imaging:CrispImage Width="16" Height="16"
+                                                            Moniker="{x:Static catalog:KnownMonikers.Comment}"/>
+                                    </Button>
                                     <Button Style="{StaticResource IconButtonStyle}"
                                             Command="{Binding SendCommand}"
                                             ToolTip="Send (Ctrl+Enter).&#x0a;While Claude works, the message waits and Claude reads it at its next step.">

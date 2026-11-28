@@ -181,6 +181,12 @@ public partial class ChatSessionControl : UserControl
         viewModel.TurnEnded += () =>
             _ = ChatWebView.EndActivityAsync();
 
+        viewModel.SideQuestionAsked += (id, question) =>
+            _ = ChatWebView.ShowSideQuestionAsync(id, question);
+
+        viewModel.SideQuestionAnswered += (id, answer, error) =>
+            _ = ChatWebView.SetSideAnswerAsync(id, answer, error);
+
         // The dots before the status text. While a banner waits for the user,
         // Claude is not working.
         SetWorkingDots(viewModel.IsWorking);
@@ -796,10 +802,17 @@ public partial class ChatSessionControl : UserControl
         if (e.Key == Key.Enter &&
             (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
         {
-            if (DataContext is ChatSessionViewModel vm && vm.SendCommand.CanExecute(null))
+            if (DataContext is ChatSessionViewModel vm)
             {
-                vm.SendCommand.Execute(null);
-                e.Handled = true;
+                if (vm.SendCommand.CanExecute(null))
+                {
+                    vm.SendCommand.Execute(null);
+                    e.Handled = true;
+                }
+                else if (vm.TryAskTypedSideQuestion())
+                {
+                    e.Handled = true;
+                }
             }
         }
 
@@ -820,6 +833,30 @@ public partial class ChatSessionControl : UserControl
                 e.Handled = true;
             }
         }
+    }
+
+    private void SideQuestionButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is ChatSessionViewModel vm)
+            AskSideQuestionFromInput(vm);
+    }
+
+    /// <summary>
+    /// Asks the input as a side question. With no question in it, writes
+    /// "/btw " in front of the caret's text so the user can type one.
+    /// </summary>
+    private void AskSideQuestionFromInput(ChatSessionViewModel vm)
+    {
+        InputTextBox.Focus();
+        if (vm.AskInputAsSideQuestion()) return;
+
+        var prefix = "/" + ChatSessionViewModel.SideQuestionCommand + " ";
+        var text = (InputTextBox.Text ?? "").Trim();
+        if (!text.StartsWith(prefix.TrimEnd(), StringComparison.OrdinalIgnoreCase))
+            text = prefix + text;
+        else if (!text.EndsWith(" ", StringComparison.Ordinal))
+            text += " ";
+        SetInputText(text, text.Length);
     }
 
     private void ResizeGrip_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -1083,6 +1120,17 @@ public partial class ChatSessionControl : UserControl
                     return;
                 }
             }
+        }
+
+        // Ctrl+Shift+Enter asks on the side (/btw), as the button does. Here,
+        // before the text box, which would take Shift+Enter as a new line.
+        if (e.Key == Key.Enter && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)
+            && DataContext is ChatSessionViewModel side && side.CanAskSideQuestions)
+        {
+            CloseSlashPopup();
+            AskSideQuestionFromInput(side);
+            e.Handled = true;
+            return;
         }
 
         if (SlashPopup.IsOpen && HandleSlashKey(e))

@@ -62,11 +62,12 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     private ErrorListReader? _errorList;
     private ReviewFindingsTable? _reviewFindings;
 
-    // For "Add to VsAgentic Chat": the open chat windows, the one the user was
-    // in last, and an editor context waiting for a window still being opened.
+    // For "Add to VsAgentic Chat" and "Fix in VsAgentic Chat": the open chat
+    // windows, the one the user was in last, and what waits for a window
+    // still being opened.
     private readonly Dictionary<string, ChatSessionToolWindow> _chatWindows = new();
     private string? _lastActiveSessionId;
-    private EditorContext? _pendingEditorContext;
+    private Action<ChatSessionControl>? _pendingDelivery;
 
     public static bool IsLoaded => _instance is not null;
 
@@ -154,6 +155,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             {
                 _errorList = new ErrorListReader(tableManagerProvider.GetTableManager(StandardTables.ErrorsTable));
                 _ideContextProviders.Add(new DiagnosticsIdeContextProvider(_errorList, _editorContext));
+                ErrorListProblems.Attach(_errorList);
             }
         }
         catch (Exception ex)
@@ -633,7 +635,134 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
         if (_instance._editorContext?.ReadActive() is not { } context)
             return;
 
-        _instance._pendingEditorContext = context;
+        await DeliverToChatAsync(chat => chat.AttachFromEditor(context));
+    }
+
+    /// <summary>
+    /// Puts "Fix this error" for the given problems in the input box of the
+    /// chat the user was last in, with each place attached, and brings that
+    /// chat forward. Nothing is sent.
+    /// </summary>
+    public static async Task FixInChatAsync(IEnumerable<Problem> problems)
+    {
+        if (_instance is null) return;
+
+        await _instance.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+        var distinct = FixRequest.Distinct(problems);
+        if (FixRequest.BuildPrompt(distinct) is not { } text)
+        {
+            _instance.SetStatusBarText("VsAgentic: Select an error or a warning to fix.");
+            return;
+        }
+
+        var places = FixRequest.Locations(distinct);
+
+        // Open documents are read from their buffers here, on the UI thread;
+        // the others from disk on a background thread. A place known only
+        // from the last build may have moved since, so it goes without code.
+        var texts = places.Select(p => !p.LineIsCurrent ? null
+                                       : _instance.ReadOpenLineText(p.FilePath, p.Line, out var open) ? new LineText(open)
+                                       : new LineText(null, fromDisk: true))
+                          .ToList();
+
+        if (texts.Any(t => t is { FromDisk: true }))
+        {
+            await Task.Run(() =>
+            {
+                for (var i = 0; i < places.Count; i++)
+                {
+                    if (texts[i] is { FromDisk: true })
+                        texts[i] = new LineText(ReadDiskLineText(places[i].FilePath, places[i].Line));
+                }
+            });
+        }
+
+        var locations = places
+            .Select((p, i) => new EditorContext(p.FilePath, p.Line, p.Line, texts[i]?.Text, isLocation: true))
+            .ToList();
+
+        await DeliverToChatAsync(chat => chat.FillFromIde(text, locations));
+    }
+
+    private sealed class LineText
+    {
+        public LineText(string? text, bool fromDisk = false)
+        {
+            Text = text;
+            FromDisk = fromDisk;
+        }
+
+        public string? Text { get; }
+        public bool FromDisk { get; }
+    }
+
+    /// <summary>The same, without waiting: for callers that must return at once, like the light bulb.</summary>
+    internal static void StartFixInChat(IEnumerable<Problem> problems) => Start(() => FixInChatAsync(problems));
+
+    /// <summary>
+    /// Runs work for an editor extension that must not wait for it, joined to
+    /// the package so it ends with Visual Studio. Nothing runs before the
+    /// package has loaded.
+    /// </summary>
+    internal static void Start(Func<Task> work)
+    {
+        if (_instance is null) return;
+
+        _ = _instance.JoinableTaskFactory.RunAsync(work);
+    }
+
+    /// <summary>
+    /// "Fix in VsAgentic Chat" from the editor's context menu: the errors and
+    /// warnings on the selected lines, or on the caret's line without a
+    /// selection.
+    /// </summary>
+    public static async Task FixAtEditorCaretAsync()
+    {
+        if (_instance is null) return;
+
+        await _instance.JoinableTaskFactory.SwitchToMainThreadAsync();
+
+        if (_instance._editorContext is not { } editor) return;
+
+        string path;
+        int first, last;
+        if (editor.ReadActive() is { HasSelection: true } selection)
+        {
+            path = selection.FilePath;
+            first = selection.StartLine!.Value - 1;
+            last = selection.EndLine!.Value - 1;
+        }
+        else if (editor.ReadCaret() is { } caret)
+        {
+            path = caret.Path;
+            first = last = caret.Line;
+        }
+        else
+        {
+            return;
+        }
+
+        var problems = ErrorListProblems.OnLines(path, first, last);
+        if (problems.Count == 0)
+        {
+            _instance.SetStatusBarText("VsAgentic: No error or warning on this line.");
+            return;
+        }
+
+        await FixInChatAsync(problems);
+    }
+
+    /// <summary>
+    /// Hands something to the chat the user was last in, and brings it
+    /// forward. With no chat open, a new session takes it once its window is up.
+    /// </summary>
+    private static async Task DeliverToChatAsync(Action<ChatSessionControl> delivery)
+    {
+        if (_instance is null) return;
+
+        await _instance.JoinableTaskFactory.SwitchToMainThreadAsync();
+        _instance._pendingDelivery = delivery;
 
         var sessions = _instance._sessionListViewModel;
         if (_instance._lastActiveSessionId is { } id &&
@@ -654,15 +783,70 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
     {
         ThreadHelper.ThrowIfNotOnUIThread();
 
-        if (_pendingEditorContext is not { } context ||
+        if (_pendingDelivery is not { } delivery ||
             !_chatWindows.TryGetValue(sessionId, out var window))
         {
             return;
         }
 
-        _pendingEditorContext = null;
-        window.ChatControl.AttachFromEditor(context);
+        _pendingDelivery = null;
+        delivery(window.ChatControl);
     }
+
+    private const int MaxLineTextLength = 2000;
+
+    /// <summary>
+    /// The text of one line (1-based) as the editor holds it, saved or not.
+    /// False when the file is not open in an editor; the caller then reads it
+    /// from disk, off the UI thread. <paramref name="text"/> is null when the
+    /// line is empty or too long to be worth sending.
+    /// </summary>
+    private bool ReadOpenLineText(string filePath, int line, out string? text)
+    {
+        ThreadHelper.ThrowIfNotOnUIThread();
+
+        text = null;
+        try
+        {
+            if (!VsShellUtilities.IsDocumentOpen(this, filePath, Guid.Empty, out _, out _, out var frame) ||
+                frame is null ||
+                VsShellUtilities.GetTextView(frame) is not { } view ||
+                view.GetBuffer(out var lines) != Microsoft.VisualStudio.VSConstants.S_OK)
+            {
+                return false;
+            }
+
+            if (lines.GetLengthOfLine(line - 1, out var length) == Microsoft.VisualStudio.VSConstants.S_OK &&
+                lines.GetLineText(line - 1, 0, line - 1, length, out var bufferText) == Microsoft.VisualStudio.VSConstants.S_OK)
+            {
+                text = Usable(bufferText);
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            // The place goes without its code; the agent can read the file.
+            System.Diagnostics.Debug.WriteLine($"VsAgentic: Could not read line {line} of {filePath}: {ex.Message}");
+            return true;
+        }
+    }
+
+    /// <summary>One line (1-based) of a file on disk. Not on the UI thread.</summary>
+    private static string? ReadDiskLineText(string filePath, int line)
+    {
+        try
+        {
+            return File.Exists(filePath) ? Usable(File.ReadLines(filePath).Skip(line - 1).FirstOrDefault()) : null;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"VsAgentic: Could not read line {line} of {filePath}: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static string? Usable(string? text) =>
+        string.IsNullOrWhiteSpace(text) || text!.Length > MaxLineTextLength ? null : text;
 
     private static async Task OpenOrActivateSessionAsync(SessionInfo session)
     {
@@ -1123,6 +1307,7 @@ public sealed class VsAgenticPackage : AsyncPackage, IVsSolutionEvents
             _debuggerState?.Dispose();
             _debuggerState = null;
 
+            ErrorListProblems.Detach();
             _errorList?.Dispose();
             _errorList = null;
 

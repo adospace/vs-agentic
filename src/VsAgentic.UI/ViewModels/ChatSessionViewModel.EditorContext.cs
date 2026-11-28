@@ -25,6 +25,7 @@ public partial class ChatSessionViewModel
 
     private const string OpenInEditorPrefix = "Open in editor: `";
     private const string SelectedInEditorPrefix = "Selected in editor: `";
+    private const string LocationPrefix = "Location: `";
 
     private IEditorContextProvider? _editorContextProvider;
 
@@ -85,6 +86,25 @@ public partial class ChatSessionViewModel
         Attach(ReadEditorContext() ?? suggestion);
     }
 
+    /// <summary>
+    /// Puts a request from the IDE, such as "Fix this error", in the input box
+    /// with the places it is about attached. Nothing is sent: the user reads
+    /// it, adds to it or changes it first. Text already typed stays, and the
+    /// request goes below it.
+    /// </summary>
+    public void FillFromIde(string text, IEnumerable<EditorContext> locations)
+    {
+        foreach (var location in locations)
+            Attach(location);
+
+        // The same request picked twice is one request.
+        if (InputText.Contains(text)) return;
+
+        InputText = string.IsNullOrWhiteSpace(InputText)
+            ? text
+            : InputText.TrimEnd() + "\n\n" + text;
+    }
+
     private bool IsAttached(EditorContext context) =>
         PendingAttachments.Any(a => string.Equals(a.SourcePath, context.Reference, StringComparison.OrdinalIgnoreCase));
 
@@ -122,9 +142,10 @@ public partial class ChatSessionViewModel
         var sentHead = new StringBuilder();
         foreach (var context in contexts)
         {
-            var line = context.HasSelection
-                ? $"{SelectedInEditorPrefix}{context.Reference}`"
-                : $"{OpenInEditorPrefix}{context.Reference}`";
+            var prefix = context.IsLocation ? LocationPrefix
+                : context.HasSelection ? SelectedInEditorPrefix
+                : OpenInEditorPrefix;
+            var line = $"{prefix}{context.Reference}`";
 
             shownHead.Append(line).Append('\n');
             sentHead.Append(line).Append('\n');
@@ -147,7 +168,8 @@ public partial class ChatSessionViewModel
     private static string WithoutEditorContextLines(string message)
     {
         while (message.StartsWith(OpenInEditorPrefix, StringComparison.Ordinal) ||
-               message.StartsWith(SelectedInEditorPrefix, StringComparison.Ordinal))
+               message.StartsWith(SelectedInEditorPrefix, StringComparison.Ordinal) ||
+               message.StartsWith(LocationPrefix, StringComparison.Ordinal))
         {
             var end = message.IndexOf('\n');
             message = end < 0 ? "" : message.Substring(end + 1).TrimStart('\r', '\n');
@@ -178,7 +200,7 @@ public partial class ChatSessionViewModel
         var fence = new string('`', Math.Max(3, longestRun + 1));
 
         return new StringBuilder()
-            .Append("Selected text:\n")
+            .Append(context.IsLocation ? "Code at that line:\n" : "Selected text:\n")
             .Append(fence).Append('\n')
             .Append(text.TrimEnd('\r', '\n')).Append('\n')
             .Append(fence)

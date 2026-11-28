@@ -19,6 +19,13 @@ public sealed class EditorContext : IChatAttachment
 
     public bool HasSelection => StartLine is not null;
 
+    /// <summary>
+    /// The lines are a place the IDE points at, such as the line of an error,
+    /// not text the user selected. <see cref="SelectedText"/> is then the code
+    /// at that place.
+    /// </summary>
+    public bool IsLocation { get; }
+
     /// <summary>File name, plus the line range when there is a selection.</summary>
     public string DisplayName { get; }
 
@@ -37,7 +44,8 @@ public sealed class EditorContext : IChatAttachment
 
     public string? SourcePath => Reference;
 
-    public EditorContext(string filePath, int? startLine = null, int? endLine = null, string? selectedText = null)
+    public EditorContext(string filePath, int? startLine = null, int? endLine = null, string? selectedText = null,
+        bool isLocation = false)
     {
         FilePath = string.IsNullOrWhiteSpace(filePath)
             ? throw new ArgumentException("Path is required.", nameof(filePath))
@@ -48,6 +56,7 @@ public sealed class EditorContext : IChatAttachment
             StartLine = startLine;
             EndLine = endLine;
             SelectedText = selectedText;
+            IsLocation = isLocation;
         }
 
         FileName = Path.GetFileName(filePath);

@@ -149,22 +149,20 @@ public sealed class SharedInstructionsFileTests : IDisposable
         _ => new UTF32Encoding(true, true),
     };
 
+    // The CLI reads CLAUDE.md as UTF-8 only (2.1.332): a UTF-16 file reached
+    // the model garbled. An import line in such a file would not be read, so
+    // the file is refused, and left as it is.
     [Theory]
     [MemberData(nameof(BomEncodings))]
-    public void AddImport_KeepsAUnicodeEncoding(string name)
+    public void AddImport_RefusesUtf16AndUtf32_AndLeavesTheFile(string name)
     {
-        var encoding = WithBom(name);
-        File.WriteAllText(RootClaude, "# Navodila\r\nŠumniki: čšž.\r\n", encoding);
+        File.WriteAllText(RootClaude, "# Navodila\r\nŠumniki: čšž.\r\n", WithBom(name));
+        var before = File.ReadAllBytes(RootClaude);
 
-        Assert.True(SharedInstructionsFile.AddImport(RootClaude, Agents));
-
-        var bytes = File.ReadAllBytes(RootClaude);
-        var preamble = encoding.GetPreamble();
-        Assert.Equal(preamble, bytes.Take(preamble.Length));
-        Assert.Equal("# Navodila\r\nŠumniki: čšž.\r\n\r\n@AGENTS.md\r\n",
-            encoding.GetString(bytes, preamble.Length, bytes.Length - preamble.Length));
-        Assert.True(SharedInstructionsFile.HasImport(RootClaude, Agents));
-        Assert.False(SharedInstructionsFile.AddImport(RootClaude, Agents));
+        var ex = Assert.Throws<InvalidDataException>(() => SharedInstructionsFile.AddImport(RootClaude, Agents));
+        Assert.Contains("Save it as UTF-8", ex.Message);
+        Assert.Equal(before, File.ReadAllBytes(RootClaude));
+        Assert.False(SharedInstructionsFile.HasImport(RootClaude, Agents));
     }
 
     [Fact]

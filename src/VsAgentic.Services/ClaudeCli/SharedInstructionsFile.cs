@@ -135,49 +135,46 @@ public static class SharedInstructionsFile
     }
 
     /// <summary>
-    /// The file as text, and the encoding to write it back with. A byte order
-    /// mark decides: UTF-8, UTF-16 or UTF-32, little or big endian. Without
-    /// one the file must be valid UTF-8, which is what the CLI reads it as.
+    /// The file as text, and the encoding to write it back with: UTF-8, with
+    /// a byte order mark when the file has one. That is the only encoding the
+    /// CLI reads CLAUDE.md in (2.1.332): a UTF-16 file reaches the model as
+    /// garbled text, and an import line in it would not be read either.
     /// </summary>
-    /// <exception cref="InvalidDataException">No byte order mark and not valid UTF-8.</exception>
+    /// <exception cref="InvalidDataException">
+    /// The file is UTF-16 or UTF-32 (by its byte order mark), or not valid
+    /// UTF-8 (an ANSI code page, say). It is left as it is.
+    /// </exception>
     public static string ReadText(string path, out Encoding encoding)
     {
         var bytes = File.ReadAllBytes(path);
+        var name = Path.GetFileName(path);
 
         // UTF-32 LE starts like UTF-16 LE (FF FE), so it goes first.
-        (byte[] Bom, Encoding Encoding)[] boms =
+        (byte[] Bom, string Name)[] unicode =
         {
-            (new byte[] { 0xFF, 0xFE, 0x00, 0x00 }, new UTF32Encoding(bigEndian: false, byteOrderMark: true, throwOnInvalidCharacters: true)),
-            (new byte[] { 0x00, 0x00, 0xFE, 0xFF }, new UTF32Encoding(bigEndian: true, byteOrderMark: true, throwOnInvalidCharacters: true)),
-            (new byte[] { 0xEF, 0xBB, 0xBF }, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true, throwOnInvalidBytes: true)),
-            (new byte[] { 0xFF, 0xFE }, new UnicodeEncoding(bigEndian: false, byteOrderMark: true, throwOnInvalidBytes: true)),
-            (new byte[] { 0xFE, 0xFF }, new UnicodeEncoding(bigEndian: true, byteOrderMark: true, throwOnInvalidBytes: true)),
+            (new byte[] { 0xFF, 0xFE, 0x00, 0x00 }, "UTF-32"),
+            (new byte[] { 0x00, 0x00, 0xFE, 0xFF }, "UTF-32"),
+            (new byte[] { 0xFF, 0xFE }, "UTF-16"),
+            (new byte[] { 0xFE, 0xFF }, "UTF-16"),
         };
-
-        foreach (var (bom, withBom) in boms)
+        foreach (var (bom, kind) in unicode)
         {
-            if (bytes.Length < bom.Length || !bom.SequenceEqual(bytes.Take(bom.Length))) continue;
-            try
-            {
-                encoding = withBom;
-                return withBom.GetString(bytes, bom.Length, bytes.Length - bom.Length);
-            }
-            catch (DecoderFallbackException ex)
-            {
-                throw new InvalidDataException($"{Path.GetFileName(path)} is not valid {withBom.WebName}.", ex);
-            }
+            if (bytes.Length >= bom.Length && bom.SequenceEqual(bytes.Take(bom.Length)))
+                throw new InvalidDataException(
+                    $"{name} is saved as {kind}, and Claude Code reads it only as UTF-8, so it cannot read this file or an import in it. Save it as UTF-8 and try again.");
         }
 
-        var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+        var hasBom = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF;
+        var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: hasBom, throwOnInvalidBytes: true);
         try
         {
             encoding = utf8;
-            return utf8.GetString(bytes);
+            return utf8.GetString(bytes, hasBom ? 3 : 0, bytes.Length - (hasBom ? 3 : 0));
         }
         catch (DecoderFallbackException ex)
         {
             throw new InvalidDataException(
-                $"{Path.GetFileName(path)} is not UTF-8, so VsAgentic does not change it. Save it as UTF-8 and try again.", ex);
+                $"{name} is not UTF-8, so VsAgentic does not change it, and Claude Code cannot read its other characters either. Save it as UTF-8 and try again.", ex);
         }
     }
 

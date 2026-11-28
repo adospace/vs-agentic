@@ -952,7 +952,8 @@ public partial class ChatSessionViewModel : ObservableObject, IDisposable
                 banner = request.ToolName == Services.ClaudeCli.ClaudeCliChatService.PlanToolName
                     ? new PlanBannerViewModel(request, OnResolved)
                     : new PermissionBannerViewModel(request, OnResolved,
-                        canViewDiff ? () => OpenProposedDiffAsync(request, () => banner?.IsAnswered != true) : null);
+                        canViewDiff ? () => OpenProposedDiffAsync(request, () => banner?.IsAnswered != true) : null,
+                        WorkingDirectory);
                 banner.AskedBy = FindAskingSubagent(request.ToolUseId);
                 ShowPrompt(banner);
             }
